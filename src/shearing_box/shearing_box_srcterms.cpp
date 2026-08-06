@@ -37,47 +37,102 @@ void ShearingBoxCC::SourceTermsCC(const DvceArray5D<Real> &w0, const EOS_Data &e
 
   // 3D or 2D r-phi source terms
   if (shearing_box_r_phi || three_d_) {
-    Real coef1 = 2.0*bdt*omega0;
-    Real coef2 = (2.0-qshear)*bdt*omega0;
-    Real qo = qshear*omega0;
-    Real coef3 = bdt*SQR(omega0);
-    par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
-    KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-      Real &den = w0(m,IDN,k,j,i);
-      Real mom1 = den*w0(m,IVX,k,j,i);
-      Real mom2 = den*w0(m,IVY,k,j,i);
-      u0(m,IM1,k,j,i) += coef1*mom2;
-      u0(m,IM2,k,j,i) -= coef2*mom1;
-      if (is_strat) {
-        Real &x3min = size.d_view(m).x3min;
-        Real &x3max = size.d_view(m).x3max;
-        int nx3 = indcs.nx3;
-        Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
-        u0(m,IM3,k,j,i) -= coef3*den*x3v;
-      }
-      if (eos_data.is_ideal) {
-        // For more accuracy, better to use flux values
-        u0(m,IEN,k,j,i) += bdt*mom1*mom2/den*qo;
-      }
-    });
+    if (orbital_advection) {
+      // Shear-subtracted (FARGO) frame: velocities are perturbations about the
+      // background shear, which is advected analytically by OrbitalAdvection*
+      Real coef1 = 2.0*bdt*omega0;
+      Real coef2 = (2.0-qshear)*bdt*omega0;
+      Real qo = qshear*omega0;
+      Real coef3 = bdt*SQR(omega0);
+      par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        Real &den = w0(m,IDN,k,j,i);
+        Real mom1 = den*w0(m,IVX,k,j,i);
+        Real mom2 = den*w0(m,IVY,k,j,i);
+        u0(m,IM1,k,j,i) += coef1*mom2;
+        u0(m,IM2,k,j,i) -= coef2*mom1;
+        if (is_strat) {
+          Real &x3min = size.d_view(m).x3min;
+          Real &x3max = size.d_view(m).x3max;
+          int nx3 = indcs.nx3;
+          Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
+          u0(m,IM3,k,j,i) -= coef3*den*x3v;
+        }
+        if (eos_data.is_ideal) {
+          // For more accuracy, better to use flux values
+          u0(m,IEN,k,j,i) += bdt*mom1*mom2/den*qo;
+        }
+      });
+    } else {
+      // Full-velocity (non-FARGO) frame: velocities include the background shear,
+      // so apply the full Coriolis force plus the radial tidal force 2*q*Omega^2*x
+      Real coef1 = 2.0*bdt*omega0;
+      Real qo2 = 2.0*bdt*qshear*SQR(omega0);
+      Real coef3 = bdt*SQR(omega0);
+      par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        Real &x1min = size.d_view(m).x1min;
+        Real &x1max = size.d_view(m).x1max;
+        int nx1 = indcs.nx1;
+        Real x1v = CellCenterX(i-is, nx1, x1min, x1max);
+        Real &den = w0(m,IDN,k,j,i);
+        Real mom1 = den*w0(m,IVX,k,j,i);
+        Real mom2 = den*w0(m,IVY,k,j,i);
+        u0(m,IM1,k,j,i) += coef1*mom2 + qo2*den*x1v;
+        u0(m,IM2,k,j,i) -= coef1*mom1;
+        if (is_strat) {
+          Real &x3min = size.d_view(m).x3min;
+          Real &x3max = size.d_view(m).x3max;
+          int nx3 = indcs.nx3;
+          Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
+          u0(m,IM3,k,j,i) -= coef3*den*x3v;
+        }
+        if (eos_data.is_ideal) {
+          // only the tidal force does work (Coriolis force is perpendicular to v)
+          u0(m,IEN,k,j,i) += qo2*x1v*mom1;
+        }
+      });
+    }
 
   // 2D r-z source terms
   } else {
-    Real coef1 = 2.0*bdt*omega0;
-    Real coef3 = (2.0-qshear)*bdt*omega0;
-    Real qo = qshear*omega0;
-    par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
-    KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-      Real &den = w0(m,IDN,k,j,i);
-      Real mom1 = den*w0(m,IVX,k,j,i);
-      Real mom3 = den*w0(m,IVZ,k,j,i);
-      u0(m,IM1,k,j,i) += coef1*mom3;
-      u0(m,IM3,k,j,i) -= coef3*mom1;
-      if (eos_data.is_ideal) {
-        // For more accuracy, better to use flux values
-        u0(m,IEN,k,j,i) += bdt*mom1*mom3/den*qo;
-      }
-    });
+    if (orbital_advection) {
+      Real coef1 = 2.0*bdt*omega0;
+      Real coef3 = (2.0-qshear)*bdt*omega0;
+      Real qo = qshear*omega0;
+      par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        Real &den = w0(m,IDN,k,j,i);
+        Real mom1 = den*w0(m,IVX,k,j,i);
+        Real mom3 = den*w0(m,IVZ,k,j,i);
+        u0(m,IM1,k,j,i) += coef1*mom3;
+        u0(m,IM3,k,j,i) -= coef3*mom1;
+        if (eos_data.is_ideal) {
+          // For more accuracy, better to use flux values
+          u0(m,IEN,k,j,i) += bdt*mom1*mom3/den*qo;
+        }
+      });
+    } else {
+      // Full-velocity (non-FARGO) frame; azimuthal momentum is stored in IM3
+      Real coef1 = 2.0*bdt*omega0;
+      Real qo2 = 2.0*bdt*qshear*SQR(omega0);
+      par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        Real &x1min = size.d_view(m).x1min;
+        Real &x1max = size.d_view(m).x1max;
+        int nx1 = indcs.nx1;
+        Real x1v = CellCenterX(i-is, nx1, x1min, x1max);
+        Real &den = w0(m,IDN,k,j,i);
+        Real mom1 = den*w0(m,IVX,k,j,i);
+        Real mom3 = den*w0(m,IVZ,k,j,i);
+        u0(m,IM1,k,j,i) += coef1*mom3 + qo2*den*x1v;
+        u0(m,IM3,k,j,i) -= coef1*mom1;
+        if (eos_data.is_ideal) {
+          // only the tidal force does work (Coriolis force is perpendicular to v)
+          u0(m,IEN,k,j,i) += qo2*x1v*mom1;
+        }
+      });
+    }
   }
 
   return;
@@ -103,47 +158,102 @@ void ShearingBoxCC::SourceTermsCC(
 
   // 3D or 2D r-phi source terms
   if (shearing_box_r_phi || three_d_) {
-    Real coef1 = 2.0*bdt*omega0;
-    Real coef2 = (2.0-qshear)*bdt*omega0;
-    Real qo = qshear*omega0;
-    Real coef3 = bdt*SQR(omega0);
-    par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
-    KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-      Real &den = w0(m,IDN,k,j,i);
-      Real mom1 = den*w0(m,IVX,k,j,i);
-      Real mom2 = den*w0(m,IVY,k,j,i);
-      u0(m,IM1,k,j,i) += coef1*mom2;
-      u0(m,IM2,k,j,i) -= coef2*mom1;
-      if (is_strat) {
-        Real &x3min = size.d_view(m).x3min;
-        Real &x3max = size.d_view(m).x3max;
-        int nx3 = indcs.nx3;
-        Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
-        u0(m,IM3,k,j,i) -= coef3*den*x3v;
-      }
-      if (eos_data.is_ideal) {
-        // For more accuracy, better to use flux values
-        u0(m,IEN,k,j,i) += bdt*(mom1*mom2/den-bcc0(m,IBX,k,j,i)*bcc0(m,IBY,k,j,i))*qo;
-      }
-    });
+    if (orbital_advection) {
+      // Shear-subtracted (FARGO) frame
+      Real coef1 = 2.0*bdt*omega0;
+      Real coef2 = (2.0-qshear)*bdt*omega0;
+      Real qo = qshear*omega0;
+      Real coef3 = bdt*SQR(omega0);
+      par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        Real &den = w0(m,IDN,k,j,i);
+        Real mom1 = den*w0(m,IVX,k,j,i);
+        Real mom2 = den*w0(m,IVY,k,j,i);
+        u0(m,IM1,k,j,i) += coef1*mom2;
+        u0(m,IM2,k,j,i) -= coef2*mom1;
+        if (is_strat) {
+          Real &x3min = size.d_view(m).x3min;
+          Real &x3max = size.d_view(m).x3max;
+          int nx3 = indcs.nx3;
+          Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
+          u0(m,IM3,k,j,i) -= coef3*den*x3v;
+        }
+        if (eos_data.is_ideal) {
+          // For more accuracy, better to use flux values
+          u0(m,IEN,k,j,i) += bdt*(mom1*mom2/den-bcc0(m,IBX,k,j,i)*bcc0(m,IBY,k,j,i))*qo;
+        }
+      });
+    } else {
+      // Full-velocity (non-FARGO) frame: full Coriolis + radial tidal force
+      Real coef1 = 2.0*bdt*omega0;
+      Real qo2 = 2.0*bdt*qshear*SQR(omega0);
+      Real coef3 = bdt*SQR(omega0);
+      par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        Real &x1min = size.d_view(m).x1min;
+        Real &x1max = size.d_view(m).x1max;
+        int nx1 = indcs.nx1;
+        Real x1v = CellCenterX(i-is, nx1, x1min, x1max);
+        Real &den = w0(m,IDN,k,j,i);
+        Real mom1 = den*w0(m,IVX,k,j,i);
+        Real mom2 = den*w0(m,IVY,k,j,i);
+        u0(m,IM1,k,j,i) += coef1*mom2 + qo2*den*x1v;
+        u0(m,IM2,k,j,i) -= coef1*mom1;
+        if (is_strat) {
+          Real &x3min = size.d_view(m).x3min;
+          Real &x3max = size.d_view(m).x3max;
+          int nx3 = indcs.nx3;
+          Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
+          u0(m,IM3,k,j,i) -= coef3*den*x3v;
+        }
+        if (eos_data.is_ideal) {
+          // only the tidal force does work; magnetic stresses are handled by the
+          // MHD fluxes since velocities include the full shear flow
+          u0(m,IEN,k,j,i) += qo2*x1v*mom1;
+        }
+      });
+    }
 
   // 2D r-z source terms
   } else {
-    Real coef1 = 2.0*bdt*omega0;
-    Real coef3 = (2.0-qshear)*bdt*omega0;
-    Real qo = qshear*omega0;
-    par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
-    KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-      Real &den = w0(m,IDN,k,j,i);
-      Real mom1 = den*w0(m,IVX,k,j,i);
-      Real mom3 = den*w0(m,IVZ,k,j,i);
-      u0(m,IM1,k,j,i) += coef1*mom3;
-      u0(m,IM3,k,j,i) -= coef3*mom1;
-      if (eos_data.is_ideal) {
-        // For more accuracy, better to use flux values
-        u0(m,IEN,k,j,i) += bdt*(mom1*mom3/den-bcc0(m,IBX,k,j,i)*bcc0(m,IBZ,k,j,i))*qo;
-      }
-    });
+    if (orbital_advection) {
+      Real coef1 = 2.0*bdt*omega0;
+      Real coef3 = (2.0-qshear)*bdt*omega0;
+      Real qo = qshear*omega0;
+      par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        Real &den = w0(m,IDN,k,j,i);
+        Real mom1 = den*w0(m,IVX,k,j,i);
+        Real mom3 = den*w0(m,IVZ,k,j,i);
+        u0(m,IM1,k,j,i) += coef1*mom3;
+        u0(m,IM3,k,j,i) -= coef3*mom1;
+        if (eos_data.is_ideal) {
+          // For more accuracy, better to use flux values
+          u0(m,IEN,k,j,i) += bdt*(mom1*mom3/den-bcc0(m,IBX,k,j,i)*bcc0(m,IBZ,k,j,i))*qo;
+        }
+      });
+    } else {
+      // Full-velocity (non-FARGO) frame; azimuthal momentum is stored in IM3.
+      // NOTE: non-FARGO 2D r-z MHD also requires disabling the background-shear
+      // electric field in ShearingBoxFC::SourceTermsFC, which is not yet done.
+      Real coef1 = 2.0*bdt*omega0;
+      Real qo2 = 2.0*bdt*qshear*SQR(omega0);
+      par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        Real &x1min = size.d_view(m).x1min;
+        Real &x1max = size.d_view(m).x1max;
+        int nx1 = indcs.nx1;
+        Real x1v = CellCenterX(i-is, nx1, x1min, x1max);
+        Real &den = w0(m,IDN,k,j,i);
+        Real mom1 = den*w0(m,IVX,k,j,i);
+        Real mom3 = den*w0(m,IVZ,k,j,i);
+        u0(m,IM1,k,j,i) += coef1*mom3 + qo2*den*x1v;
+        u0(m,IM3,k,j,i) -= coef1*mom1;
+        if (eos_data.is_ideal) {
+          u0(m,IEN,k,j,i) += qo2*x1v*mom1;
+        }
+      });
+    }
   }
 
   return;

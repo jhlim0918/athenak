@@ -214,6 +214,30 @@ TaskStatus OrbitalAdvectionCC::RecvAndUnpackCC(DvceArray5D<Real> &a,
 
   //----- STEP 2: buffers have all completed, so unpack and apply shift
 
+  // Guard against exceeding the communicated buffer depth (ng + maxjshift): the shift
+  // in cells is qshear*omega0*|x1|*dt/dx2, which grows on refined MeshBlocks (smaller
+  // dx2 at possibly large |x1|). maxjshift is only an estimate made at construction,
+  // so verify it every call using this step's dt and each block's own geometry.
+  {
+    auto &mbsize_h = pmy_pack->pmb->mb_size;
+    Real qodt = qshear*omega0*(pmy_pack->pmesh->dt);
+    int worst = 0;
+    for (int m=0; m<nmb; ++m) {
+      Real xmax = std::max(fabs(mbsize_h.h_view(m).x1min), fabs(mbsize_h.h_view(m).x1max));
+      int joff = static_cast<int>(qodt*xmax/(mbsize_h.h_view(m).dx2));
+      worst = std::max(worst, joff);
+    }
+    if (worst > maxjshift) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+        << std::endl << "Orbital advection shift (" << worst << " cells) exceeds "
+        << "communicated buffer depth maxjshift=" << maxjshift << ". This can happen "
+        << "on refined MeshBlocks at large |x1|. Reduce the timestep (cfl_number) or "
+        << "enlarge the maxjshift estimate in OrbitalAdvection::OrbitalAdvection()."
+        << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+  }
+
   int nvar = a.extent_int(1);  // TODO(@user): 2nd index from L of in array must be NVAR
 
   auto &indcs = pmy_pack->pmesh->mb_indcs;

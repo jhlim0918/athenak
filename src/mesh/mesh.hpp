@@ -148,6 +148,8 @@ class Mesh {
 
   // functions
   void BuildTreeFromScratch(ParameterInput *pin);
+  // enforce that refined MeshBlocks never touch the shear-periodic x1 boundaries
+  void CheckShearingBoxRefinement(ParameterInput *pin);
   void BuildTreeFromRestart(ParameterInput *pin, IOWrapper &resfile,
                             bool single_file_per_rank=false);
   void PrintMeshDiagnostics();

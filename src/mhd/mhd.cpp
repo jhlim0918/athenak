@@ -176,9 +176,27 @@ MHD::MHD(MeshBlockPack *ppack, ParameterInput *pin) :
   pbval_b->InitializeBuffers(3);
 
   // Orbital advection and shearing box BCs (if requested in input file)
+  // Orbital advection can be disabled independently with orbital_advection=false in the
+  // <shearing_box> block; shear-periodic BCs and Coriolis/tidal terms stay active, and
+  // the MHD solver then integrates the full shear flow directly.
   if (pin->DoesBlockExist("shearing_box")) {
-    porb_u = new OrbitalAdvectionCC(ppack, pin, (nmhd+nscalars));
-    porb_b = new OrbitalAdvectionFC(ppack, pin);
+    if (pin->GetOrAddBoolean("shearing_box","orbital_advection",true)) {
+      // MHD orbital advection remaps face-centered B via EMFs; correctness of the
+      // per-level remap at fine/coarse interfaces (divB preservation) has not been
+      // verified, so refinement remains unsupported for MHD+FARGO (hydro is supported
+      // under the annular refinement policy; see Mesh::CheckShearingBoxRefinement)
+      if (ppack->pmesh->multilevel) {
+        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+          << std::endl << "MHD orbital advection does not support mesh refinement yet; "
+          << "set <shearing_box> orbital_advection = false" << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
+      porb_u = new OrbitalAdvectionCC(ppack, pin, (nmhd+nscalars));
+      porb_b = new OrbitalAdvectionFC(ppack, pin);
+    } else {
+      porb_u = nullptr;
+      porb_b = nullptr;
+    }
     psbox_u = new ShearingBoxCC(ppack, pin, (nmhd+nscalars));
     psbox_b = new ShearingBoxFC(ppack, pin);
   } else {

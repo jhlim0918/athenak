@@ -131,8 +131,19 @@ Hydro::Hydro(MeshBlockPack *ppack, ParameterInput *pin) :
   pbval_u->InitializeBuffers((nhydro+nscalars));
 
   // Orbital advection and shearing box BCs (if requested in input file)
+  // Orbital advection can be disabled independently with orbital_advection=false in the
+  // <shearing_box> block; shear-periodic BCs and Coriolis/tidal terms stay active, and
+  // the hydro solver then integrates the full shear flow directly.
   if (pin->DoesBlockExist("shearing_box")) {
-    porb_u = new OrbitalAdvectionCC(ppack, pin, (nhydro+nscalars));
+    if (pin->GetOrAddBoolean("shearing_box","orbital_advection",true)) {
+      // With refinement, orbital advection requires the annular refinement policy:
+      // refined regions span the full x2 extent, so every x2-face neighbor is at the
+      // same level and the per-level y-shift comms remain valid. This is enforced in
+      // Mesh::CheckShearingBoxRefinement at startup and after every AMR update.
+      porb_u = new OrbitalAdvectionCC(ppack, pin, (nhydro+nscalars));
+    } else {
+      porb_u = nullptr;
+    }
     psbox_u = new ShearingBoxCC(ppack, pin, (nhydro+nscalars));
   } else {
     porb_u = nullptr;

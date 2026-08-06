@@ -19,6 +19,8 @@
 #include "mesh/mesh.hpp"
 #include "eos/eos.hpp"
 #include "bvals/bvals.hpp"
+#include "hydro/hydro.hpp"
+#include "mhd/mhd.hpp"
 #include "shearing_box.hpp"
 #include "remap_fluxes.hpp"
 
@@ -384,6 +386,34 @@ TaskStatus ShearingBoxCC::RecvAndUnpackCC(DvceArray5D<Real> &a) {
         member.team_barrier();
       }
     });
+  }
+
+  // In non-FARGO mode (orbital_advection=false) velocities include the background
+  // shear, which jumps by -qshear*omega0*Lx across the box in x1. Data wrapped
+  // through the shear-periodic boundaries must therefore be offset in azimuthal
+  // momentum (and total energy, for ideal EOS) to represent the local frame.
+  if (!orbital_advection) {
+    auto &msize = pmy_pack->pmesh->mesh_size;
+    Real qomL = qshear*omega0*(msize.x1max - msize.x1min);
+    bool is_ideal = (pmy_pack->phydro != nullptr) ?
+        pmy_pack->phydro->peos->eos_data.is_ideal :
+        pmy_pack->pmhd->peos->eos_data.is_ideal;
+    for (int n=0; n<2; ++n) {
+      if (nmb_x1bndry(n) == 0) continue;
+      // ghosts at ix1 hold data from the outer side (background vy larger by qomL);
+      // ghosts at ox1 hold data from the inner side (background vy smaller by qomL)
+      Real dvy = (n==0)? qomL : -qomL;
+      par_for("shrcc_dvy", DevExeSpace(), 0,(nmb_x1bndry(n)-1),kl,ku,0,(nj-1),0,(ng-1),
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        int mm = x1bndry_mbgid_.d_view(n,m) - gids_;
+        int ii = (n==0)? i : (ie+1)+i;
+        Real den = a(mm,IDN,k,j,ii);
+        if (is_ideal) {
+          a(mm,IEN,k,j,ii) += dvy*a(mm,IM2,k,j,ii) + 0.5*den*dvy*dvy;
+        }
+        a(mm,IM2,k,j,ii) += den*dvy;
+      });
+    }
   }
 
   return TaskStatus::complete;

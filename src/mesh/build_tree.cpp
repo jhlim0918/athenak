@@ -8,7 +8,9 @@
 
 #include <iostream>
 #include <cinttypes>
+#include <array>
 #include <limits> // numeric_limits<>
+#include <map>
 #include <memory> // make_unique<>
 
 #include "athena.hpp"
@@ -257,6 +259,9 @@ void Mesh::BuildTreeFromScratch(ParameterInput *pin) {
   for (int i=0; i<nmb_total; i++) {cost_eachmb[i] = 1.0;}
   LoadBalance(cost_eachmb, rank_eachmb, gids_eachrank, nmb_eachrank, nmb_total);
 
+  // enforce shearing-box refinement policy (refined MBs interior in x1)
+  CheckShearingBoxRefinement(pin);
+
   // create MeshBlockPack for this rank
   int mbp_gids = gids_eachrank[global_variable::my_rank];
   int mbp_gide = mbp_gids + nmb_eachrank[global_variable::my_rank] - 1;
@@ -462,6 +467,9 @@ void Mesh::BuildTreeFromRestart(ParameterInput *pin, IOWrapper &resfile,
 
   LoadBalance(cost_eachmb, rank_eachmb, gids_eachrank, nmb_eachrank, nmb_total);
 
+  // enforce shearing-box refinement policy (refined MBs interior in x1)
+  CheckShearingBoxRefinement(pin);
+
   // create MeshBlockPack for this rank
   int mbp_gids = gids_eachrank[global_variable::my_rank];
   int mbp_gide = mbp_gids + nmb_eachrank[global_variable::my_rank] - 1;
@@ -495,4 +503,62 @@ void Mesh::BuildTreeFromRestart(ParameterInput *pin, IOWrapper &resfile,
   // set remaining parameters, output diagnostics
   cfl_no = pin->GetReal("time", "cfl_number");
   if (global_variable::my_rank == 0) {PrintMeshDiagnostics();}
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void Mesh::CheckShearingBoxRefinement()
+//! \brief With a shearing box, refined MeshBlocks must not touch the shear-periodic x1
+//! boundaries: the shear remap machinery (shearing_box_cc.cpp, orbital_advection_cc.cpp)
+//! assumes all MBs along the shear boundary share one (root) level. Called after the
+//! tree is (re)built and after every AMR update; fatal error on violation.
+
+void Mesh::CheckShearingBoxRefinement(ParameterInput *pin) {
+  if (!multilevel || !(pin->DoesBlockExist("shearing_box"))) return;
+  for (int m=0; m<nmb_total; ++m) {
+    int lev = lloc_eachmb[m].level;
+    if (lev <= root_level) continue;
+    std::int32_t nmbx1 = (nmb_rootx1 << (lev - root_level));
+    if (lloc_eachmb[m].lx1 == 0 || lloc_eachmb[m].lx1 == (nmbx1-1)) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+        << std::endl << "Shearing box refinement policy violated: MeshBlock gid=" << m
+        << " (level=" << lev << ", lx1=" << lloc_eachmb[m].lx1 << ") touches a "
+        << "shear-periodic x1 boundary. Refined regions must be interior in x1 "
+        << "(keep at least one root-level MeshBlock between refinement and the x1 "
+        << "boundaries so 2:1 balancing cannot propagate refinement to the boundary)."
+        << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+  }
+
+  // With orbital advection (FARGO) on a refined mesh, refinement must additionally come
+  // in complete x2-rings ("annular" policy): every refined MeshBlock must have same-level
+  // neighbors along the entire x2 (azimuthal) direction, so the per-level y-shift
+  // communication only ever involves same-level, same-size x2-face neighbors.
+  if (pin->GetOrAddBoolean("shearing_box", "orbital_advection", true)) {
+    // count leaf MBs in each (level, lx1, lx3) ring
+    std::map<std::array<std::int64_t,3>, std::int64_t> ring_count;
+    for (int m=0; m<nmb_total; ++m) {
+      int lev = lloc_eachmb[m].level;
+      if (lev <= root_level) continue;
+      std::array<std::int64_t,3> key = {static_cast<std::int64_t>(lev),
+          static_cast<std::int64_t>(lloc_eachmb[m].lx1),
+          static_cast<std::int64_t>(lloc_eachmb[m].lx3)};
+      ring_count[key] += 1;
+    }
+    for (auto &kv : ring_count) {
+      int lev = static_cast<int>(kv.first[0]);
+      std::int64_t nmbx2 = (static_cast<std::int64_t>(nmb_rootx2) << (lev - root_level));
+      if (kv.second != nmbx2) {
+        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+          << std::endl << "Orbital advection with refinement requires refined regions "
+          << "spanning the full x2 (azimuthal) extent: ring at level=" << lev
+          << " lx1=" << kv.first[1] << " lx3=" << kv.first[2] << " has " << kv.second
+          << " of " << nmbx2 << " MeshBlocks. Either make the <refined_region> span "
+          << "the full x2 domain, or set <shearing_box> orbital_advection = false."
+          << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
+    }
+  }
+  return;
 }

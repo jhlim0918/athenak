@@ -60,6 +60,7 @@ gamma        = 1.6666666666666667 # gamma = C_p/C_v
 #gamma        = 1.6666666666666667 # gamma = C_p/C_v
 
 <problem>
+pgen_name    = shwave  # problem generator name
 ipert        = 1       # epicycle test
 d0           = 1.0     # background density
 amp          = 0.1     # amplitude of wave in units of sound speed
@@ -69,11 +70,11 @@ nwz          = 1       # number of wavelengths in z-direction
 
 <output1>
 file_type   = hst      # History data dump
-dt          = 0.1      # time increment between outputs
+dt          = 0.628      # time increment between outputs (about 0.1 orbits)
 data_format = %12.5e   # Optional data format string
 
 <output2>
 file_type   = vtk        # Binary data dump
 variable    = hydro_w    # variables to be output
 #variable    = mhd_w      # variables to be output
-dt          = 2.0        # time increment between outputs
+dt          = 0.628        # time increment between outputs (about 0.1 orbits)

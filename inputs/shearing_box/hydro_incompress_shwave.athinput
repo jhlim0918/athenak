@@ -42,8 +42,9 @@ tlim       = 5.0      # time limit
 ndiag      = 1        # cycles between diagostic output
 
 <shearing_box>
-qshear = 1.5 
-omega0 = 1.0 
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true   # false = non-FARGO: solver integrates full shear flow
 
 <hydro>
 eos             = isothermal   # EOS type

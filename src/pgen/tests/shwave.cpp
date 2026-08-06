@@ -64,6 +64,9 @@ void ProblemGenerator::Shwave(ParameterInput *pin, const bool restart) {
   Real p0 = pin->GetOrAddReal("problem", "p0",1.0);
   Real amp = pin->GetReal("problem", "amp");
   int ipert = pin->GetInteger("problem", "ipert");
+  // in non-FARGO mode (orbital_advection=false) the background shear flow
+  // vy = -qshear*omega0*x1 must be included in the initial conditions
+  bool orb_adv = pin->GetOrAddBoolean("shearing_box", "orbital_advection", true);
 
   // box size and wavenumbers
   auto &msize = pmy_mesh_->mesh_size;
@@ -105,14 +108,22 @@ void ProblemGenerator::Shwave(ParameterInput *pin, const bool restart) {
     shw_var.omega0 = (pmbp->phydro->psbox_u->omega0);
     // epicyclic oscillations
     if (ipert == 1) {
+      auto sv = shw_var;
       par_for("shwave1", DevExeSpace(), 0,(pmbp->nmb_thispack-1),ks,ke,js,je,is,ie,
       KOKKOS_LAMBDA(int m, int k, int j, int i) {
+        Real vy0 = 0.0;
+        if (!orb_adv) {
+          Real &x1min = size.d_view(m).x1min;
+          Real &x1max = size.d_view(m).x1max;
+          Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+          vy0 = -(sv.qshear)*(sv.omega0)*x1v;
+        }
         u0(m,IDN,k,j,i) = d0;
         u0(m,IM1,k,j,i) = amp*d0;
-        u0(m,IM2,k,j,i) = 0.0;
+        u0(m,IM2,k,j,i) = d0*vy0;
         u0(m,IM3,k,j,i) = 0.0;
         if (eos.is_ideal) {
-          u0(m,IEN,k,j,i) = p0/gm1 + 0.5*d0*SQR(amp);
+          u0(m,IEN,k,j,i) = p0/gm1 + 0.5*d0*(SQR(amp) + SQR(vy0));
         }
       });
     // incompressible (vortical) hydro shwave of JG05
@@ -130,6 +141,9 @@ void ProblemGenerator::Shwave(ParameterInput *pin, const bool restart) {
 
         Real rvx = amp*sin(sv.kx*x1v + sv.ky*x2v);
         Real rvy = -amp*(sv.kx/sv.ky)*sin(sv.kx*x1v + sv.ky*x2v);
+        if (!orb_adv) {
+          rvy -= (sv.qshear)*(sv.omega0)*x1v;
+        }
         u0(m,IDN,k,j,i) = d0;
         u0(m,IM1,k,j,i) = d0*rvx;
         u0(m,IM2,k,j,i) = d0*rvy;
@@ -156,6 +170,9 @@ void ProblemGenerator::Shwave(ParameterInput *pin, const bool restart) {
 
         Real rvx = amp*cos(sv.kx*x1v + sv.ky*x2v);
         Real rvy = amp*(sv.ky/sv.kx)*cos(sv.kx*x1v + sv.ky*x2v);
+        if (!orb_adv) {
+          rvy += (sv.qshear)*(sv.omega0)*x1v;  // net vy = -rvy - q*Omega*x1v
+        }
         u0(m,IDN,k,j,i) = d0;
         u0(m,IM1,k,j,i) = -d0*rvx;
         u0(m,IM2,k,j,i) = -d0*rvy;
@@ -224,12 +241,17 @@ void ProblemGenerator::Shwave(ParameterInput *pin, const bool restart) {
 
       Real csk = cos(sv.kx*x1v+sv.ky*x2v+sv.kz*x3v);
       Real rd = d0*(1.0+cf2*csk);
+      Real vy0 = 0.0;
+      if (!orb_adv) {
+        vy0 = -(sv.qshear)*(sv.omega0)*x1v;
+      }
       u0(m,IDN,k,j,i) = rd;
       u0(m,IM1,k,j,i) = rd*vd*sv.kx*csk;
-      u0(m,IM2,k,j,i) = rd*vd*sv.ky*csk;
+      u0(m,IM2,k,j,i) = rd*(vd*sv.ky*csk + vy0);
       u0(m,IM3,k,j,i) = rd*vd*sv.kz*csk;
       if (eos.is_ideal) {
-        u0(m,IEN,k,j,i) = p0/gm1 + 0.5*rd*SQR(vd*csk)*k2;
+        u0(m,IEN,k,j,i) = p0/gm1 + 0.5*rd*SQR(vd*csk)*k2
+                        + rd*vy0*(vd*sv.ky*csk + 0.5*vy0);
       }
     });
 

@@ -1,51 +1,70 @@
-# AthenaK input file for epicyclic motion test
+# AthenaK input file for compressible hydro shwave test (JG05) with SMR
 # Use with shwave.cpp problem generator
+#
+# TEST INPUT: exercises static mesh refinement in a shearing box.
+# The refined region (see <refined_region1> below) spans the full x2/x3
+# extent but only the interior half of x1, so every MeshBlock touching the
+# ix1/ox1 shear_periodic boundaries stays at the root level. This is meant
+# to test whether refinement that never touches the shear-periodic boundary
+# works, per the FindTargetMB / shearing_box_cc.cpp / orbital_advection_cc.cpp
+# assumption that all MeshBlocks along that boundary share one refinement level.
 
 <comment>
-problem   = compressible hydro shwave of JG05
-reference = 
+problem   = compressible hydro shwave of JG05, with SMR
+reference =
 
 <job>
-basename  = shwave3  # problem ID: basename of output filenames
+basename  = shwave3_smr  # problem ID: basename of output filenames
 
 <mesh>
 nghost    = 2         # Number of ghost cells
-nx1       = 64      # Number of zones in X1-direction
+nx1       = 128       # Number of zones in X1-direction
 x1min     = -2.0      # minimum value of X1
 x1max     = 2.0       # maximum value of X1
 ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
 ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
 
-nx2       = 64      # Number of zones in X2-direction
+nx2       = 128       # Number of zones in X2-direction
 x2min     = -2.0      # minimum value of X2
 x2max     = 2.0       # maximum value of X2
 ix2_bc    = periodic  # Inner-X2 boundary condition flag
 ox2_bc    = periodic  # Outer-X2 boundary condition flag
 
-nx3       = 1         # Number of zones in X3-direction
+nx3       = 4         # Number of zones in X3-direction
 x3min     = -0.5      # minimum value of X3
 x3max     = 0.5       # maximum value of X3
 ix3_bc    = periodic  # Inner-X3 boundary condition flag
 ox3_bc    = periodic  # Outer-X3 boundary condition flag
 
 <meshblock>
-nx1       = 16      # Number of cells in each MeshBlock, X1-dir
-nx2       = 16      # Number of cells in each MeshBlock, X2-dir
-nx3       = 1         # Number of cells in each MeshBlock, X3-dir
+nx1       = 32        # 4 root MeshBlocks in X1: [-2,-1] [-1,0] [0,1] [1,2]
+nx2       = 128       # single root MeshBlock in X2 (refine full X2 extent)
+nx3       = 4         # single root MeshBlock in X3 (refine full X3 extent)
+
+<mesh_refinement>
+refinement = static    # type of refinement
+
+<refined_region1>
+level = 1
+x1min = -1.0           # covers only the 2 interior X1 MeshBlocks;
+x1max = 1.0            # the 2 blocks touching x1min/x1max stay at root level
+x2min = -2.0           # full X2 extent -> no level jump along X2-periodic dir
+x2max = 2.0
+x3min = -0.5           # full X3 extent -> no level jump along X3
+x3max = 0.5
 
 <time>
 evolution  = dynamic  # dynamic/kinematic/static
 integrator = rk2      # time integration algorithm
 cfl_number = 0.3      # The Courant, Friedrichs, & Lewy (CFL) Number
 nlim       = -1       # cycle limit
-tlim       = 10.0      # time limit
+tlim       = 8.0      # time limit
 ndiag      = 1        # cycles between diagostic output
 
 <shearing_box>
-qshear = 1.5 
-omega0 = 1.0 
+qshear = 1.5
+omega0 = 1.0
 
-# Can run test in hydro by uncommenting this block
 <hydro>
 eos             = isothermal   # EOS type
 reconstruct     = plm          # spatial reconstruction method
@@ -53,7 +72,7 @@ rsolver         = hlle         # Riemann-solver to be used
 iso_sound_speed = 1.0          # isothermal sound speed
 
 <problem>
-pgen_name = shwave
+pgen_name    = shwave  # problem generator name
 ipert        = 3       # compressible shwave test
 d0           = 1.0     # background density
 amp          = 0.0004  # amplitude of wave in units of sound speed

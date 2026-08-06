@@ -59,6 +59,9 @@ class ShearingBox {
   Real qshear, omega0;             // Copies needed for all SB funcs
   bool shearing_box_r_phi;         // NOT YET IMPLEMENTED
   bool is_stratified;              // true for stratified shearing box
+  bool orbital_advection;          // false = non-FARGO mode: velocities include the
+                                   // background shear, full-velocity source terms, and
+                                   // shear-periodic BCs offset azimuthal momentum
 
   // data buffers for shearing box BCs.  Only two x1-faces get sheared
   // Use separate variables for ix1/ox1 since number of MBs on each face can be different

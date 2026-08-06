@@ -14,8 +14,10 @@
 
 #include <cstdint>   // int32_t
 #include <iostream>
+#include <array>
 #include <cmath>     // abs
 #include <algorithm> // sort
+#include <map>
 #include <utility>   // pair
 
 #include "athena.hpp"
@@ -49,6 +51,9 @@ MeshRefinement::MeshRefinement(Mesh *pm, ParameterInput *pin) :
   ncyc_check_amr(1),
   refinement_interval(5),
   prolong_prims(false),
+  shearing_box_(pin->DoesBlockExist("shearing_box")),
+  sbox_ring_policy_(pin->DoesBlockExist("shearing_box") &&
+      pin->GetOrAddBoolean("shearing_box", "orbital_advection", true)),
   refine_flag("rflag",pm->nmb_total),
   ncyc_since_ref("cyc_since_ref",pm->nmb_total),
 #if MPI_PARALLEL_ENABLED
@@ -150,6 +155,10 @@ void MeshRefinement::AdaptiveMeshRefinement(Driver *pdriver, ParameterInput *pin
   if (nnew != 0 || ndel != 0) { // at least one (de)refinement flagged
     RedistAndRefineMeshBlocks(pin, nnew, ndel);
 
+    // shearing box: 2:1 balancing may have propagated refinement to the x1 boundary
+    // despite the CheckForRefinement veto; fail loudly rather than run corrupted BCs
+    pmy_mesh->CheckShearingBoxRefinement(pin);
+
     // Mark one mesh-topology update event (AMR and any resulting load balancing).
     pmy_mesh->MarkMeshUpdated();
 
@@ -237,6 +246,20 @@ void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
       if (refine_flag.h_view(m+mbs) < 0) {refine_flag.h_view(m+mbs) = 0;}
     }
   }
+  // Shearing box: never refine a MeshBlock touching the shear-periodic x1 boundaries
+  // (refined MBs must stay interior in x1; see Mesh::CheckShearingBoxRefinement).
+  // Note 2:1 balancing in UpdateMeshBlockTree can still propagate refinement toward
+  // the boundary; that case is caught fatally after the update.
+  if (shearing_box_) {
+    for (int m=0; m<nmb; ++m) {
+      int lev = pmy_mesh->lloc_eachmb[m+mbs].level;
+      std::int32_t nmbx1 = (pmy_mesh->nmb_rootx1 << (lev - pmy_mesh->root_level));
+      if (pmy_mesh->lloc_eachmb[m+mbs].lx1 == 0 ||
+          pmy_mesh->lloc_eachmb[m+mbs].lx1 == (nmbx1-1)) {
+        if (refine_flag.h_view(m+mbs) > 0) {refine_flag.h_view(m+mbs) = 0;}
+      }
+    }
+  }
   // Turn off (on host) refine/derefine flag for any MB that has been recently refined
   for (int m=0; m<nmb; ++m) {
     if (ncyc_since_ref(m+mbs) < refinement_interval) {refine_flag.h_view(m+mbs) = 0;}
@@ -248,6 +271,47 @@ void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
                    MPI_INT, refine_flag.h_view.data(), pmy_mesh->nmb_eachrank,
                    pmy_mesh->gids_eachrank, MPI_INT, MPI_COMM_WORLD);
 #endif
+
+  // Shearing box + orbital advection: refinement must proceed in complete x2-rings
+  // (annular policy; see Mesh::CheckShearingBoxRefinement). Synchronize flags ring-wise:
+  // refine the whole (level,lx1,lx3) ring if any member is flagged; derefine only if
+  // every member is flagged. Runs identically on all ranks after the Allgatherv, on the
+  // globally consistent flag array, so the result is deterministic.
+  if (sbox_ring_policy_) {
+    std::map<std::array<std::int64_t,3>, int> ring;   // +1 any refine; -1 all derefine
+    for (int m=0; m<(pmy_mesh->nmb_total); ++m) {
+      std::array<std::int64_t,3> key = {
+          static_cast<std::int64_t>(pmy_mesh->lloc_eachmb[m].level),
+          static_cast<std::int64_t>(pmy_mesh->lloc_eachmb[m].lx1),
+          static_cast<std::int64_t>(pmy_mesh->lloc_eachmb[m].lx3)};
+      auto it = ring.find(key);
+      int f = (refine_flag.h_view(m) > 0) ? 1 : ((refine_flag.h_view(m) < 0) ? -1 : 0);
+      if (it == ring.end()) {
+        ring[key] = f;
+      } else {
+        if (f > 0 || it->second > 0) {          // any refine wins
+          it->second = 1;
+        } else if (f < 0 && it->second < 0) {   // derefine requires unanimity
+          it->second = -1;
+        } else {
+          it->second = 0;
+        }
+      }
+    }
+    for (int m=0; m<(pmy_mesh->nmb_total); ++m) {
+      std::array<std::int64_t,3> key = {
+          static_cast<std::int64_t>(pmy_mesh->lloc_eachmb[m].level),
+          static_cast<std::int64_t>(pmy_mesh->lloc_eachmb[m].lx1),
+          static_cast<std::int64_t>(pmy_mesh->lloc_eachmb[m].lx3)};
+      int r = ring[key];
+      if (r > 0) {
+        refine_flag.h_view(m) = 1;
+      } else if (r == 0 && refine_flag.h_view(m) < 0) {
+        refine_flag.h_view(m) = 0;
+      }
+    }
+  }
+
   // sync host array with device
   refine_flag.template modify<HostMemSpace>();
   refine_flag.template sync<DevExeSpace>();

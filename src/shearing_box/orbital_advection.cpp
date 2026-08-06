@@ -35,10 +35,17 @@ OrbitalAdvection::OrbitalAdvection(MeshBlockPack *ppack, ParameterInput *pin) :
   qshear = pin->GetReal("shearing_box","qshear");
   omega0 = pin->GetReal("shearing_box","omega0");
 
-  // estimate maximum integer shift in x2-direction for orbital advection
+  // estimate maximum integer shift in x2-direction for orbital advection:
+  // shift = qshear*omega0*|x1|*dt/dx2 cells with dt <~ cfl*dx/v_char, so in code units
+  // (v_char ~ 1) the worst case is ~ cfl*qshear*omega0*max|x1|. This is a heuristic;
+  // RecvAndUnpackCC verifies the actual shift against this bound every step. With
+  // refinement, allow extra headroom (fine blocks at large |x1| take larger shifts in
+  // their own cell units whenever dt is not set by that same region).
   Real xmin = fabs(ppack->pmesh->mesh_size.x1min);
   Real xmax = fabs(ppack->pmesh->mesh_size.x1max);
-  maxjshift = static_cast<int>((ppack->pmesh->cfl_no)*std::max(xmin,xmax)) + 1;
+  maxjshift = static_cast<int>(
+      (ppack->pmesh->cfl_no)*(qshear*omega0)*std::max(xmin,xmax)) + 1;
+  if (ppack->pmesh->multilevel) {maxjshift *= 2;}
 
 #if MPI_PARALLEL_ENABLED
   // For orbital advection, communication is only with x2-face neighbors

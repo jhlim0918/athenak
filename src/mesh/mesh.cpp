@@ -177,12 +177,21 @@ Mesh::Mesh(ParameterInput *pin) :
   multilevel = (adaptive || pin->GetString("mesh_refinement","refinement") == "static")
     ?  true : false;
 
-  // FIXME: The shearing box is not currently compatible with SMR/AMR
-  if (multilevel && pin->DoesBlockExist("shearing_box")) {
-    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-        << "Shearing box is not currently compatible with mesh refinement"
-        << std::endl;
-    std::exit(EXIT_FAILURE);
+  // Shearing box + refinement is allowed under a restricted policy, enforced
+  // block-by-block after the tree is built (CheckShearingBoxRefinement) and after
+  // every AMR update:
+  //  (1) refined MeshBlocks must never touch the shear-periodic x1 boundaries (the
+  //      shear remap machinery assumes all MBs along the shear boundary share one
+  //      level), and
+  //  (2) with orbital advection (FARGO) on, refined regions must additionally span
+  //      the full x2 extent ("annular" policy) so the per-level y-shift only ever
+  //      communicates between same-level, same-size x2-face neighbors.
+  // MHD orbital advection (face-centered B remap) does not support refinement yet.
+  if (multilevel && pin->DoesBlockExist("shearing_box") && global_variable::my_rank==0) {
+    std::cout << "### WARNING in " << __FILE__ << " at line " << __LINE__ << std::endl
+        << "Shearing box with mesh refinement: refined regions must not touch the x1 "
+        << "boundaries, and with orbital advection must span the full x2 extent "
+        << "(both enforced with fatal errors)." << std::endl;
   }
 
   // error check physical size of mesh (root level) from input file.
