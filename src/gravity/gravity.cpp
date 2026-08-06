@@ -25,6 +25,11 @@
 #include "mg_gravity.hpp"
 #include "../multigrid/multigrid.hpp"
 
+#include "config.hpp"
+#if FFT_ENABLED
+#include "fft_gravity.hpp"
+#endif
+
 namespace gravity { // NOLINT (build/namespace)
 //! constructor, initializes data structures and parameters
 //-------------------------------------------------------------------------------------
@@ -49,9 +54,29 @@ Gravity::Gravity(MeshBlockPack *pmbp, ParameterInput *pin):
         exit(EXIT_FAILURE);
     }
 
-    // create multigrid driver/solver
-    // The driver allocates multigrid instances for root level and meshblock levels
-    pmgd = new MGGravityDriver(pmbp, pin);
+    // create the selected Poisson solver: multigrid (default) or fft
+    pmgd = nullptr;
+    pmg = nullptr;
+    pfft = nullptr;
+    std::string solver = pin->GetOrAddString("gravity", "solver", "multigrid");
+    if (solver == "multigrid") {
+        // The driver allocates multigrid instances for root level and meshblock levels
+        pmgd = new MGGravityDriver(pmbp, pin);
+    } else if (solver == "fft") {
+#if FFT_ENABLED
+        pfft = new FFTGravitySolver(pmbp, pin);
+#else
+        std::cout << "### FATAL ERROR in Gravity::Gravity" << std::endl
+        << "<gravity> solver = fft requires building with -D Athena_ENABLE_FFT=ON"
+        << std::endl;
+        exit(EXIT_FAILURE);
+#endif
+    } else {
+        std::cout << "### FATAL ERROR in Gravity::Gravity" << std::endl
+        << "<gravity> solver = '" << solver << "' not recognized "
+        << "(must be 'multigrid' or 'fft')" << std::endl;
+        exit(EXIT_FAILURE);
+    }
 
     // Enroll CellCenteredBoundaryVariable object
     //gbvar.bvar_index = pmb->pbval->bvars.size();
@@ -70,5 +95,21 @@ Gravity::Gravity(MeshBlockPack *pmbp, ParameterInput *pin):
 //! \brief Gravity destructor
 Gravity::~Gravity() {
     delete pmg;
+#if FFT_ENABLED
+    delete pfft;
+#endif
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn Gravity::Solve()
+//! \brief dispatch the Poisson solve to whichever solver was constructed
+void Gravity::Solve(Driver *pdriver, int stage) {
+    if (pmgd != nullptr) {
+        pmgd->Solve(pdriver, stage);
+#if FFT_ENABLED
+    } else if (pfft != nullptr) {
+        pfft->Solve(pdriver, stage);
+#endif
+    }
 }
 } // namespace gravity

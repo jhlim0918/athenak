@@ -34,6 +34,7 @@ endif()
 option(Athena_SINGLE_PRECISION "Compile for single precision" OFF)
 option(Athena_ENABLE_MPI "Compile with MPI parallelism enabled" OFF)
 option(Athena_ENABLE_OPENMP "Compile with OpenMP parallelism enabled" OFF)
+option(Athena_ENABLE_FFT "Compile with FFT self-gravity solver (kokkos-fft)" OFF)
 set(PROBLEM built_in_pgens CACHE STRING "Name of problem generator function")
 
 #------ set macros exported to config.hpp ------------------------------------------------
@@ -77,6 +78,13 @@ else()
   set(OPENMP_PARALLEL_ENABLED 0)
 endif()
 
+# set FFT macro (true/false)
+if (Athena_ENABLE_FFT)
+  set(FFT_ENABLED 1)
+else()
+  set(FFT_ENABLED 0)
+endif()
+
 #set user problem generator flag
 if (NOT ${PROBLEM} STREQUAL "built_in_pgens")
   message(STATUS "Including user-specified problem generator file: ${PROBLEM}")
@@ -115,6 +123,20 @@ add_subdirectory(kokkos)
 include_directories(${Kokkos_INCLUDE_DIRS_RET})
 
 target_link_libraries(athena PUBLIC Kokkos::kokkos)
+
+# kokkos-fft (FFT self-gravity solver); must come after add_subdirectory(kokkos)
+# so it consumes the in-tree Kokkos::kokkos target (Kokkos is never installed).
+if (Athena_ENABLE_FFT)
+  include(FetchContent)
+  FetchContent_Declare(
+    kokkos-fft
+    GIT_REPOSITORY https://github.com/kokkos/kokkos-fft.git
+    GIT_TAG        v2.0.0
+  )
+  FetchContent_MakeAvailable(kokkos-fft)
+  target_link_libraries(athena PUBLIC KokkosFFT::fft)
+endif()
+
 if (ENABLE_MPI)
   target_link_libraries(athena PUBLIC MPI::MPI_CXX)
 endif()

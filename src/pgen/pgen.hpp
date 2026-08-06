@@ -75,6 +75,8 @@ class ProblemGenerator {
   void SelfGravity(ParameterInput *pin, const bool restart);
   void BinaryGravity(ParameterInput *pin, const bool restart);
   void BECollapse(ParameterInput *pin, const bool restart);
+  void FFTPoisson(ParameterInput *pin, const bool restart);
+  void SwingAmplification(ParameterInput *pin, const bool restart);
 
   // predefined problem generator functions for unit tests
   void EOSCompose(ParameterInput *pin, const bool restart);

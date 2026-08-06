@@ -932,6 +932,10 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     BinaryGravity(pin, is_restart);
   } else if (pgen_fun_name.compare("be_collapse") == 0) {
     BECollapse(pin, is_restart);
+  } else if (pgen_fun_name.compare("fft_poisson") == 0) {
+    FFTPoisson(pin, is_restart);
+  } else if (pgen_fun_name.compare("swing") == 0) {
+    SwingAmplification(pin, is_restart);
 
   // pre-defined unit tests
   } else if (pgen_fun_name.compare("eos_compose") == 0) {

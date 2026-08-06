@@ -138,6 +138,8 @@ add_executable(
         pgen/tests/jeans_wave.cpp
         pgen/tests/binary_gravity.cpp
         pgen/tests/be_collapse.cpp
+        pgen/tests/fft_poisson.cpp
+        pgen/tests/swing.cpp
 
         pgen/unit_tests/eos_compose.cpp
         pgen/unit_tests/gauss_legendre.cpp
@@ -207,3 +209,8 @@ endif()
 
 # enable include of header files with /src/ as root of path
 target_include_directories(athena PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# FFT self-gravity solver: compiled only when kokkos-fft is enabled
+if (Athena_ENABLE_FFT)
+  target_sources(athena PRIVATE gravity/fft_gravity.cpp)
+endif()

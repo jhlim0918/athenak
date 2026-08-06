@@ -24,11 +24,16 @@ class MeshBlockPack;
 class ParameterInput;
 class Coordinates;
 class Multigrid;
+class Driver;
 namespace gravity {
+class FFTGravitySolver;
 class Gravity {
  public:
   Gravity(MeshBlockPack *pmbp, ParameterInput *pin);
   ~Gravity();
+
+  // dispatches to the solver selected by <gravity> solver = multigrid (default) | fft
+  void Solve(Driver *pdriver, int stage);
 
   MeshBlockPack* pmy_pack;
   DvceArray5D<Real> phi, coarse_phi;
@@ -38,6 +43,7 @@ class Gravity {
   bool fill_ghost;
   MGGravityDriver *pmgd;
   MGGravity *pmg;
+  FFTGravitySolver *pfft;
   void SaveFaceBoundaries();
   void RestoreFaceBoundaries();
 

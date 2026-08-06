@@ -25,6 +25,9 @@
 // use OpenMP parallelization? default=0 (false)
 #define OPENMP_PARALLEL_ENABLED @OPENMP_PARALLEL_ENABLED@
 
+// use FFT self-gravity solver (kokkos-fft)? default=0 (false)
+#define FFT_ENABLED @FFT_ENABLED@
+
 // Kokkos tight loop layout
 //#define @PAR_LOOP_LAYOUT@
 
