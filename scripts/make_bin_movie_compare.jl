@@ -6,7 +6,7 @@
 # Usage: julia scripts/make_bin_movie_compare.jl <run1> <run2> [<run3> ...] [field]
 #   <run> is either  <dir>              (its bin/ holds one output family), or
 #                    <dir>:<basename>   (pick one family from a shared bin/ dir,
-#                                        e.g. validation/run:shwave2_smr)
+#                                        e.g. validation/run:shwave2_nofargo_smr)
 # All runs must share the output cadence. Writes
 # <field>_compare_<label1>_vs_<label2>...mp4 into the first run's parent directory.
 

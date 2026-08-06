@@ -90,7 +90,7 @@ def draw_blocks(ax, fd, title):
 
 
 # ------------------------------------------------- fig 1: mesh layouts (policy)
-fd_patch = read_bin(sorted((RUN/"bin").glob("shwave2_smr.hydro_w.*.bin"))[0])
+fd_patch = read_bin(sorted((RUN/"bin").glob("shwave2_nofargo_smr.hydro_w.*.bin"))[0])
 fd_ring = read_bin(sorted((RUN/"bin").glob("ring_fargo.hydro_w.*.bin"))[0])
 
 fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.7))
