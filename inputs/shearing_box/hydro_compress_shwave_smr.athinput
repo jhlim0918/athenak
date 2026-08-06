@@ -88,7 +88,7 @@ data_format = %12.5e   # Optional data format string
 user_hist_only = true
 
 <output2>
-file_type   = vtk        # Binary data dump
+file_type   = bin        # Binary data dump (vtk does not support SMR/AMR)
 variable    = hydro_w    # variables to be output
 dt          = 0.1        # time increment between outputs
 ghost_zones = true
