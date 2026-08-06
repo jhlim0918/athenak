@@ -6,7 +6,7 @@ problem   = epicycle
 reference = 
 
 <job>
-basename  = epi_unif  # problem ID: basename of output filenames
+basename  = epi_ring  # problem ID: basename of output filenames
 
 <mesh>
 nghost    = 2         # Number of ghost cells
@@ -29,9 +29,21 @@ ix3_bc    = periodic  # Inner-X3 boundary condition flag
 ox3_bc    = periodic  # Outer-X3 boundary condition flag
 
 <meshblock>
-nx1       = 128       # Number of cells in each MeshBlock, X1-dir
+nx1       = 32       # 4 root MeshBlocks in X1: edges at -10,-5,0,5,10
 nx2       = 128       # Number of cells in each MeshBlock, X2-dir
 nx3       = 4         # Number of cells in each MeshBlock, X3-dir
+
+<mesh_refinement>
+refinement = static    # type of refinement
+
+<refined_region1>
+level = 1
+x1min = -5.0         # inner 2 of 4 X1 blocks; blocks touching the
+x1max = 5.0          # shear_periodic x1 boundaries stay at root level
+x2min = -10          # FULL x2 extent: annular ring so orbital advection
+x2max = 10           # only ever communicates same-level x2 neighbors
+x3min = -0.5          # full X3 extent -> no level jump along X3
+x3max = 0.5
 
 <time>
 evolution  = dynamic  # dynamic/kinematic/static
