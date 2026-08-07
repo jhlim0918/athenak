@@ -127,23 +127,19 @@ function _restrict2(a::Array{Float64,3})
 end
 
 # Assemble the full root-level grid (Nx1,Nx2,Nx3): root blocks placed directly,
-# level-1 blocks restricted by conservative 2x averaging. Levels >1 unsupported.
+# level-L blocks restricted by L applications of conservative 2x averaging.
 function assemble_root(fd::BinFileData, var::AbstractString)
     out = fill(NaN, fd.Nx1, fd.Nx2, fd.Nx3)
     m1, m2, m3 = fd.nx_mb
     for m in 1:fd.n_mbs
         lx1, lx2, lx3, lev = fd.mb_logical[m, :]
-        blk = fd.mb_data[var][m]
-        if lev == 0
-            i0, j0, k0 = lx1*m1, lx2*m2, lx3*m3
-            out[i0+1:i0+m1, j0+1:j0+m2, k0+1:k0+m3] = blk
-        elseif lev == 1
-            r = _restrict2(blk)
-            i0, j0, k0 = lx1*m1÷2, lx2*m2÷2, lx3*m3÷2
-            out[i0+1:i0+m1÷2, j0+1:j0+m2÷2, k0+1:k0+m3÷2] = r
-        else
-            error("assemble_root only supports levels 0 and 1 (got $lev)")
+        r = fd.mb_data[var][m]
+        for _ in 1:lev
+            r = _restrict2(r)
         end
+        s = 1 << lev
+        i0, j0, k0 = lx1*m1÷s, lx2*m2÷s, lx3*m3÷s
+        out[i0+1:i0+m1÷s, j0+1:j0+m2÷s, k0+1:k0+m3÷s] = r
     end
     any(isnan, out) && error("gaps in assembled root grid")
     return out

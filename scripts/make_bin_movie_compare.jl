@@ -74,10 +74,9 @@ end
 function panel_header(run::RunFrames)
     fd = run.fd0
     nb = (fd.Nx1 ÷ fd.nx_mb[1], fd.Nx2 ÷ fd.nx_mb[2])
-    nfine = count(==(1), fd.mb_logical[:, 4])
-    "$(run.label)\nMeshBlock $(fd.nx_mb[1])x$(fd.nx_mb[2])x$(fd.nx_mb[3]) " *
-    "($(nb[1])x$(nb[2]) root" *
-    (nfine > 0 ? " + $nfine level-1 blocks)" : " blocks)")
+    levs = sort(unique(fd.mb_logical[:, 4]))
+    per = join(["$(count(==(l), fd.mb_logical[:, 4])) lev-$l" for l in levs], " + ")
+    "$(run.label)\nMeshBlock $(fd.nx_mb[1])x$(fd.nx_mb[2])x$(fd.nx_mb[3]) blocks: $per"
 end
 
 function setup_panel!(fig, col, run::RunFrames, frame_obs, vmin, vmax, title_obs)
@@ -88,9 +87,10 @@ function setup_panel!(fig, col, run::RunFrames, frame_obs, vmin, vmax, title_obs
     x2edges = range(fd.x2min, fd.x2max, length=fd.Nx2+1)
     hm = heatmap!(ax, x1edges, x2edges, frame_obs,
                    colormap=:RdBu, colorrange=(vmin, vmax))
+    lev_colors = ((:gray30, 0.6), (:limegreen, 0.9), (:darkorange, 0.9), (:red, 0.9))
     for (rect, lev) in block_outlines(fd)
         r1min, r1max, r2min, r2max = rect
-        color = lev == 0 ? (:gray30, 0.6) : (:limegreen, 0.9)
+        color = lev_colors[min(lev, 3) + 1]
         lines!(ax, [r1min, r1max, r1max, r1min, r1min],
                 [r2min, r2min, r2max, r2max, r2min],
                 color=color, linewidth=lev == 0 ? 0.8 : 1.2)

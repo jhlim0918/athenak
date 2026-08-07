@@ -1,0 +1,147 @@
+# TEST INPUT: TWO-LEVEL refinement touching the shear-periodic x1 boundaries:
+# both boundary faces uniformly at LEVEL 2 (uniform-boundary-level policy), level-1
+# buffer rings inboard (2:1 nesting), interior at root. Orbital advection on.
+#
+# TEST INPUT: refined x1 BOUNDARY faces in a shearing box, with orbital advection.
+# BOTH shear-periodic x1 boundary columns are refined to level 1 over the full x2/x3
+# extent (uniform-boundary-level policy): the shear-periodic wrap is then a same-level
+# exchange and the per-face azimuthal redistribution operates among level-1 blocks.
+# The interior stays at root. Compare against the uniform and interior-ring runs.
+#
+# TEST INPUT: orbital advection (FARGO) + SMR under the ANNULAR refinement policy.
+# Same as hydro_incompress_shwave_smr.athinput but the level-1 refined region spans the
+# FULL x2 (azimuthal) extent, forming a ring interior in x1. Every x2-face neighbor is
+# then at the same level, so the per-level y-shift communication works unchanged.
+# Compare against: (a) the same run with orbital_advection=false, and (b) uniform grid.
+#
+# AthenaK input file for hydro incompressible shwave test (JG05) with SMR
+# NOTE: this copy has been edited to fold in the CLI override used at launch:
+#   shearing_box/orbital_advection=false
+
+# Use with shwave.cpp problem generator
+#
+# TEST INPUT: exercises static mesh refinement in a shearing box.
+# Same as the default hydro_incompress_shwave.athinput (64x64x4, 3D), but
+# with 16x16x4 MeshBlocks (4x4x1 root blocks) and a level-1 refined region
+# covering the interior [-0.125,0.125]^2 in x1-x2 (full x3 extent). The
+# region boundary coincides exactly with root MeshBlock edges, so only the
+# inner 2x2 column of blocks refines; every block touching the ix1/ox1
+# shear_periodic boundaries (and the x2 boundaries) stays at root level,
+# per the FindTargetMB / shearing_box_cc.cpp / orbital_advection_cc.cpp
+# assumption that all MeshBlocks along the shear boundary share one level.
+#
+# nghost=4 (not the default 3): SMR/AMR requires an even number of ghost
+# zones (see error check in src/mesh/mesh.cpp).
+#
+# Note: ipert=2 does not enroll the ShwaveHistory user-history function (only
+# ipert=3/4 do), so validate via the generic .hst output and vtk snapshots
+# rather than a dVyc growth-curve diagnostic.
+
+<comment>
+problem   = incompressible (vortical) hydro shwave of JG05, with SMR
+reference =
+
+<job>
+basename  = shwave2_smr_bndry2    # problem ID: basename of output filenames
+
+<mesh>
+nghost    = 4         # Number of ghost cells (must be even with SMR)
+nx1       = 64        # Number of zones in X1-direction
+x1min     = -0.25     # minimum value of X1
+x1max     = 0.25      # maximum value of X1
+ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
+ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
+
+nx2       = 64        # Number of zones in X2-direction
+x2min     = -0.25     # minimum value of X2
+x2max     = 0.25      # maximum value of X2
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 4         # Number of zones in X3-direction
+x3min     = -0.25     # minimum value of X3
+x3max     = 0.25      # maximum value of X3
+ix3_bc    = periodic  # Inner-X3 boundary condition flag
+ox3_bc    = periodic  # Outer-X3 boundary condition flag
+
+<meshblock>
+nx1       = 16        # 4 root MeshBlocks in X1: edges at -0.25,-0.125,0,0.125,0.25
+nx2       = 16        # 4 root MeshBlocks in X2: edges at -0.25,-0.125,0,0.125,0.25
+nx3       = 4         # single root MeshBlock in X3
+
+<mesh_refinement>
+refinement = static    # type of refinement
+
+<refined_region1>
+level = 2
+x1min = -0.25          # inner boundary annulus at LEVEL 2
+x1max = -0.19          # (snaps to level-2 columns lx1=0,1)
+x2min = -0.25
+x2max = 0.25
+x3min = -0.25
+x3max = 0.25
+
+<refined_region2>
+level = 1
+x1min = -0.19          # level-1 buffer ring inboard of the level-2 boundary annulus
+x1max = -0.13
+x2min = -0.25
+x2max = 0.25
+x3min = -0.25
+x3max = 0.25
+
+<refined_region3>
+level = 2
+x1min = 0.19           # outer boundary annulus at LEVEL 2: both x1 faces then share
+x1max = 0.25           # one uniform level (=2)
+x2min = -0.25
+x2max = 0.25
+x3min = -0.25
+x3max = 0.25
+
+<refined_region4>
+level = 1
+x1min = 0.13           # level-1 buffer ring inboard of the outer level-2 annulus
+x1max = 0.19
+x2min = -0.25
+x2max = 0.25
+x3min = -0.25
+x3max = 0.25
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integration algorithm
+cfl_number = 0.3      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = -1       # cycle limit
+tlim       = 5.0      # time limit
+ndiag      = 1        # cycles between diagostic output
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true    # per-level FARGO on the annular refined ring
+
+<hydro>
+eos             = isothermal   # EOS type
+reconstruct     = ppmx         # spatial reconstruction method
+rsolver         = hlle         # Riemann-solver to be used
+iso_sound_speed = 1.0          # isothermal sound speed
+
+<problem>
+pgen_name = shwave  # problem generator name
+ipert     = 2       # incompressible shwave test
+d0        = 1.0     # background density
+amp       = 1.0e-4  # amplitude of wave in units of sound speed
+nwx       = -8      # number of wavelengths in x-direction
+nwy       = 2       # number of wavelengths in y-direction
+nwz       = 0       # number of wavelengths in z-direction
+
+<output1>
+file_type   = hst      # History data dump
+dt          = 0.1      # time increment between outputs
+data_format = %12.5e   # Optional data format string
+
+<output2>
+file_type   = bin        # Binary data dump (vtk does not support SMR/AMR)
+variable    = hydro_w    # variables to be output
+dt          = 0.1        # time increment between outputs

@@ -386,6 +386,20 @@ annuli (\code{make\_bin\_movie\_compare.jl}) shows the sheared wave crossing the
 refined boundary with no visible artifacts. The single-face guard aborts with a
 message naming the level span.
 
+\subsection{Two-level refinement (levels 1 and 2)}
+Both policies recurse in level, so nothing new is required for deeper hierarchies ---
+verified with two configurations at levels 1$+$2 (8 root $+$ 32 level-1 $+$ 256
+level-2 blocks each, FARGO on): nested interior rings
+(\code{hydro\_incompress\_shwave\_smr\_ring2.athinput}) and level-2 boundary
+annuli with level-1 buffer rings inboard
+(\code{hydro\_incompress\_shwave\_smr\_bndry2.athinput}). The epicycle matches
+the analytic solution to $5.0\times10^{-6}$ on both meshes and the two runs are
+\emph{bit-identical} to each other; the vortical shwave conserves mass exactly and
+agrees with the uniform run at truncation level (4.5\% and 5.2\% in $x$-KE; 0.45\%
+between the two-level and one-level rings). The three-panel density movie
+(uniform~$|$~nested rings~$|$~two-level boundary annuli) shows no artifacts at any
+level interface or at the refined shear boundary.
+
 \subsection{The endurance test: epicycles for 20 orbits}
 \label{sec:t_epi}
 The \code{ipert=1} epicycle has spatially uniform $v_x(t)$, $v'_y(t)$: an exact
@@ -450,6 +464,9 @@ Ring + FARGO: mass conservation & max drift & exact (0.0) \\
 Shwave: ring-FARGO vs ring-non-FARGO & $x$-KE & 3.8\% \\
 Epicycle, 20 orbits, ring + FARGO & amplitude drift / invariant & $0.008\%$ / flat to $10^{-4}$ \\
 Epicycle, 20 orbits, boundary annuli & vs ring run, all columns & bit-identical (0.0) \\
+Two-level (1$+$2) rings / bndry annuli & epicycle vs analytic; ring2 vs bndry2 &
+  $5\times10^{-6}$; bit-identical \\
+Two-level shwave (both configs) & mass / $x$-KE vs uniform & exact / 4.5--5.2\% \\
 Boundary annuli + FARGO: epicycle & max rel.\ vs analytic & $5\times10^{-6}$ (= uniform) \\
 Boundary annuli + FARGO: shwave & mass / $x$-KE vs uniform & exact / 4.9\% \\
 Mixed-level $x_1$ boundary & --- & fatal, names the level span \\
