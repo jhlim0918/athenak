@@ -1,0 +1,26 @@
+\contentsline {section}{\numberline {1}Plan and scope}{2}{section.1}%
+\contentsline {subsection}{\numberline {1.1}Goal and roadmap}{2}{subsection.1.1}%
+\contentsline {subsection}{\numberline {1.2}Phase-0 scope and restrictions}{3}{subsection.1.2}%
+\contentsline {section}{\numberline {2}Numerical method}{3}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Two frames for the shearing box}{3}{subsection.2.1}%
+\contentsline {paragraph}{FARGO frame (\texttt {orbital\_advection = true}, default).}{3}{section*.2}%
+\contentsline {paragraph}{Full-velocity frame (\texttt {orbital\_advection = false}).}{3}{section*.3}%
+\contentsline {subsection}{\numberline {2.2}Orbital advection and its refinement problem}{4}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Refinement policies}{4}{subsection.2.3}%
+\contentsline {paragraph}{Uniform-boundary-level policy (always).}{4}{section*.4}%
+\contentsline {paragraph}{Annular policy (when FARGO is on).}{5}{section*.5}%
+\contentsline {paragraph}{Buffer-depth safety.}{5}{section*.6}%
+\contentsline {section}{\numberline {3}What was built}{5}{section.3}%
+\contentsline {section}{\numberline {4}Building and compiling}{6}{section.4}%
+\contentsline {section}{\numberline {5}Tests and results}{6}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Frame consistency: FARGO vs.\ full-velocity, uniform grid}{6}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Refinement without FARGO (Phase 0a)}{7}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Guard checks (must abort)}{7}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}FARGO on an annular ring (Phase 0b)}{7}{subsection.5.4}%
+\contentsline {subsection}{\numberline {5.5}Refined $x_1$ boundary faces}{7}{subsection.5.5}%
+\contentsline {subsection}{\numberline {5.6}Two-level refinement (levels 1 and 2)}{8}{subsection.5.6}%
+\contentsline {subsection}{\numberline {5.7}The endurance test: epicycles for 20 orbits}{8}{subsection.5.7}%
+\contentsline {subsection}{\numberline {5.8}AMR in the shearing box (Phase 0c)}{9}{subsection.5.8}%
+\contentsline {subsubsection}{\numberline {5.8.1}Dynamic ring creation and destruction: the moving-ring criterion}{10}{subsubsection.5.8.1}%
+\contentsline {subsubsection}{\numberline {5.8.2}Wave structure through a moving refinement boundary}{10}{subsubsection.5.8.2}%
+\contentsline {subsection}{\numberline {5.9}Summary}{11}{subsection.5.9}%

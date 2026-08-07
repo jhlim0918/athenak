@@ -16,7 +16,7 @@
 \title{Multigrid Self-Gravity in the AthenaK Shearing Box:\\
        I.\ Mesh-Refinement Infrastructure (Phase 0)}
 \author{\code{athenak-multigrid} tree, branch \code{multigrid}}
-\date{August 6, 2026}
+\date{August 7, 2026}
 
 \begin{document}
 \maketitle
@@ -28,13 +28,22 @@ to gas + dust self-gravity in AthenaK shearing boxes \emph{with mesh refinement}
 records Phase 0 --- the shearing-box/refinement infrastructure every later phase rests
 on: (i) an \code{orbital\_advection} toggle with a fully consistent non-FARGO
 (full-velocity) mode; (ii) an enforced \emph{interior-$x_1$} refinement policy replacing
-AthenaK's blanket shearing-box+refinement prohibition; and (iii) orbital advection
+AthenaK's blanket shearing-box+refinement prohibition; (iii) orbital advection
 (FARGO) on refined meshes under an \emph{annular} refinement policy (refined regions
-span the full azimuthal extent). Validation: a refined-ring run reproduces a reference
+span the full azimuthal extent); and (iv) \emph{adaptive} refinement (Phase 0c): the
+shear-boundary communication state is rebuilt after every AMR update, a graded
+refinement cap keeps $2{:}1$ balancing from ever refining the shear-periodic boundary
+columns, and an upstream derefinement-ordering bug that split annular rings is fixed.
+Validation: a refined-ring run reproduces a reference
 SMR run bit-for-bit in non-FARGO mode; with FARGO on the ring, mass is conserved
 exactly and a 20-orbit epicycle test tracks the analytic solution with an amplitude
 drift of only $0.008\%$ (versus $0.064\%$ on the uniform grid), with the epicyclic
-amplitude invariant flat to $10^{-4}$. The companion document
+amplitude invariant flat to $10^{-4}$. Under AMR, a prescribed moving ring that is
+created and destroyed every orbit for 20 orbits ($2296$ MeshBlocks created, $2240$
+destroyed) conserves mass exactly and matches the static-ring run an order of
+magnitude more closely than either matches the uniform grid; on the vortical-shwave
+problem the moving-ring solution converges to the static-ring one
+($4.7\times10^{-2}$ apart at $64^2$, $1.8\times10^{-4}$ at $128^2$). The companion document
 \code{fft\_selfgravity\_validation.pdf} covers the FFT solver used as the
 machine-precision oracle throughout this program; a Julia notebook
 (\code{multigrid\_validation\_tests.ipynb}) reproduces every test here.
@@ -64,6 +73,9 @@ The phases of the multigrid track:
         infrastructure. 0a: an \code{orbital\_advection} on/off toggle with a
         consistent full-velocity (non-FARGO) mode, and the interior-$x_1$ refinement
         policy. 0b: FARGO on refined meshes under the annular refinement policy.
+        0c: adaptive refinement --- dynamic creation and destruction of refined
+        rings, without gravity, isolating the mesh machinery from the solver
+        before Phase 2 couples them.
         Without 0b, refined shearing boxes pay a timestep penalty of
         $\sim(c_s + q\Omega L_x/2)/c_s \approx 10$--$30$ for gravito-turbulence boxes.
   \item \textbf{Phase 1:} shear-periodic boundary conditions in the multigrid driver
@@ -93,15 +105,19 @@ What works after Phase 0, all enforced by fatal errors rather than conventions:
         full $x_2$ (azimuthal) extent --- \emph{annular rings} (interior, or boundary
         annuli as above). Without FARGO (\code{orbital\_advection=false}) arbitrary
         refinement shapes are allowed subject only to the boundary-level rule.
-  \item AMR flag handling that keeps rings intact (refine a ring if any member is
-        flagged, derefine only if all are) --- in place for Phase 0c, but AMR with a
-        shearing box is currently fatal-guarded: the shear-boundary GID lists
-        (\code{ShearingBox::x1bndry\_mbgid}) are built once at startup and go stale
-        when AMR renumbers MeshBlocks. Rebuilding them per AMR update is Phase 0c.
+  \item Adaptive mesh refinement (Phase 0c). The shear-boundary communication state
+        (\code{ShearingBox::x1bndry\_mbgid} GID lists, MPI request arrays, CC/FC
+        buffers) is rebuilt after every AMR update; AMR flag handling keeps rings
+        intact (refine a ring if any member is flagged, derefine only if all are)
+        and a \emph{graded cap} refuses any refinement whose $2{:}1$ balancing
+        would propagate into the shear-periodic boundary columns
+        (\S\ref{sec:t_amr}).
 \end{itemize}
-Not yet supported/exercised: AMR with a shearing box (above), MHD orbital advection
+Not yet supported/exercised: MHD orbital advection
 with refinement (the face-centered EMF remap at level interfaces needs a
-$\nabla\!\cdot\!B$ analysis; fatal-guarded), and a production-size demonstration of
+$\nabla\!\cdot\!B$ analysis; fatal-guarded), multi-rank (MPI) exercise of the AMR
+rebuild path (the code is rank-aware but all Phase 0c runs are serial), and a
+production-size demonstration of
 the FARGO speedup itself. SMR/AMR runs must write \code{bin} outputs --- the vtk
 writer does not support refined meshes.
 
@@ -234,6 +250,9 @@ with a diagnostic rather than silently corrupting data.
 Changes live in commits \code{e7ef37f2} (infrastructure) and \code{f1468da3}
 (bin outputs + docs); Phase 0a is ported from the \code{athenak} branch
 \code{test/shwave-smr}, with provenance kept in the input-file comments.
+Phase 0c adds commits \code{f0acd383} (derefinement-sort fix), \code{b5388c02}
+(AMR rebuild machinery, graded cap, moving-ring test), and \code{097a97ee}
+(vortical-shwave AMR test).
 
 \begin{center}
 \small
@@ -243,7 +262,10 @@ File (under \code{src/}) & Change \\
 \midrule
 \code{hydro/hydro.cpp}, \code{mhd/mhd.cpp} &
   \code{orbital\_advection} toggle; MHD+refinement fatal \\
-\code{shearing\_box/shearing\_box.\{hpp,cpp\}} & store the toggle \\
+\code{shearing\_box/shearing\_box.\{hpp,cpp\}} & store the toggle;
+  \code{SetX1BndryMBs} / \code{ReinitAfterMeshUpdate}: rebuild boundary GID lists,
+  MPI requests, and (via virtual \code{AllocateBuffers}, grow-only) CC/FC buffers
+  after every AMR update \\
 \code{shearing\_box/shearing\_box\_srcterms.cpp} &
   dual-frame source terms, Eqs.~\eqref{eq:fargo_src}--\eqref{eq:nofargo_src} \\
 \code{shearing\_box/shearing\_box\_cc.cpp} &
@@ -256,11 +278,15 @@ File (under \code{src/}) & Change \\
 \code{mesh/build\_tree.cpp} &
   \code{Mesh::CheckShearingBoxRefinement}: interior-$x_1$ and ring completeness \\
 \code{mesh/mesh\_refinement.\{hpp,cpp\}} &
-  boundary-block refinement veto; ring-wise AMR flag sync \\
+  boundary-block refinement veto $+$ graded cap, Eq.~\eqref{eq:gradedcap};
+  ring-wise AMR flag sync; \code{ReinitAfterMeshUpdate} calls after each update;
+  derefinement-sort end-iterator fix (upstream bug) \\
 \code{pgen/tests/shwave.cpp}, \code{swing.cpp} &
-  background shear in ICs when \code{orbital\_advection=false} \\
+  background shear in ICs when \code{orbital\_advection=false};
+  \code{MovingRingRefine} user AMR criterion (\code{amr\_moving\_ring}) \\
 \code{inputs/shearing\_box/} (repo root) &
-  \code{*\_smr*.athinput}, \code{epicycle*.athinput} test inputs (\code{bin} outputs) \\
+  \code{*\_smr*.athinput}, \code{epicycle*.athinput},
+  \code{*\_amr\_ring*.athinput} test inputs (\code{bin} outputs) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -449,6 +475,123 @@ the refined-mesh FARGO run is the one closer to the analytic solution. A defect 
 the ring communication would instead show as amplitude noise --- none is present at
 the $10^{-5}$ level.
 
+\subsection{AMR in the shearing box (Phase 0c)}
+\label{sec:t_amr}
+
+AMR renumbers MeshBlock GIDs and re-assigns blocks to ranks on every mesh update,
+so the shear-boundary communication state built at construction --- the
+\code{x1bndry\_mbgid} GID lists, the MPI request arrays sized to them, and the
+send/recv buffers --- goes stale. \code{ShearingBox::ReinitAfterMeshUpdate} now
+rebuilds all of it from the current MeshBlockPack, called from
+\code{AdaptiveMeshRefinement} after the post-update policy check and before any
+boundary exchange on the new mesh; the startup fatal guard is gone. Orbital
+advection needs no rebuild (its buffers are neighbor-indexed and sized to
+\code{max\_nmb\_per\_rank} from the start).
+
+Two defects surfaced by the multi-level tests, both now fixed, are worth recording.
+First, vetoing refinement of the boundary blocks themselves is not enough: a
+criterion refining blocks \emph{near} the boundary can force refinement \emph{of}
+the boundary columns through $2{:}1$ balancing. The veto is therefore extended to a
+\emph{graded cap}: a block at level $s \geq 1$ above the (uniform) boundary level
+may be refined only if there is room for the intermediate buffer columns between it
+and the boundary, which in integer logical coordinates at the block's own level reads
+\begin{equation}
+  2^{s+1} - 1 \;\le\; l_{x1} \;\le\; n_{\mathrm{mb},x1} - 2^{s+1}.
+  \label{eq:gradedcap}
+\end{equation}
+Any post-update policy violation is therefore a genuine bug rather than a criterion
+asking for too much. Second, an upstream AthenaK bug: the derefinement list was
+sorted with end iterator \code{\&cllderef[ctnd-1]}, which \emph{excludes the last
+element}. When a mixed-level derefinement left a fine-level parent in the unsorted
+last slot, coarser parents merging before it were vetoed by the tree's
+finer-neighbor check order-dependently --- some parents of an annulus merged and
+some did not, splitting what must be a ring-complete derefinement (the policy check
+caught it as a partial ring, e.g.\ 4 of 8 members). Outside the shearing box the bug
+merely delays some derefinements by one AMR interval, which is why it went
+unnoticed upstream.
+
+\subsubsection{Dynamic ring creation and destruction: the moving-ring criterion}
+The dynamic exercise uses a deterministic user AMR criterion
+(\code{MovingRingRefine} in the \code{shwave} pgen): refine every MeshBlock whose
+$x_1$ extent overlaps $[x_c(t)-w,\,x_c(t)+w]$ with
+$x_c(t) = x_{c0} + A\sin(ft)$, derefine all others. The criterion depends only on
+$x_1$, so it naturally flags complete rings; the ring-sync logic and the vetoes
+above do the rest. With $A$ chosen so the interval sweeps past the (vetoed)
+boundary columns, \emph{all} refined rings are destroyed near each turning point
+and re-created on the way back --- one full create/destroy cycle per
+$2\pi/f$.
+
+\begin{lstlisting}
+$ATH -i inputs/shearing_box/epicycle_amr_ring.athinput          # 20 orbits, 1 level
+$ATH -i inputs/shearing_box/epicycle_amr_ring2.athinput         # 2 orbits, 2 levels
+$ATH -i inputs/shearing_box/epicycle_amr_ring_nofargo.athinput  # 2 orbits, non-FARGO
+\end{lstlisting}
+
+The 20-orbit epicycle run ($x_c = 7\sin t$, $w = 1.9$, one sweep per orbit)
+creates 2296 and destroys 2240 MeshBlocks (Fig.~\ref{fig:amr}, left); the counts
+and all history columns are bit-reproducible across reruns. Mass drift is exactly
+zero. The epicyclic amplitude invariant of \S\ref{sec:t_epi} drifts by $+0.015\%$
+over 20 orbits, between the static ring ($+0.008\%$) and the uniform grid
+($+0.064\%$), and the time-matched $x$-KE history differs from the
+\emph{static}-ring run by at most
+$2.6\times10^{-3}$ of the peak --- an order of magnitude closer than either run is
+to the uniform grid ($2.4\times10^{-2}$): the dynamic regridding adds essentially
+nothing beyond the static refined-boundary truncation already characterized in
+\S\ref{sec:t_epi}. The two-level variant (nested moving rings, $16\!-\!296$ blocks,
+graded per Eq.~\eqref{eq:gradedcap}) drifts by $0$ to six digits over 2 orbits;
+the non-FARGO variant exercises the momentum-offset boundary path with exact mass
+conservation. Two-panel movies with per-frame mesh outlines
+(\code{dens\_compare\_epi\_unif\_vs\_epi\_amr\{,2\}.mp4}) show the rings sweeping,
+collapsing, and re-forming with no visible artifacts.
+
+\subsubsection{Wave structure through a moving refinement boundary}
+The epicycle is spatially uniform, so it never exercises prolongation/restriction
+on real structure. The vortical-shwave AMR test
+(\code{hydro\_incompress\_shwave\_amr\_ring.athinput}) runs the JG05 problem of
+\S\ref{sec:t_nofargo} under a moving ring ($x_c = 0.2\sin t$, $w = 0.05$), so wave
+structure is prolonged, restricted, and shear-remapped across every regrid event,
+including full ring destruction near the turning points at $64^2$:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+resolution & peak $x$-KE err.\ (static ring) & peak $x$-KE err.\ (moving ring)
+  & AMR vs.\ static ring & mass drift \\
+\midrule
+$64^2$  & $-4.05\%$ & $-8.55\%$ & $4.7\times10^{-2}$ & $0.0$ \\
+$128^2$ & $-0.29\%$ & $-0.27\%$ & $1.8\times10^{-4}$ & $0.0$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent (errors vs.\ the same-resolution uniform run; curve maxima relative to
+the peak $x$-KE; the $128^2$ runs use CLI overrides \code{mesh/nx1=128
+mesh/nx2=128}). The swing peak lands at $t = 2.70$ in every run (theory: $2.67$).
+At $64^2$ the moving ring roughly doubles the static-ring truncation --- there the
+ring covers only $\sim1.6$ wavelengths of the $|n_{wx}|=8$ mode and full ring
+destruction repeatedly restricts fine data mid-swing. At $128^2$ the moving-ring
+and static-ring solutions are indistinguishable ($1.8\times10^{-4}$,
+Fig.~\ref{fig:amr}, right): the regridding cost converges away \emph{at least} as
+fast as the static refined-boundary error, with no floor. (The apparent order is
+inflated by geometry --- at $128^2$ the same physical criterion keeps a relatively
+tighter ring that never fully vanishes --- so this is a convergence statement, not
+an order measurement.)
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=0.98\textwidth]{figures/mg_amr_ring.png}
+  \caption{Phase 0c. Left: MeshBlock count (blue, left axis) in the 20-orbit
+  moving-ring epicycle AMR run, with the prescribed ring center $x_c(t) = 7\sin t$
+  (orange, right axis; dashed lines mark the vetoed boundary columns beyond
+  $|x_1| = 5$). Rings are destroyed near every turning point and re-created on the
+  way back, 2296 blocks created / 2240 destroyed in total. Right: $x$-KE history of
+  the $128^2$ vortical shwave through the swing --- uniform, static SMR ring, and
+  moving-ring AMR are visually indistinguishable (moving vs.\ static ring:
+  $1.8\times10^{-4}$ of peak).}
+  \label{fig:amr}
+\end{figure}
+
 \subsection{Summary}
 \begin{center}
 \small
@@ -471,6 +614,13 @@ Boundary annuli + FARGO: epicycle & max rel.\ vs analytic & $5\times10^{-6}$ (= 
 Boundary annuli + FARGO: shwave & mass / $x$-KE vs uniform & exact / 4.9\% \\
 Mixed-level $x_1$ boundary & --- & fatal, names the level span \\
 Partial-$x_2$ ring with FARGO & --- & fatal, names the ring \\
+\midrule
+AMR epicycle, 20 orbits (2296 MBs created) & mass / invariant drift & exact / $+0.015\%$ \\
+AMR epicycle vs static ring & time-matched $x$-KE / peak & $2.6\times10^{-3}$ (vs $2.4\times10^{-2}$ to uniform) \\
+AMR epicycle, two-level nested rings & amp.\ drift, 2 orbits & $0$ to six digits \\
+AMR epicycle, non-FARGO & mass & exact \\
+AMR shwave vs static ring, $64^2 \to 128^2$ & curve max rel.\ diff & $4.7\times10^{-2} \to 1.8\times10^{-4}$ \\
+AMR determinism & reruns, all counts/columns & bit-reproducible \\
 \bottomrule
 \end{tabular}
 \end{center}
