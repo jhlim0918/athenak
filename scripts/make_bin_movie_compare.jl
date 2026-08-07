@@ -16,9 +16,11 @@ include(joinpath(@__DIR__, "athenak_bin.jl"))
 
 struct RunFrames
     label::String
-    fd0::BinFileData                 # first dump (for geometry/outlines)
+    fd0::BinFileData                 # first dump (for domain geometry)
     frames::Vector{Matrix{Float64}}
     times::Vector{Float64}
+    # per-frame MeshBlock outlines (AMR changes the mesh between dumps)
+    outlines::Vector{Vector{Tuple{NTuple{4,Float64},Int}}}
 end
 
 "Split a run spec `<dir>` or `<dir>:<basename>` into (dir, basename-or-nothing)."
@@ -59,27 +61,45 @@ function load_run(run_dir, field; basename_sel=nothing)
     files = filter(f -> fam(f) == only(good), all_files)
     frames = Matrix{Float64}[]
     times = Float64[]
+    outlines = Vector{Tuple{NTuple{4,Float64},Int}}[]
     fd0 = read_bin(files[1])
     for f in files
         fd = read_bin(f)
         img, _, _ = assemble_root_slice(fd, field)
         push!(frames, img)
         push!(times, fd.time)
+        push!(outlines, block_outlines(fd))
     end
     label = basename_sel === nothing ? basename(rstrip(run_dir, '/')) : basename_sel
-    return RunFrames(label, fd0, frames, times)
+    return RunFrames(label, fd0, frames, times, outlines)
 end
 
-"Static part of a panel title: run label + MeshBlock layout."
-function panel_header(run::RunFrames)
+"Per-frame part of a panel title: run label + MeshBlock layout of frame i."
+function panel_header(run::RunFrames, i)
     fd = run.fd0
-    nb = (fd.Nx1 ÷ fd.nx_mb[1], fd.Nx2 ÷ fd.nx_mb[2])
-    levs = sort(unique(fd.mb_logical[:, 4]))
-    per = join(["$(count(==(l), fd.mb_logical[:, 4])) lev-$l" for l in levs], " + ")
+    levs_i = [lev for (_, lev) in run.outlines[i]]
+    levs = sort(unique(levs_i))
+    per = join(["$(count(==(l), levs_i)) lev-$l" for l in levs], " + ")
     "$(run.label)\nMeshBlock $(fd.nx_mb[1])x$(fd.nx_mb[2])x$(fd.nx_mb[3]) blocks: $per"
 end
 
-function setup_panel!(fig, col, run::RunFrames, frame_obs, vmin, vmax, title_obs)
+const LEV_COLORS = ((:gray30, 0.6), (:limegreen, 0.9), (:darkorange, 0.9), (:red, 0.9))
+const MAXLEV_DRAWN = length(LEV_COLORS) - 1
+
+"NaN-separated outline vertices of frame i for each drawn level."
+function outline_segments(run::RunFrames, i)
+    segs = [Point2f[] for _ in 0:MAXLEV_DRAWN]
+    for (rect, lev) in run.outlines[i]
+        r1min, r1max, r2min, r2max = rect
+        v = segs[min(lev, MAXLEV_DRAWN) + 1]
+        push!(v, Point2f(r1min, r2min), Point2f(r1max, r2min), Point2f(r1max, r2max),
+                 Point2f(r1min, r2max), Point2f(r1min, r2min), Point2f(NaN, NaN))
+    end
+    return segs
+end
+
+function setup_panel!(fig, col, run::RunFrames, frame_obs, seg_obs, vmin, vmax,
+                      title_obs)
     fd = run.fd0
     ax = Axis(fig[1, col], xlabel="x1", ylabel="x2", aspect=DataAspect(),
               title=title_obs, titlesize=12)
@@ -87,13 +107,9 @@ function setup_panel!(fig, col, run::RunFrames, frame_obs, vmin, vmax, title_obs
     x2edges = range(fd.x2min, fd.x2max, length=fd.Nx2+1)
     hm = heatmap!(ax, x1edges, x2edges, frame_obs,
                    colormap=:RdBu, colorrange=(vmin, vmax))
-    lev_colors = ((:gray30, 0.6), (:limegreen, 0.9), (:darkorange, 0.9), (:red, 0.9))
-    for (rect, lev) in block_outlines(fd)
-        r1min, r1max, r2min, r2max = rect
-        color = lev_colors[min(lev, 3) + 1]
-        lines!(ax, [r1min, r1max, r1max, r1min, r1min],
-                [r2min, r2min, r2max, r2max, r2min],
-                color=color, linewidth=lev == 0 ? 0.8 : 1.2)
+    for l in 0:MAXLEV_DRAWN
+        lines!(ax, seg_obs[l+1], color=LEV_COLORS[l+1],
+               linewidth=(l == 0 ? 0.8 : 1.2))
     end
     return hm
 end
@@ -123,19 +139,22 @@ function main()
     # robust shared color scale, set from the *first* run (the reference): a broken
     # run can blow up by orders of magnitude and would otherwise flatten every panel
     mid = mean(runs[1].frames[1])
+    # floor the half-width relative to the field magnitude: a field that is uniform to
+    # roundoff (e.g. epicycle density) otherwise degenerates to cmin == cmax in Float32
     halfw = max(quantile(abs.(reduce(vcat, vec.(runs[1].frames[1:nframes])) .- mid),
-                         0.995), 1e-10)
+                         0.995), 1e-6*abs(mid), 1e-10)
     vmin, vmax = mid - halfw, mid + halfw
 
     fig = Figure(size=(360 + 390*n, 640))
     obs = [Observable(r.frames[1]) for r in runs]
+    segs = [[Observable(s) for s in outline_segments(r, 1)] for r in runs]
     # per-frame data range in each title: a panel that saturates the shared color
     # scale (e.g. a run corrupted by an unsupported configuration) still reports
     # how far out of range it actually is
-    titles = [Observable(panel_header(r)) for r in runs]
+    titles = [Observable(panel_header(r, 1)) for r in runs]
     hm = nothing
     for (i, r) in enumerate(runs)
-        h = setup_panel!(fig, i, r, obs[i], vmin, vmax, titles[i])
+        h = setup_panel!(fig, i, r, obs[i], segs[i], vmin, vmax, titles[i])
         i == 1 && (hm = h)
     end
     Colorbar(fig[1, n+1], hm, label=field)
@@ -151,9 +170,12 @@ function main()
     record(fig, out_path, 1:nframes; framerate=15) do i
         for (k, r) in enumerate(runs)
             obs[k][] = r.frames[i]
+            for (l, s) in enumerate(outline_segments(r, i))
+                segs[k][l][] = s
+            end
             lo, hi = extrema(r.frames[i])
             oos = (lo < vmin - 1e-30) || (hi > vmax + 1e-30)   # off the shared scale
-            titles[k][] = panel_header(r) *
+            titles[k][] = panel_header(r, i) *
                 "\nrange: [" * string(round(lo, sigdigits=5)) * ", " *
                 string(round(hi, sigdigits=5)) * "]" * (oos ? "  ** OFF SCALE **" : "")
         end
