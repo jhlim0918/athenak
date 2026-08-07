@@ -33,6 +33,7 @@
 #include "coordinates/adm.hpp"
 #include "z4c/z4c.hpp"
 #include "z4c/z4c_amr.hpp"
+#include "shearing_box/shearing_box.hpp"
 #include "prolongation.hpp"
 #include "restriction.hpp"
 
@@ -163,6 +164,24 @@ void MeshRefinement::AdaptiveMeshRefinement(Driver *pdriver, ParameterInput *pin
     pmy_mesh->MarkMeshUpdated();
 
     MeshBlockPack *pmbp = pmy_mesh->pmb_pack;
+
+    // shearing box: AMR renumbered MeshBlock GIDs and re-assigned MBs to ranks, so the
+    // x1-boundary MB lists and communication buffers built at construction are stale.
+    // Rebuild them before any shear-periodic boundary exchange on the new mesh.
+    if (pmbp->phydro != nullptr) {
+      if (pmbp->phydro->psbox_u != nullptr) {
+        pmbp->phydro->psbox_u->ReinitAfterMeshUpdate();
+      }
+    }
+    if (pmbp->pmhd != nullptr) {
+      if (pmbp->pmhd->psbox_u != nullptr) {
+        pmbp->pmhd->psbox_u->ReinitAfterMeshUpdate();
+      }
+      if (pmbp->pmhd->psbox_b != nullptr) {
+        pmbp->pmhd->psbox_b->ReinitAfterMeshUpdate();
+      }
+    }
+
     pdriver->InitBoundaryValuesAndPrimitives(pmy_mesh);
 
     if (pmbp->phydro != nullptr) {
@@ -247,16 +266,40 @@ void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
     }
   }
   // Shearing box: never refine a MeshBlock touching the shear-periodic x1 boundaries
-  // (refined MBs must stay interior in x1; see Mesh::CheckShearingBoxRefinement).
-  // Note 2:1 balancing in UpdateMeshBlockTree can still propagate refinement toward
-  // the boundary; that case is caught fatally after the update.
+  // (refined MBs must stay interior in x1; see Mesh::CheckShearingBoxRefinement), and
+  // apply a graded cap so 2:1 balancing in UpdateMeshBlockTree can never propagate
+  // refinement into the boundary columns: a block refining to (relative) level
+  // lt = lev+1-blev above the (uniform) boundary level blev needs room for buffer
+  // columns of every intermediate level between it and the boundary, of total width
+  // (1 - 2^(1-lt)) boundary-level columns.  In integer logical coordinates at the
+  // block's own level (s = lev-blev >= 1) this reads
+  //     2^(s+1)-1 <= lx1 <= nmbx1 - 2^(s+1).
+  // Any violation caught by Mesh::CheckShearingBoxRefinement after the update is
+  // therefore a genuine bug, not a criterion asking for too much.
   if (shearing_box_) {
-    for (int m=0; m<nmb; ++m) {
-      int lev = pmy_mesh->lloc_eachmb[m+mbs].level;
+    // find the (uniform, by policy) level of MBs on the shear-periodic x1 boundaries
+    int blev = pmy_mesh->root_level;
+    for (int mm=0; mm<(pmy_mesh->nmb_total); ++mm) {
+      int lev = pmy_mesh->lloc_eachmb[mm].level;
       std::int32_t nmbx1 = (pmy_mesh->nmb_rootx1 << (lev - pmy_mesh->root_level));
-      if (pmy_mesh->lloc_eachmb[m+mbs].lx1 == 0 ||
-          pmy_mesh->lloc_eachmb[m+mbs].lx1 == (nmbx1-1)) {
-        if (refine_flag.h_view(m+mbs) > 0) {refine_flag.h_view(m+mbs) = 0;}
+      if (pmy_mesh->lloc_eachmb[mm].lx1 == 0 ||
+          pmy_mesh->lloc_eachmb[mm].lx1 == (nmbx1-1)) {
+        blev = lev;
+        break;
+      }
+    }
+    for (int m=0; m<nmb; ++m) {
+      if (refine_flag.h_view(m+mbs) <= 0) continue;
+      int lev = pmy_mesh->lloc_eachmb[m+mbs].level;
+      std::int32_t lx1 = pmy_mesh->lloc_eachmb[m+mbs].lx1;
+      std::int32_t nmbx1 = (pmy_mesh->nmb_rootx1 << (lev - pmy_mesh->root_level));
+      if (lx1 == 0 || lx1 == (nmbx1-1)) {         // MB on boundary: never refine
+        refine_flag.h_view(m+mbs) = 0;
+      } else if (lev >= (blev+1)) {               // graded cap on interior MBs
+        std::int32_t gap = (1 << ((lev-blev)+1));
+        if ((lx1 < (gap-1)) || (lx1 > (nmbx1-gap))) {
+          refine_flag.h_view(m+mbs) = 0;
+        }
       }
     }
   }

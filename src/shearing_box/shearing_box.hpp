@@ -85,8 +85,19 @@ class ShearingBox {
     }
     return -1;
   }
+  // rebuild x1-boundary MB lists and communication buffers after the mesh changes
+  // (AMR renumbers GIDs and re-assigns MBs to ranks on every update)
+  void ReinitAfterMeshUpdate();
 
  protected:
+  // build list of GIDs of MBs touching the shear-periodic x1 boundaries (and MPI
+  // request arrays sized to it) from the current MeshBlockPack; called by the
+  // constructor and again after every AMR mesh update
+  void SetX1BndryMBs();
+  // (re)allocate send/recv buffers sized to nmb_x1bndry; implemented by CC/FC
+  // derived classes since buffer shapes differ
+  virtual void AllocateBuffers() = 0;
+
   // must use pointer to MBPack and not parent physics module since parent can be one of
   // many types (Hydro, MHD, Radiation, etc.)
   MeshBlockPack *pmy_pack;
@@ -100,9 +111,11 @@ class ShearingBox {
 class ShearingBoxCC : public ShearingBox {
  public:
   ShearingBoxCC(MeshBlockPack *ppack, ParameterInput *pin, int nvar);
+  int nvar;   // number of CC variables communicated (needed to size buffers)
   // functions to communicate CC data with shearing box BCs
   TaskStatus PackAndSendCC(DvceArray5D<Real> &a, ReconstructionMethod rcon);
   TaskStatus RecvAndUnpackCC(DvceArray5D<Real> &a);
+  void AllocateBuffers() override;
   // shearing box source terms for Hydro CC variables
   void SourceTermsCC(const DvceArray5D<Real> &w0, const EOS_Data &eos_data,
                      const Real bdt, DvceArray5D<Real> &u0);
@@ -122,6 +135,7 @@ class ShearingBoxFC : public ShearingBox {
   // functions to communicate CC data with shearing box BCs
   TaskStatus PackAndSendFC(DvceFaceFld4D<Real> &b, ReconstructionMethod rcon);
   TaskStatus RecvAndUnpackFC(DvceFaceFld4D<Real> &b);
+  void AllocateBuffers() override;
   // shearing box source terms for FC variables
   void SourceTermsFC(const DvceFaceFld4D<Real> &b0, DvceEdgeFld4D<Real> &efld);
 };

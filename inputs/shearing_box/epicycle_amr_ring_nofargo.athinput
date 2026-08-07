@@ -1,0 +1,94 @@
+# AthenaK input file for epicyclic motion test with ADAPTIVE mesh refinement.
+# Use with shwave.cpp problem generator.
+#
+# A prescribed moving ring (user AMR criterion in shwave.cpp) sweeps back and
+# forth in x1: xc(t) = ring_xamp*sin(ring_freq*t).  Blocks overlapping
+# [xc-ring_hwidth, xc+ring_hwidth] refine to level 1 (in complete x2-rings,
+# enforced by the shearing-box ring-sync policy); all others derefine.  Near the
+# turning points |xc| > 6.9 the interval overlaps only the vetoed x1-boundary
+# columns, so ALL refined rings are destroyed, then re-created on the way back:
+# one full creation/destruction cycle per (2*pi/ring_freq) time interval.
+
+<comment>
+problem   = epicycle with AMR (moving refined ring)
+reference =
+
+<job>
+basename  = epi_amr_nofargo   # problem ID: basename of output filenames
+
+<mesh>
+nghost    = 2         # Number of ghost cells
+nx1       = 128       # Number of zones in X1-direction
+x1min     = -10.0     # minimum value of X1
+x1max     = 10.0      # maximum value of X1
+ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
+ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
+
+nx2       = 128       # Number of zones in X2-direction
+x2min     = -10.0     # minimum value of X2
+x2max     = 10.0      # maximum value of X2
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 4         # Number of zones in X3-direction
+x3min     = -0.5      # minimum value of X3
+x3max     = 0.5       # maximum value of X3
+ix3_bc    = periodic  # Inner-X3 boundary condition flag
+ox3_bc    = periodic  # Outer-X3 boundary condition flag
+
+<meshblock>
+nx1       = 32        # 4 root MeshBlocks in X1: edges at -10,-5,0,5,10
+nx2       = 32        # 4 root MeshBlocks in X2
+nx3       = 4         # single root MeshBlock in X3
+
+<mesh_refinement>
+refinement = adaptive          # type of refinement
+num_levels = 2                 # root + 1 refined level
+refinement_interval = 5        # min cycles between (de)refinement of same MB
+max_nmb_per_rank = 128         # worst case: 8 root + 2 refined columns (64) = 72
+
+<amr_criterion1>
+method = user                  # MovingRingRefine enrolled by shwave pgen
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integration algorithm
+cfl_number = 0.3      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = -1       # cycle limit
+tlim       = 12.566370614359172   # time limit (2 orbits = 4\pi)
+ndiag      = 1        # cycles between diagostic output
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = false   # non-FARGO: test momentum-offset shear BCs under AMR
+
+<hydro>
+eos          = ideal   # EOS type
+reconstruct  = plm     # spatial reconstruction method
+rsolver      = hllc    # Riemann-solver to be used
+gamma        = 1.6666666666666667 # gamma = C_p/C_v
+
+<problem>
+pgen_name    = shwave  # problem generator name
+ipert        = 1       # epicycle test
+d0           = 1.0     # background density
+amp          = 0.1     # amplitude of wave in units of sound speed
+nwx          = 1       # number of wavelengths in x-direction
+nwy          = 1       # number of wavelengths in y-direction
+nwz          = 1       # number of wavelengths in z-direction
+amr_moving_ring = true # enroll prescribed moving-ring AMR criterion
+ring_xc0     = 0.0     # ring center at t=0
+ring_xamp    = 7.0     # ring sweeps xc(t) = 7*sin(t): past the interior columns
+ring_freq    = 1.0     # = kappa (= Omega for q=1.5): one sweep per orbit
+ring_hwidth  = 1.9     # half-width: 1-2 interior columns refined; none at |xc|>6.9
+
+<output1>
+file_type   = hst      # History data dump
+dt          = 0.628      # time increment between outputs (about 0.1 orbits)
+data_format = %12.5e   # Optional data format string
+
+<output2>
+file_type   = bin        # Binary data dump
+variable    = hydro_w    # variables to be output
+dt          = 0.628        # time increment between outputs (about 0.1 orbits)

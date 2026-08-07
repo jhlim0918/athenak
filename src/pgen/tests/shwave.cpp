@@ -25,6 +25,7 @@
 
 // Athena++ headers
 #include "athena.hpp"
+#include "globals.hpp"
 #include "parameter_input.hpp"
 #include "coordinates/cell_locations.hpp"
 #include "mesh/mesh.hpp"
@@ -39,6 +40,8 @@
 
 // User-defined history function (only used for compressible Hydro and MHD cases)
 void ShwaveHistory(HistoryData *pdata, Mesh *pm);
+// User-defined refinement criterion: prescribed moving ring (AMR exercise)
+void MovingRingRefine(MeshBlockPack *pmbp);
 
 //----------------------------------------------------------------------------------------
 //! \struct ShwaveTestVariables
@@ -50,6 +53,13 @@ struct ShwaveTestVariables {
 };
 
 ShwaveTestVariables shw_var;
+
+// parameters for the prescribed moving-ring AMR criterion
+struct MovingRingVariables {
+  Real xc0, xamp, freq, hwidth;
+};
+
+MovingRingVariables ring_var;
 }
 
 //----------------------------------------------------------------------------------------
@@ -57,6 +67,20 @@ ShwaveTestVariables shw_var;
 //  \brief
 
 void ProblemGenerator::Shwave(ParameterInput *pin, const bool restart) {
+  // Prescribed moving-ring AMR criterion (deterministic exercise of dynamic ring
+  // creation/destruction in the shearing box).  Refines every MeshBlock whose x1
+  // extent overlaps [xc(t)-hwidth, xc(t)+hwidth] with xc(t) = xc0 + xamp*sin(freq*t),
+  // and flags all others for derefinement.  Requires <mesh_refinement>
+  // refinement=adaptive and an <amr_criterion> block with method=user.
+  // Must be enrolled on both fresh starts and restarts.
+  if (pin->GetOrAddBoolean("problem", "amr_moving_ring", false)) {
+    ring_var.xc0    = pin->GetOrAddReal("problem", "ring_xc0", 0.0);
+    ring_var.xamp   = pin->GetOrAddReal("problem", "ring_xamp", 0.0);
+    ring_var.freq   = pin->GetOrAddReal("problem", "ring_freq", 1.0);
+    ring_var.hwidth = pin->GetReal("problem", "ring_hwidth");
+    user_ref_func = MovingRingRefine;
+  }
+
   if (restart) return;
 
   // read parameters from input file
@@ -361,6 +385,36 @@ void ProblemGenerator::Shwave(ParameterInput *pin, const bool restart) {
       });
     }
   }
+  return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void MovingRingRefine()
+//! \brief User AMR criterion: refine MBs whose x1 extent overlaps a prescribed moving
+//! interval [xc(t)-hwidth, xc(t)+hwidth], derefine all others.  Criterion depends only
+//! on x1, so it naturally flags complete x2-rings; the shearing-box ring-sync and
+//! x1-boundary vetoes in MeshRefinement::CheckForRefinement enforce the rest of the
+//! refinement policy.  Runs on host data (MeshBlock bounds), no kernel needed.
+
+void MovingRingRefine(MeshBlockPack *pmbp) {
+  auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
+  int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
+  auto &size = pmbp->pmb->mb_size;
+  auto &rv = ring_var;
+  Real xc = rv.xc0 + rv.xamp*std::sin(rv.freq*(pmbp->pmesh->time));
+
+  for (int m=0; m<(pmbp->nmb_thispack); ++m) {
+    Real &x1min = size.h_view(m).x1min;
+    Real &x1max = size.h_view(m).x1max;
+    if ((x1max > (xc - rv.hwidth)) && (x1min < (xc + rv.hwidth))) {
+      refine_flag.h_view(m + mbs) = 1;
+    } else {
+      refine_flag.h_view(m + mbs) = -1;
+    }
+  }
+  // sync host array with device
+  refine_flag.template modify<HostMemSpace>();
+  refine_flag.template sync<DevExeSpace>();
   return;
 }
 

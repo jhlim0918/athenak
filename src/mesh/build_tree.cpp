@@ -515,18 +515,10 @@ void Mesh::BuildTreeFromRestart(ParameterInput *pin, IOWrapper &resfile,
 void Mesh::CheckShearingBoxRefinement(ParameterInput *pin) {
   if (!multilevel || !(pin->DoesBlockExist("shearing_box"))) return;
 
-  // AMR changes MeshBlock GIDs on every update, but the shearing-box boundary GID
-  // lists (ShearingBox::x1bndry_mbgid) and communication buffers are built once at
-  // construction; running AMR with a shearing box would silently corrupt the shear
-  // boundary exchange. Guard until the lists are rebuilt after each AMR update.
-  if (adaptive) {
-    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-      << std::endl << "Adaptive mesh refinement with a shearing box is not supported "
-      << "yet: the shear-periodic boundary GID lists are built once at startup and "
-      << "go stale when AMR renumbers MeshBlocks. Use static refinement (SMR)."
-      << std::endl;
-    std::exit(EXIT_FAILURE);
-  }
+  // NOTE: with AMR, the shearing-box boundary GID lists and communication buffers
+  // (built at construction) are rebuilt after every mesh update via
+  // ShearingBox::ReinitAfterMeshUpdate, called from
+  // MeshRefinement::AdaptiveMeshRefinement after this policy check passes.
 
   // The shear-periodic machinery requires a single, uniform refinement level along
   // BOTH x1 boundary faces: the regular (unshifted) wrap across x1 is then a
@@ -580,6 +572,14 @@ void Mesh::CheckShearingBoxRefinement(ParameterInput *pin) {
           << " of " << nmbx2 << " MeshBlocks. Either make the <refined_region> span "
           << "the full x2 domain, or set <shearing_box> orbital_advection = false."
           << std::endl;
+        // diagnostic dump of every refined MeshBlock's logical location
+        std::cout << "refined leaf MBs (level lx1 lx2 lx3):" << std::endl;
+        for (int m=0; m<nmb_total; ++m) {
+          if (lloc_eachmb[m].level > root_level) {
+            std::cout << "  " << lloc_eachmb[m].level << " " << lloc_eachmb[m].lx1
+              << " " << lloc_eachmb[m].lx2 << " " << lloc_eachmb[m].lx3 << std::endl;
+          }
+        }
         std::exit(EXIT_FAILURE);
       }
     }

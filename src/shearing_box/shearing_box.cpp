@@ -32,27 +32,64 @@ ShearingBox::ShearingBox(MeshBlockPack *ppack, ParameterInput *pin) :
   is_stratified = pin->GetOrAddBoolean("shearing_box","stratified",false);
   orbital_advection = pin->GetOrAddBoolean("shearing_box","orbital_advection",true);
 
+#if MPI_PARALLEL_ENABLED
+  // request arrays are (re)allocated in SetX1BndryMBs
+  for (int n=0; n<2; ++n) {
+    sendbuf[n].vars_req = nullptr;
+    recvbuf[n].vars_req = nullptr;
+  }
+  // create unique communicators for shearing box
+  MPI_Comm_dup(MPI_COMM_WORLD, &comm_sbox);
+#endif
+
+  // build lists of MBs touching the shear-periodic x1 boundaries
+  SetX1BndryMBs();
+}
+
+//----------------------------------------------------------------------------------------
+// ShearingBox base class destructor
+
+ShearingBox::~ShearingBox() {
+#if MPI_PARALLEL_ENABLED
+  for (int n=0; n<2; ++n) {
+    delete [] sendbuf[n].vars_req;
+    delete [] recvbuf[n].vars_req;
+  }
+#endif
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void ShearingBox::SetX1BndryMBs()
+//! \brief Build lists with the GID of every MB on this rank at the ix1/ox1 shearing-box
+//! boundaries, and (with MPI) allocate the request arrays sized to those lists.  Called
+//! by the constructor and again after every AMR mesh update, since AMR renumbers GIDs
+//! and re-assigns MBs to ranks (MeshBlockPack::pmb is rebuilt before this is called).
+
+void ShearingBox::SetX1BndryMBs() {
   // Create vector with GID of every MBs on this rank at ix1/ox1 shearing-box boundaries
   std::vector<int> tmp_ix1bndry_gid, tmp_ox1bndry_gid;
-  auto &mbbcs = ppack->pmb->mb_bcs;
-  for (int m=0; m<(ppack->nmb_thispack); ++m) {
+  auto &mbbcs = pmy_pack->pmb->mb_bcs;
+  for (int m=0; m<(pmy_pack->nmb_thispack); ++m) {
     if (mbbcs.h_view(m,BoundaryFace::inner_x1) == BoundaryFlag::shear_periodic) {
-      tmp_ix1bndry_gid.push_back(m + ppack->gids);
+      tmp_ix1bndry_gid.push_back(m + pmy_pack->gids);
     }
     if (mbbcs.h_view(m,BoundaryFace::outer_x1) == BoundaryFlag::shear_periodic) {
-      tmp_ox1bndry_gid.push_back(m + ppack->gids);
+      tmp_ox1bndry_gid.push_back(m + pmy_pack->gids);
     }
   }
   // number of MBs at ix1/ox1 boundaries is size of vectors
   nmb_x1bndry(0) = tmp_ix1bndry_gid.size();
   nmb_x1bndry(1) = tmp_ox1bndry_gid.size();
 
-  // allocate mbgid array and initialize GIDs to -1
+  // allocate mbgid array (grow-only across rebuilds) and initialize GIDs to -1
   // Ensure nmb is at least 1 to avoid zero-sized allocations
   int nmb = std::max(1, std::max(nmb_x1bndry(0),nmb_x1bndry(1)));
-  Kokkos::realloc(x1bndry_mbgid, 2, nmb);
+  if (static_cast<int>(x1bndry_mbgid.h_view.extent(1)) < nmb) {
+    Kokkos::realloc(x1bndry_mbgid, 2, nmb);
+  }
+  int nmb_alloc = x1bndry_mbgid.h_view.extent(1);
   for (int n=0; n<2; ++n) {
-    for (int m=0; m<nmb; ++m) {
+    for (int m=0; m<nmb_alloc; ++m) {
       x1bndry_mbgid.h_view(n,m) = -1;
     }
   }
@@ -67,11 +104,15 @@ ShearingBox::ShearingBox(MeshBlockPack *ppack, ParameterInput *pin) :
   x1bndry_mbgid.template modify<HostMemSpace>();
   x1bndry_mbgid.template sync<DevExeSpace>();
 
-
 #if MPI_PARALLEL_ENABLED
-  // initialize vectors of MPI requests for ix1/ox1 boundaries in fixed length arrays
-  // each MB on x1-face can communicate with up to 3 nghbrs
+  // (re)allocate vectors of MPI requests for ix1/ox1 boundaries in fixed length arrays
+  // each MB on x1-face can communicate with up to 3 nghbrs.  All communications are
+  // complete whenever this is called, so simply reset every request to MPI_REQUEST_NULL
   for (int n=0; n<2; ++n) {
+    delete [] sendbuf[n].vars_req;
+    delete [] recvbuf[n].vars_req;
+    sendbuf[n].vars_req = nullptr;
+    recvbuf[n].vars_req = nullptr;
     if (nmb_x1bndry(n) > 0) {
       sendbuf[n].vars_req = new MPI_Request[3*nmb_x1bndry(n)];
       recvbuf[n].vars_req = new MPI_Request[3*nmb_x1bndry(n)];
@@ -83,23 +124,19 @@ ShearingBox::ShearingBox(MeshBlockPack *ppack, ParameterInput *pin) :
       }
     }
   }
-  // create unique communicators for shearing box
-  MPI_Comm_dup(MPI_COMM_WORLD, &comm_sbox);
 #endif
 }
 
 //----------------------------------------------------------------------------------------
-// ShearingBox base class destructor
+//! \fn void ShearingBox::ReinitAfterMeshUpdate()
+//! \brief Rebuild x1-boundary MB lists and resize communication buffers after an AMR
+//! mesh update.  Must be called after MeshBlockPack::AddMeshBlocks/SetNeighbors have
+//! rebuilt the MB metadata, and before any shear-periodic boundary exchange on the
+//! new mesh.
 
-ShearingBox::~ShearingBox() {
-#if MPI_PARALLEL_ENABLED
-  for (int n=0; n<2; ++n) {
-    if (nmb_x1bndry(n) > 0) {
-      delete [] sendbuf[n].vars_req;
-      delete [] recvbuf[n].vars_req;
-    }
-  }
-#endif
+void ShearingBox::ReinitAfterMeshUpdate() {
+  SetX1BndryMBs();
+  AllocateBuffers();
 }
 
 //----------------------------------------------------------------------------------------

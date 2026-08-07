@@ -28,14 +28,26 @@
 ShearingBoxFC::ShearingBoxFC(MeshBlockPack *pp, ParameterInput *pin) :
     ShearingBox(pp, pin) {
   // Allocate boundary buffers
-  auto &indcs = pp->pmesh->mb_indcs;
+  AllocateBuffers();
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void ShearingBoxFC::AllocateBuffers()
+//! \brief (Re)allocate send/recv buffers sized to the current number of MBs on the
+//! shear-periodic x1 boundaries.  Grow-only across AMR rebuilds to avoid realloc churn;
+//! extra (m) slots beyond nmb_x1bndry(n) are simply unused.
+
+void ShearingBoxFC::AllocateBuffers() {
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
   int ncells3 = indcs.nx3 + 2*indcs.ng;
   int ncells2 = indcs.nx2 + 2*indcs.ng;
   int ncells1 = indcs.ng;
   for (int n=0; n<2; ++n) {
     int nmb = std::max(1,nmb_x1bndry(n));
-    Kokkos::realloc(sendbuf[n].vars,nmb,ncells2,3,ncells3,ncells1);
-    Kokkos::realloc(recvbuf[n].vars,nmb,ncells2,3,ncells3,ncells1);
+    if (static_cast<int>(sendbuf[n].vars.extent(0)) < nmb) {
+      Kokkos::realloc(sendbuf[n].vars,nmb,ncells2,3,ncells3,ncells1);
+      Kokkos::realloc(recvbuf[n].vars,nmb,ncells2,3,ncells3,ncells1);
+    }
   }
 }
 
