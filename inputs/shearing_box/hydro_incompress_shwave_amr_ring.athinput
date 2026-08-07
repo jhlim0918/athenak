@@ -1,0 +1,94 @@
+# TEST INPUT: orbital advection (FARGO) + ADAPTIVE refinement with a moving ring.
+# Same problem as hydro_incompress_shwave_smr_ring.athinput (JG05 vortical shwave),
+# but the level-1 ring is created/destroyed dynamically by the prescribed moving-ring
+# user criterion (MovingRingRefine in shwave.cpp): xc(t) = 0.2*sin(t), half-width
+# 0.05.  While |xc| > 0.175 the interval overlaps only the (vetoed) x1-boundary
+# columns, so all rings are destroyed, then re-created on the way back — the AMR
+# analogue of the static ring test, now with real wave structure being
+# prolonged/restricted and shear-remapped across every regrid event.
+# Compare against: (a) shw_fargo (uniform), (b) ring_fargo (static SMR ring).
+
+<comment>
+problem   = incompressible (vortical) hydro shwave of JG05, with moving-ring AMR
+reference =
+
+<job>
+basename  = shwave2_amr    # problem ID: basename of output filenames
+
+<mesh>
+nghost    = 4         # Number of ghost cells (must be even with SMR/AMR)
+nx1       = 64        # Number of zones in X1-direction
+x1min     = -0.25     # minimum value of X1
+x1max     = 0.25      # maximum value of X1
+ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
+ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
+
+nx2       = 64        # Number of zones in X2-direction
+x2min     = -0.25     # minimum value of X2
+x2max     = 0.25      # maximum value of X2
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 4         # Number of zones in X3-direction
+x3min     = -0.25     # minimum value of X3
+x3max     = 0.25      # maximum value of X3
+ix3_bc    = periodic  # Inner-X3 boundary condition flag
+ox3_bc    = periodic  # Outer-X3 boundary condition flag
+
+<meshblock>
+nx1       = 16        # 4 root MeshBlocks in X1: edges at -0.25,-0.125,0,0.125,0.25
+nx2       = 16        # 4 root MeshBlocks in X2
+nx3       = 4         # single root MeshBlock in X3
+
+<mesh_refinement>
+refinement = adaptive          # type of refinement
+num_levels = 2                 # root + 1 refined level
+refinement_interval = 5        # min cycles between (de)refinement of same MB
+max_nmb_per_rank = 128         # worst case: 8 root + 2 refined columns (64) = 72
+
+<amr_criterion1>
+method = user                  # MovingRingRefine enrolled by shwave pgen
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integration algorithm
+cfl_number = 0.3      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = -1       # cycle limit
+tlim       = 5.0      # time limit
+ndiag      = 1        # cycles between diagostic output
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true    # per-level FARGO on the (moving) annular refined ring
+
+<hydro>
+eos             = isothermal   # EOS type
+reconstruct     = ppmx         # spatial reconstruction method
+rsolver         = hlle         # Riemann-solver to be used
+iso_sound_speed = 1.0          # isothermal sound speed
+
+<problem>
+pgen_name = shwave  # problem generator name
+ipert     = 2       # incompressible shwave test
+d0        = 1.0     # background density
+amp       = 1.0e-4  # amplitude of wave in units of sound speed
+nwx       = -8      # number of wavelengths in x-direction
+nwy       = 2       # number of wavelengths in y-direction
+nwz       = 0       # number of wavelengths in z-direction
+amr_moving_ring = true # enroll prescribed moving-ring AMR criterion
+ring_xc0     = 0.0     # ring center at t=0
+ring_xamp    = 0.2     # xc(t) = 0.2*sin(t): sweeps past the interior columns
+ring_freq    = 1.0     # = kappa (= Omega for q=1.5)
+ring_hwidth  = 0.05    # half-width: 1-2 interior columns refined; rings fully
+                       # destroyed while |xc| > 0.175 (|sin t| > 0.875)
+
+<output1>
+file_type   = hst      # History data dump
+dt          = 0.1      # time increment between outputs
+data_format = %12.5e   # Optional data format string
+
+<output2>
+file_type   = bin        # Binary data dump (vtk does not support SMR/AMR)
+variable    = hydro_w    # variables to be output
+dt          = 0.1        # time increment between outputs
