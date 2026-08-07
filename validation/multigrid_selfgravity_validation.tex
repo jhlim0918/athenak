@@ -83,23 +83,27 @@ The phases of the multigrid track:
 \subsection{Phase-0 scope and restrictions}
 What works after Phase 0, all enforced by fatal errors rather than conventions:
 \begin{itemize}
-  \item Hydrodynamic shearing boxes with SMR/AMR, provided refined MeshBlocks never
-        touch the shear-periodic $x_1$ boundaries (keep one root-level block between
-        refinement and the boundary so 2:1 balancing cannot propagate refinement
-        there).
+  \item Hydrodynamic shearing boxes with SMR, under the \emph{uniform-boundary-level}
+        rule: both shear-periodic $x_1$ boundary faces must share one refinement
+        level. Refinement interior in $x_1$ always satisfies this (faces stay at
+        root); alternatively \emph{both} boundary faces may be refined uniformly
+        (full $x_2$/$x_3$ extent, same level) --- physically natural for a structure
+        at the boundary, whose shear-periodic images live on both faces.
   \item Orbital advection on refined meshes, provided every refined region spans the
-        full $x_2$ (azimuthal) extent --- \emph{annular rings}, interior in $x_1$.
-        Without FARGO (\code{orbital\_advection=false}) arbitrary interior refinement
-        shapes are allowed.
+        full $x_2$ (azimuthal) extent --- \emph{annular rings} (interior, or boundary
+        annuli as above). Without FARGO (\code{orbital\_advection=false}) arbitrary
+        refinement shapes are allowed subject only to the boundary-level rule.
   \item AMR flag handling that keeps rings intact (refine a ring if any member is
-        flagged, derefine only if all are).
+        flagged, derefine only if all are) --- in place for Phase 0c, but AMR with a
+        shearing box is currently fatal-guarded: the shear-boundary GID lists
+        (\code{ShearingBox::x1bndry\_mbgid}) are built once at startup and go stale
+        when AMR renumbers MeshBlocks. Rebuilding them per AMR update is Phase 0c.
 \end{itemize}
-Not yet supported/exercised: MHD orbital advection with refinement (the face-centered
-EMF remap at level interfaces needs a $\nabla\!\cdot\!B$ analysis; fatal-guarded),
-dynamic AMR ring creation/destruction end-to-end (the flag logic is in place; the
-natural test arrives with the dust-density refinement criterion), and a
-production-size demonstration of the FARGO speedup itself. SMR/AMR runs must write
-\code{bin} outputs --- the vtk writer does not support refined meshes.
+Not yet supported/exercised: AMR with a shearing box (above), MHD orbital advection
+with refinement (the face-centered EMF remap at level interfaces needs a
+$\nabla\!\cdot\!B$ analysis; fatal-guarded), and a production-size demonstration of
+the FARGO speedup itself. SMR/AMR runs must write \code{bin} outputs --- the vtk
+writer does not support refined meshes.
 
 %=======================================================================
 \section{Numerical method}
@@ -186,12 +190,22 @@ disabled.
 Rather than generalizing the $y$-communication to level interfaces, Phase 0 removes
 the interfaces:
 
-\paragraph{Interior-$x_1$ policy (always).} Refined MeshBlocks must not touch the
-shear-periodic $x_1$ boundaries, so the shear-boundary remap only ever involves
-root-level blocks and the existing machinery applies unchanged. Enforced fatally,
-block-by-block, at tree build, restart, and after every AMR update
-(\code{Mesh::CheckShearingBoxRefinement}); an AMR-side veto keeps boundary blocks
-from being flagged.
+\paragraph{Uniform-boundary-level policy (always).} All MeshBlocks on the two
+shear-periodic $x_1$ boundary faces must share \emph{one} refinement level. The
+reason is structural: the unshifted wrap across $x_1$ goes through the ordinary
+neighbor machinery (the tree treats \code{shear\_periodic} exactly like
+\code{periodic}), and the shear pass then redistributes the wrapped ghost data
+azimuthally \emph{within each face} --- with per-block $\Delta y$ arithmetic and a
+level-aware target lookup (\code{FindTargetMB} shifts $lx_2$ modulo the block count
+at the source block's own level). Nothing in that machinery references the root
+grid; its only real assumption is same-size blocks along each face and a same-level
+wrap between the faces. Hence the common level may exceed root: refining
+\emph{both} boundary faces uniformly (full $x_2$/$x_3$, same level) is legal, and a
+mixed-level boundary is a fatal error. Enforced block-by-block at tree build and
+restart (\code{Mesh::CheckShearingBoxRefinement}). Truly mixed-level shear
+boundaries (a refined patch on one face wrapping onto coarse blocks of the other)
+would require combining the $y$-shift with prolongation/restriction in the shear
+comms --- deferred; no production code implements it.
 
 \paragraph{Annular policy (when FARGO is on).} Every refined region must span the full
 $x_2$ extent over its $x_1$--$x_3$ footprint: refinement comes in \emph{rings}. Within
@@ -344,6 +358,27 @@ the refined mesh: mass conserved exactly (drift $0.0$); $x$-kinetic-energy histo
 agrees with the non-FARGO twin to 3.8\% --- the same truncation-level gap the two
 frames show on uniform grids --- and with the uniform-grid FARGO run to 4.1\%.
 
+\subsection{Refined $x_1$ boundary faces}
+\label{sec:t_bndry}
+The uniform-boundary-level rule allows refinement \emph{at} the shear-periodic
+boundaries when both faces are refined uniformly. The test input refines the
+leftmost and rightmost root columns to level 1 over the full $x_2$/$x_3$ extent
+(boundary annuli), interior at root, orbital advection on:
+\begin{lstlisting}
+$ATH -i inputs/shearing_box/hydro_incompress_shwave_smr_bndry.athinput
+$ATH -i inputs/shearing_box/hydro_incompress_shwave_smr_bndry.athinput \
+     job/basename=epi_bndry problem/ipert=1
+# guard (must abort): refine only ONE face -> mixed levels across the wrap
+$ATH -i inputs/shearing_box/hydro_incompress_shwave_smr_bndry.athinput \
+     refined_region2/x1min=0.0 refined_region2/x1max=0.12
+\end{lstlisting}
+Results: the epicycle matches the analytic solution to $5.0\times10^{-6}$ ---
+\emph{identical to the last digit} with the uniform-grid and interior-ring values,
+so the level-1 shear-periodic wrap and the level-1 azimuthal redistribution preserve
+uniform fields exactly. The vortical shwave conserves mass exactly and agrees with
+the uniform run to 4.9\% in $x$-KE (interior ring: 4.1\%) and with the interior-ring
+run to 0.9\%. The single-face guard aborts with a message naming the level span.
+
 \subsection{The endurance test: epicycles for 20 orbits}
 \label{sec:t_epi}
 The \code{ipert=1} epicycle has spatially uniform $v_x(t)$, $v'_y(t)$: an exact
@@ -405,7 +440,9 @@ Non-FARGO cost ($L_x{=}2\pi$ box) & cycles vs FARGO & $5.7\times$, as predicted 
 Ring + FARGO: mass conservation & max drift & exact (0.0) \\
 Shwave: ring-FARGO vs ring-non-FARGO & $x$-KE & 3.8\% \\
 Epicycle, 20 orbits, ring + FARGO & amplitude drift / invariant & $0.008\%$ / flat to $10^{-4}$ \\
-Boundary-touching refinement & --- & fatal, correct diagnosis \\
+Boundary annuli + FARGO: epicycle & max rel.\ vs analytic & $5\times10^{-6}$ (= uniform) \\
+Boundary annuli + FARGO: shwave & mass / $x$-KE vs uniform & exact / 4.9\% \\
+Mixed-level $x_1$ boundary & --- & fatal, names the level span \\
 Partial-$x_2$ ring with FARGO & --- & fatal, names the ring \\
 \bottomrule
 \end{tabular}

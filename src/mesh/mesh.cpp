@@ -178,20 +178,21 @@ Mesh::Mesh(ParameterInput *pin) :
     ?  true : false;
 
   // Shearing box + refinement is allowed under a restricted policy, enforced
-  // block-by-block after the tree is built (CheckShearingBoxRefinement) and after
-  // every AMR update:
-  //  (1) refined MeshBlocks must never touch the shear-periodic x1 boundaries (the
-  //      shear remap machinery assumes all MBs along the shear boundary share one
-  //      level), and
+  // block-by-block after the tree is built (CheckShearingBoxRefinement):
+  //  (1) both shear-periodic x1 boundary faces must share ONE uniform refinement
+  //      level (root, or both faces refined uniformly over the full x2/x3 extent
+  //      to the same level) -- the shear machinery requires a same-level wrap and
+  //      same-size blocks along each face;
   //  (2) with orbital advection (FARGO) on, refined regions must additionally span
   //      the full x2 extent ("annular" policy) so the per-level y-shift only ever
   //      communicates between same-level, same-size x2-face neighbors.
+  // AMR is not supported with a shearing box yet (static boundary GID lists);
   // MHD orbital advection (face-centered B remap) does not support refinement yet.
   if (multilevel && pin->DoesBlockExist("shearing_box") && global_variable::my_rank==0) {
     std::cout << "### WARNING in " << __FILE__ << " at line " << __LINE__ << std::endl
-        << "Shearing box with mesh refinement: refined regions must not touch the x1 "
-        << "boundaries, and with orbital advection must span the full x2 extent "
-        << "(both enforced with fatal errors)." << std::endl;
+        << "Shearing box with mesh refinement: both x1 boundary faces must share one "
+        << "uniform level, and with orbital advection refined regions must span the "
+        << "full x2 extent (both enforced with fatal errors)." << std::endl;
   }
 
   // error check physical size of mesh (root level) from input file.

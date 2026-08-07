@@ -514,20 +514,44 @@ void Mesh::BuildTreeFromRestart(ParameterInput *pin, IOWrapper &resfile,
 
 void Mesh::CheckShearingBoxRefinement(ParameterInput *pin) {
   if (!multilevel || !(pin->DoesBlockExist("shearing_box"))) return;
+
+  // AMR changes MeshBlock GIDs on every update, but the shearing-box boundary GID
+  // lists (ShearingBox::x1bndry_mbgid) and communication buffers are built once at
+  // construction; running AMR with a shearing box would silently corrupt the shear
+  // boundary exchange. Guard until the lists are rebuilt after each AMR update.
+  if (adaptive) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "Adaptive mesh refinement with a shearing box is not supported "
+      << "yet: the shear-periodic boundary GID lists are built once at startup and "
+      << "go stale when AMR renumbers MeshBlocks. Use static refinement (SMR)."
+      << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+
+  // The shear-periodic machinery requires a single, uniform refinement level along
+  // BOTH x1 boundary faces: the regular (unshifted) wrap across x1 is then a
+  // same-level exchange, and the per-face azimuthal redistribution
+  // (FindTargetMB, per-block dx2 arithmetic) operates among same-size blocks.
+  // That common level may exceed root: refining both boundary faces uniformly
+  // (full x2 and x3 extent, same level) is allowed.
+  int bndry_lev_min = std::numeric_limits<int>::max();
+  int bndry_lev_max = std::numeric_limits<int>::min();
   for (int m=0; m<nmb_total; ++m) {
     int lev = lloc_eachmb[m].level;
-    if (lev <= root_level) continue;
     std::int32_t nmbx1 = (nmb_rootx1 << (lev - root_level));
     if (lloc_eachmb[m].lx1 == 0 || lloc_eachmb[m].lx1 == (nmbx1-1)) {
-      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-        << std::endl << "Shearing box refinement policy violated: MeshBlock gid=" << m
-        << " (level=" << lev << ", lx1=" << lloc_eachmb[m].lx1 << ") touches a "
-        << "shear-periodic x1 boundary. Refined regions must be interior in x1 "
-        << "(keep at least one root-level MeshBlock between refinement and the x1 "
-        << "boundaries so 2:1 balancing cannot propagate refinement to the boundary)."
-        << std::endl;
-      std::exit(EXIT_FAILURE);
+      bndry_lev_min = std::min(bndry_lev_min, lev);
+      bndry_lev_max = std::max(bndry_lev_max, lev);
     }
+  }
+  if (bndry_lev_min != bndry_lev_max) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+      << std::endl << "Shearing box refinement policy violated: MeshBlocks on the "
+      << "shear-periodic x1 boundaries span logical levels " << bndry_lev_min
+      << ".." << bndry_lev_max << ", but both x1 faces must share ONE uniform level. "
+      << "Either keep refinement interior in x1, or refine BOTH boundary faces "
+      << "uniformly (full x2/x3 extent, same level)." << std::endl;
+    std::exit(EXIT_FAILURE);
   }
 
   // With orbital advection (FARGO) on a refined mesh, refinement must additionally come
