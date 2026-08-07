@@ -375,9 +375,16 @@ $ATH -i inputs/shearing_box/hydro_incompress_shwave_smr_bndry.athinput \
 Results: the epicycle matches the analytic solution to $5.0\times10^{-6}$ ---
 \emph{identical to the last digit} with the uniform-grid and interior-ring values,
 so the level-1 shear-periodic wrap and the level-1 azimuthal redistribution preserve
-uniform fields exactly. The vortical shwave conserves mass exactly and agrees with
+uniform fields exactly. The 20-orbit endurance run on this mesh
+(\code{epicycle\_smr\_bndry.athinput}) is \emph{bit-identical} to the interior-ring
+endurance run over all 202 history outputs: for a uniform field the refined
+shear-boundary wrap contributes exactly nothing, the strongest available statement
+for this configuration. The vortical shwave conserves mass exactly and agrees with
 the uniform run to 4.9\% in $x$-KE (interior ring: 4.1\%) and with the interior-ring
-run to 0.9\%. The single-face guard aborts with a message naming the level span.
+run to 0.9\%; a three-panel density movie of uniform~$|$~interior ring~$|$~boundary
+annuli (\code{make\_bin\_movie\_compare.jl}) shows the sheared wave crossing the
+refined boundary with no visible artifacts. The single-face guard aborts with a
+message naming the level span.
 
 \subsection{The endurance test: epicycles for 20 orbits}
 \label{sec:t_epi}
@@ -413,6 +420,8 @@ run & $v_x$ range / amp & amplitude drift, 20 orbits & max $|v_x - $analytic$|$ 
 \midrule
 uniform $128^2$        & $[-1.0006,\,+1.0005]$ & $+0.064\%$ & $2.4\%$ \\
 annular ring $+$ FARGO & $[-1.0000,\,+1.0001]$ & $+0.008\%$ & $0.63\%$ \\
+boundary annuli $+$ FARGO & \multicolumn{3}{c}{\emph{bit-identical to the annular ring,
+  all 202 outputs}} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -440,6 +449,7 @@ Non-FARGO cost ($L_x{=}2\pi$ box) & cycles vs FARGO & $5.7\times$, as predicted 
 Ring + FARGO: mass conservation & max drift & exact (0.0) \\
 Shwave: ring-FARGO vs ring-non-FARGO & $x$-KE & 3.8\% \\
 Epicycle, 20 orbits, ring + FARGO & amplitude drift / invariant & $0.008\%$ / flat to $10^{-4}$ \\
+Epicycle, 20 orbits, boundary annuli & vs ring run, all columns & bit-identical (0.0) \\
 Boundary annuli + FARGO: epicycle & max rel.\ vs analytic & $5\times10^{-6}$ (= uniform) \\
 Boundary annuli + FARGO: shwave & mass / $x$-KE vs uniform & exact / 4.9\% \\
 Mixed-level $x_1$ boundary & --- & fatal, names the level span \\
