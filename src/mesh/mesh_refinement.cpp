@@ -437,9 +437,13 @@ void MeshRefinement::UpdateMeshBlockTree(int &nnew, int &ndel) {
       }
     }
   }
-  // sort the lists by level
+  // sort the lists by level: finer-level parents must be merged before coarser ones so
+  // MeshBlockTree::Derefine's finer-neighbor veto sees the already-updated tree.
+  // (NB the previous end iterator &cllderef[ctnd-1] excluded the last element, so a
+  // fine-level parent could land after coarser ones and veto SOME of their merges,
+  // order-dependently — which broke ring-complete derefinement in the shearing box.)
   if (ctnd > 1) {
-    std::sort(cllderef, &(cllderef[ctnd-1]), Mesh::GreaterLevel);
+    std::sort(cllderef, &(cllderef[ctnd]), Mesh::GreaterLevel);
   }
 
   // Now the lists of the blocks to be refined and derefined are completed
