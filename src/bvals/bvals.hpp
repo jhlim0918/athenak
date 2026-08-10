@@ -17,10 +17,8 @@ enum BoundaryFace {undef=-1, inner_x1, outer_x1, inner_x2, outer_x2, inner_x3, o
 
 // identifiers for boundary conditions
 enum class BoundaryFlag {undef=-1,block, reflect, inflow, outflow, diode, user, periodic,
-                         shear_periodic, vacuum, mg_zerograd, mg_zerofixed, mg_multipole};
-
-//! identifiers for status of MPI boundary communications
-enum class BoundaryStatus {waiting, arrived, completed};
+                         shear_periodic, vacuum, mg_zerograd, mg_zerofixed,
+                         mg_multipole};
 
 #include <algorithm>
 #include <vector>
@@ -76,7 +74,6 @@ struct MeshBoundaryBuffer {
 
   // Maximum number of data elements (bie-bis+1) across 3 components of above
   int isame_ndat, isame_z4c_ndat, icoar_ndat, ifine_ndat, iflxs_ndat, iflxc_ndat;
-  DualArray1D<int> faces; // face identifiers for this buffer
 
   // 2D Views that store buffer data on device, dimensioned (nmb, ndata)
   DvceArray2D<Real> vars, flux;
@@ -100,7 +97,6 @@ struct MeshBoundaryBuffer {
     }
     int nmax = std::max(iflxs_ndat, iflxc_ndat);
     Kokkos::realloc(flux, nmb, (nvars*nmax));
-    Kokkos::realloc(faces, 3);
   }
 };
 
@@ -160,16 +156,11 @@ class MeshBoundaryValues {
   std::vector<RankPackedVarEntry> send_var_entries_, recv_var_entries_;
   std::vector<RankPackedVarMessage> send_var_msgs_, recv_var_msgs_;
   std::vector<MPI_Request> send_var_reqs_, recv_var_reqs_;
-  std::vector<MPI_Request> send_var_hdr_reqs_, recv_var_hdr_reqs_;
   DvceArray1D<Real> rank_sendbuf_vars_, rank_recvbuf_vars_;
+  // Scratch host buffers holding the (lid,dn,data_size) triples per entry, used
+  // only for the one-shot header exchange in BuildRankPackedVarMetadata that
+  // teaches each receiver its peers' pack order.
   HostArray1D<int> rank_sendhdr_vars_, rank_recvhdr_vars_;
-  // Device-resident mirrors of the entry tables, used by fused pack/unpack
-  // kernels (one launch per direction per call) instead of N small
-  // Kokkos::deep_copy calls. Rebuilt by BuildRankPackedVarMetadata.
-  DvceArray1D<RankPackedVarEntry> send_var_entries_d_, recv_var_entries_d_;
-  // Cached unpack-task table for the recv-side scatter kernel. Built once in
-  // BuildRankPackedVarMetadata from the headers received from each peer.
-  DvceArray1D<RankPackedVarEntry> unpack_tasks_d_;
   // Per-(MeshBlock,neighbour) base offsets into the rank-packed aggregate
   // buffers, dimensioned (nmb*nnghbr). For off-rank neighbours these hold the
   // entry's offset in rank_{send,recv}buf_vars_; on-rank/non-existent entries
@@ -177,7 +168,6 @@ class MeshBoundaryValues {
   // read/write the aggregate buffer directly (fusing the former
   // RankPackAgg/RankUnpackScatter kernels into SendBuff/RecvBuff).
   DvceArray1D<int> send_agg_offset_, recv_agg_offset_;
-  void InvalidateRankPackedVarMetadata() { rank_packed_bvals_nvars_ = -1; }
 #endif
 
   //functions
@@ -195,9 +185,16 @@ class MeshBoundaryValues {
   // BCs associated with various physics modules
   static void HydroBCs(MeshBlockPack *pp, DualArray2D<Real> uin, DvceArray5D<Real> u0);
   static void BFieldBCs(MeshBlockPack *pp, DualArray2D<Real> bin, DvceFaceFld4D<Real> b0);
+  static void HydroBCsCoarse(MeshBlockPack *pp, DualArray2D<Real> uin,
+                            DvceArray5D<Real> coarse_u0);
+  static void BFieldBCsCoarse(MeshBlockPack *pp, DualArray2D<Real> bin,
+                              DvceFaceFld4D<Real> coarse_b0);
   static void RadiationBCs(MeshBlockPack *pp,DualArray2D<Real> iin,DvceArray5D<Real> i0);
-  static void Z4cBCs(MeshBlockPack *pp, DualArray2D<Real> uin, DvceArray5D<Real> u0,
-                     DvceArray5D<Real> coarse_u0);
+  static void RadiationBCsCoarse(MeshBlockPack *pp,DualArray2D<Real> iin,
+                                 DvceArray5D<Real> coarse_i0);
+  static void Z4cBCs(MeshBlockPack *pp, DualArray2D<Real> uin, DvceArray5D<Real> u0);
+  static void Z4cBCsCoarse(MeshBlockPack *pp, DualArray2D<Real> uin,
+                           DvceArray5D<Real> coarse_u0);
 
  protected:
   // must use pointer to MBPack and not parent physics module since parent can be one of
@@ -267,20 +264,6 @@ class MeshBoundaryValuesFC : public MeshBoundaryValues {
                          DvceArray2D<int> &nflx);
   void ZeroFluxesAtBoundaryWithFiner(DvceEdgeFld4D<Real> &flx, DvceArray2D<int> &nflx);
   void AverageBoundaryFluxes(DvceEdgeFld4D<Real> &flx, DvceArray2D<int> &nflx);
-};
-
-template <int n = 56>
-struct BoundaryData { // aggregate and POD (even when MPI_PARALLEL is defined)
-  static constexpr int kMaxNeighbor = n;
-  // KGF: "nbmax" only used in bvals_var.cpp, Init/DestroyBoundaryData()
-  int nbmax;  //!> actual maximum number of neighboring MeshBlocks
-  // currently, sflag[] is only used by Multgrid (send buffers are reused each stage in
-  // red-black comm. pattern; need to check if they are available) and shearing box
-  BoundaryStatus flag[kMaxNeighbor], sflag[kMaxNeighbor];
-  Real *send[kMaxNeighbor], *recv[kMaxNeighbor];
-#ifdef MPI_PARALLEL
-  MPI_Request req_send[kMaxNeighbor], req_recv[kMaxNeighbor];
-#endif
 };
 
 //----------------------------------------------------------------------------------------

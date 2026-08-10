@@ -34,6 +34,7 @@ add_executable(
         diffusion/ambipolar.cpp
         diffusion/conduction.cpp
         diffusion/resistivity.cpp
+        diffusion/sts_rkl2.cpp
         diffusion/viscosity.cpp
 
         driver/driver.cpp
@@ -68,6 +69,7 @@ add_executable(
         hydro/hydro_fluxes.cpp
         hydro/hydro_fofc.cpp
         hydro/hydro_newdt.cpp
+        hydro/hydro_sts.cpp
         hydro/hydro_tasks.cpp
         hydro/hydro_update.cpp
 
@@ -94,6 +96,7 @@ add_executable(
         mhd/mhd_fluxes.cpp
         mhd/mhd_fofc.cpp
         mhd/mhd_newdt.cpp
+        mhd/mhd_sts.cpp
         mhd/mhd_tasks.cpp
         mhd/mhd_update.cpp
 
@@ -122,6 +125,7 @@ add_executable(
         pgen/tests/advection.cpp
         pgen/tests/cpaw.cpp
         pgen/tests/cshock.cpp
+        pgen/tests/divb_amr.cpp
         pgen/tests/diffusion.cpp
         pgen/tests/gr_bondi.cpp
         pgen/tests/gr_monopole.cpp
@@ -176,7 +180,9 @@ add_executable(
         utils/tov/tov.cpp
         utils/tr_table.cpp
         utils/cart_grid.cpp
+        utils/watchdog.cpp
         utils/spherical_surface.cpp
+
 
         z4c/compact_object_tracker.cpp
         z4c/fastflow.cpp

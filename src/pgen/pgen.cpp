@@ -59,6 +59,19 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm) :
                 << "by SetProblemData()." << std::endl;
       exit(EXIT_FAILURE);
     }
+    // Warn: user BCs are applied to the fine arrays only. The coarse-array path used by
+    // prolongation is not filled by user BCs (see UserBoundaryFnPtr in pgen.hpp), so a
+    // fine/coarse boundary that coincides with a physical (user) boundary can
+    // prolongate from unfilled coarse ghosts and trigger C2P failures etc.
+    // Keep refinement away from user-boundary faces.
+    if (pm->multilevel && global_variable::my_rank == 0) {
+      std::cout << "### WARNING in " << __FILE__ << " at line " << __LINE__ << std::endl
+                << "User-defined boundary conditions are combined with SMR/AMR. User BCs "
+                << "are only applied to the fine arrays, not the coarse arrays used "
+                << "for prolongation. Avoid refining at user-boundary faces, otherwise "
+                << "prolongation may read unfilled coarse ghost zones (e.g. C2P fail.)."
+                << std::endl;
+    }
   }
   // Check that user defined srcterms were enrolled if needed
   if (user_srcs) {
@@ -626,6 +639,16 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
                 << "during restart by SetProblemData()." << std::endl;
       exit(EXIT_FAILURE);
     }
+    // See note in the non-restart constructor: user BCs only fill the fine arrays, so
+    // refinement at user-boundary faces can prolongate from unfilled coarse ghost zones.
+    if (pm->multilevel && global_variable::my_rank == 0) {
+      std::cout << "### WARNING in " << __FILE__ << " at line " << __LINE__ << std::endl
+                << "User-defined boundary conditions are combined with SMR/AMR. User BCs "
+                << "are only applied to the fine arrays, not the coarse arrays used "
+                << "for prolongation. Avoid refining at user-boundary faces, otherwise "
+                << "prolongation may read unfilled coarse ghost zones (e.g. C2P fail.)."
+                << std::endl;
+    }
   }
   // Check that user defined srcterms were enrolled if needed
   if (user_srcs) {
@@ -900,6 +923,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     BondiAccretion(pin, is_restart);
   } else if (pgen_fun_name.compare("cshock") == 0) {
     CShock(pin, is_restart);
+  } else if (pgen_fun_name.compare("divb_amr") == 0) {
+    DivBAMR(pin, is_restart);
   } else if (pgen_fun_name.compare("diffusion") == 0) {
     Diffusion(pin, is_restart);
   } else if (pgen_fun_name.compare("linear_wave") == 0) {

@@ -122,6 +122,9 @@ add_subdirectory(src)
 add_subdirectory(kokkos)
 include_directories(${Kokkos_INCLUDE_DIRS_RET})
 
+find_package(Threads REQUIRED)
+target_link_libraries(athena PUBLIC Threads::Threads)
+
 target_link_libraries(athena PUBLIC Kokkos::kokkos)
 
 # kokkos-fft (FFT self-gravity solver); must come after add_subdirectory(kokkos)

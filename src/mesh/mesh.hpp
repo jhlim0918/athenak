@@ -16,6 +16,7 @@
 #include <string>
 
 #include "athena.hpp"
+#include "diffusion/sts_types.hpp"
 
 // Define following structure before other "include" files to resolve declarations
 //----------------------------------------------------------------------------------------
@@ -137,7 +138,8 @@ class Mesh {
   // following 1x arrays allocated with length [nranks] in AddCoordinatesAndPhysics()
   int *nprtcl_eachrank;    // number of particles on each rank
 
-  Real time, dt, dtold, dt_last_completed, cfl_no;
+  Real time, dt, dtold, dt_last_completed, dt_parabolic_sts, sts_max_dt_ratio, cfl_no;
+  parabolic::STSIntegrator sts_integrator;
   int ncycle;
   EventCounters ecounter;
 
@@ -155,6 +157,7 @@ class Mesh {
   void PrintMeshDiagnostics();
   void WriteMeshStructure();
   void NewTimeStep(const Real tlim);
+  void RefreshSTSParabolicTimeStep();
   void AddCoordinatesAndPhysics(ParameterInput *pinput);
   BoundaryFlag GetBoundaryFlag(const std::string& input_string);
   std::string GetBoundaryString(BoundaryFlag input_flag);
@@ -177,6 +180,9 @@ class Mesh {
   bool IsMeshUpdated() const { return mesh_updated_; }
   void MarkMeshUpdated() {mesh_updated_ = true; ++amr_lb_seq_;}
   void ClearMeshUpdated() { mesh_updated_ = false; }
+  // Monotonic counter of mesh-topology update events (AMR and any resulting load
+  // balancing). Used by the rank-packed boundary communication path to detect when
+  // its cached communication metadata must be rebuilt.
   int GetAMRLoadBalanceUpdateSeq() const { return amr_lb_seq_; }
 
  private:

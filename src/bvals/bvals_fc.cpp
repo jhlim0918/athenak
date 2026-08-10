@@ -20,6 +20,28 @@
 #include "mesh/mesh.hpp"
 #include "bvals.hpp"
 
+namespace {
+
+KOKKOS_INLINE_FUNCTION
+bool IsActiveFCFace(const int v, const int k, const int j, const int i,
+                    const RegionIndcs &indcs) {
+  if (v == 0) {
+    return (i >= indcs.is) && (i <= indcs.ie + 1) &&
+           (j >= indcs.js) && (j <= indcs.je) &&
+           (k >= indcs.ks) && (k <= indcs.ke);
+  } else if (v == 1) {
+    return (i >= indcs.is) && (i <= indcs.ie) &&
+           (j >= indcs.js) && (j <= indcs.je + 1) &&
+           (k >= indcs.ks) && (k <= indcs.ke);
+  } else {
+    return (i >= indcs.is) && (i <= indcs.ie) &&
+           (j >= indcs.js) && (j <= indcs.je) &&
+           (k >= indcs.ks) && (k <= indcs.ke + 1);
+  }
+}
+
+} // namespace
+
 //----------------------------------------------------------------------------------------
 // BValFC constructor:
 
@@ -53,7 +75,8 @@ TaskStatus MeshBoundaryValuesFC::PackAndSendFC(DvceFaceFld4D<Real> &b,
 #if MPI_PARALLEL_ENABLED
   // Build metadata before packing so off-rank data is written straight into the
   // rank-packed aggregate buffer (fused pack/aggregate).
-  if (rank_packed_bvals_nvars_ != 3) {
+  if (rank_packed_bvals_nvars_ != 3 ||
+      rank_packed_mesh_seq_ != pmy_pack->pmesh->GetAMRLoadBalanceUpdateSeq()) {
     BuildRankPackedVarMetadata(3);
   }
   auto aggsbuf = rank_sendbuf_vars_;
@@ -270,6 +293,7 @@ TaskStatus MeshBoundaryValuesFC::RecvAndUnpackFC(DvceFaceFld4D<Real> &b,
   int nnghbr = pmy_pack->pmb->nnghbr;
   auto &nghbr = pmy_pack->pmb->nghbr;
   auto &rbuf = recvbuf;
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
 #if MPI_PARALLEL_ENABLED
   //----- STEP 1: check that recv boundary buffer communications have all completed
 
@@ -362,6 +386,9 @@ TaskStatus MeshBoundaryValuesFC::RecvAndUnpackFC(DvceFaceFld4D<Real> &b,
             int i = (idx - k*nji - j*ni) + il;
             k += kl;
             j += jl;
+            if (IsActiveFCFace(v, k, j, i, indcs)) {
+              return;
+            }
             const int bi = ndat*v + i-il + ni*(j-jl + nj*(k-kl));
 #if MPI_PARALLEL_ENABLED
             const Real val = (base >= 0) ? aggrbuf(base + bi) : rbuf[n].vars(m, bi);

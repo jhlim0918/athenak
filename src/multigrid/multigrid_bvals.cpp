@@ -1068,26 +1068,38 @@ void MultigridBoundaryValues::FillCoarseMG(const DvceArray5D<Real> &u) {
         int fj = ngh + 2*c0;
         int fk = ngh + 2*c1;
         int fi = (face == 0) ? ngh : ngh + ncells - 1;
-        int ci = (face == 0) ? ngh - 1 : ngh + cnc;
-        cbuf(m, v, ngh + c1, ngh + c0, ci) = 0.25 * (
+        Real fav = 0.25 * (
           u(m,v,fk,  fj,  fi) + u(m,v,fk,  fj+1,fi) +
           u(m,v,fk+1,fj,  fi) + u(m,v,fk+1,fj+1,fi));
+        // The send-to-coarser (icoar) face extent spans ngh coarse ghost cells, so
+        // every one of them must carry the face average; otherwise the message
+        // carries stale data for ngh > 1.
+        for (int d = 0; d < ngh; ++d) {
+          int cid = (face == 0) ? ngh - 1 - d : ngh + cnc + d;
+          cbuf(m, v, ngh + c1, ngh + c0, cid) = fav;
+        }
       } else if (face < 4) {
         int fi = ngh + 2*c0;
         int fk = ngh + 2*c1;
         int fj = (face == 2) ? ngh : ngh + ncells - 1;
-        int cj = (face == 2) ? ngh - 1 : ngh + cnc;
-        cbuf(m, v, ngh + c1, cj, ngh + c0) = 0.25 * (
+        Real fav = 0.25 * (
           u(m,v,fk,  fj,fi  ) + u(m,v,fk,  fj,fi+1) +
           u(m,v,fk+1,fj,fi  ) + u(m,v,fk+1,fj,fi+1));
+        for (int d = 0; d < ngh; ++d) {
+          int cjd = (face == 2) ? ngh - 1 - d : ngh + cnc + d;
+          cbuf(m, v, ngh + c1, cjd, ngh + c0) = fav;
+        }
       } else {
         int fi = ngh + 2*c0;
         int fj = ngh + 2*c1;
         int fk = (face == 4) ? ngh : ngh + ncells - 1;
-        int ck = (face == 4) ? ngh - 1 : ngh + cnc;
-        cbuf(m, v, ck, ngh + c1, ngh + c0) = 0.25 * (
+        Real fav = 0.25 * (
           u(m,v,fk,fj,  fi  ) + u(m,v,fk,fj,  fi+1) +
           u(m,v,fk,fj+1,fi  ) + u(m,v,fk,fj+1,fi+1));
+        for (int d = 0; d < ngh; ++d) {
+          int ckd = (face == 4) ? ngh - 1 - d : ngh + cnc + d;
+          cbuf(m, v, ckd, ngh + c1, ngh + c0) = fav;
+        }
       }
     });
 }
@@ -1226,9 +1238,9 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
                           int fk = ngh_l + 2*(sk - sk0);
                           Real cc = cbuf(m,v,sk,sj,si);
                           int sjm = (sj > ngh_l) ? sj-1 : sj;
-                          int sjp = (sj < ngh_l+half) ? sj+1 : sj;
+                          int sjp = (sj < ngh_l+half-1) ? sj+1 : sj;
                           int skm = (sk > ngh_l) ? sk-1 : sk;
-                          int skp = (sk < ngh_l+half) ? sk+1 : sk;
+                          int skp = (sk < ngh_l+half-1) ? sk+1 : sk;
                           Real gy = 0.125*(cbuf(m,v,sk,sjp,si)-cbuf(m,v,sk,sjm,si));
                           Real gz = 0.125*(cbuf(m,v,skp,sj,si)-cbuf(m,v,skm,sj,si));
                           u(m,v,fk  ,fj  ,fig)=ot*(2.0*(cc-gy-gz)+u(m,v,fk  ,fj  ,fi));
@@ -1251,9 +1263,9 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
                           int fk = ngh_l + 2*(sk - sk0);
                           Real cc = cbuf(m,v,sk,sj,si);
                           int sim = (si > ngh_l) ? si-1 : si;
-                          int sip = (si < ngh_l+half) ? si+1 : si;
+                          int sip = (si < ngh_l+half-1) ? si+1 : si;
                           int skm = (sk > ngh_l) ? sk-1 : sk;
-                          int skp = (sk < ngh_l+half) ? sk+1 : sk;
+                          int skp = (sk < ngh_l+half-1) ? sk+1 : sk;
                           Real gx = 0.125*(cbuf(m,v,sk,sj,sip)-cbuf(m,v,sk,sj,sim));
                           Real gz = 0.125*(cbuf(m,v,skp,sj,si)-cbuf(m,v,skm,sj,si));
                           u(m,v,fk  ,fjg,fi  )=ot*(2.0*(cc-gx-gz)+u(m,v,fk  ,fj,fi  ));
@@ -1276,9 +1288,9 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
                           int fj = ngh_l + 2*(sj - sj0);
                           Real cc = cbuf(m,v,sk,sj,si);
                           int sim = (si > ngh_l) ? si-1 : si;
-                          int sip = (si < ngh_l+half) ? si+1 : si;
+                          int sip = (si < ngh_l+half-1) ? si+1 : si;
                           int sjm = (sj > ngh_l) ? sj-1 : sj;
-                          int sjp = (sj < ngh_l+half) ? sj+1 : sj;
+                          int sjp = (sj < ngh_l+half-1) ? sj+1 : sj;
                           Real gx = 0.125*(cbuf(m,v,sk,sj,sip)-cbuf(m,v,sk,sj,sim));
                           Real gy = 0.125*(cbuf(m,v,sk,sjp,si)-cbuf(m,v,sk,sjm,si));
                           u(m,v,fkg,fj  ,fi  )=ot*(2.0*(cc-gx-gy)+u(m,v,fk,fj  ,fi  ));
@@ -2356,10 +2368,6 @@ TaskStatus MultigridBoundaryValues::PackAndSendMG(const DvceArray5D<Real> &u) {
                            &mg_send_var_reqs_[i]);
     if (ierr_d != MPI_SUCCESS) {
       no_errors = false;
-    } else {
-      pmy_mg->pmy_driver_->mg_timers_.msg_count += 1;
-      pmy_mg->pmy_driver_->mg_timers_.bytes_sent +=
-          (msg.data_size * static_cast<int64_t>(sizeof(Real)));
     }
   }
   // Quit if MPI error detected
