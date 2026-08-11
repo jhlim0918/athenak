@@ -220,6 +220,8 @@ class Multigrid {
   void ComputeCorrection();
   void CalculateMatrixPack(Real dt);
   void SetFromRootGrid(bool folddata);
+  void AllocateShearPlanes();
+  void FillShearGhostPack(Real qomt, ReconstructionMethod order);
   Real CalculateDefectNorm(MGNormType nrm, int n);
   Real CalculateAverage(MGVariable type);
   Real CalculateTotal(MGVariable type, int n);
@@ -334,6 +336,10 @@ class Multigrid {
   DvceArray1D<int> fc_childx_, fc_childy_, fc_childz_;
   DualArray5D<Real> *u_, *def_, *src_, *uold_, *coeff_, *matrix_;
   Coordinates *coord_, *ccoord_;
+  // shear-periodic x1 boundary planes, one per MG level: global y-z extent at that
+  // level, ngh_ deep in x, for both faces (allocated only when shear is enabled)
+  DvceArray4D<Real> *shear_plane_ = nullptr;
+  DvceArray2D<int> shear_goffs_;  // per-block finest-level global (y,z) cell offsets
 };
 
 
@@ -450,6 +456,12 @@ class MultigridDriver {
   Real CalculateDefectNorm(MGNormType nrm, int n);
   void CalculateMatrix(Real dt);
   Multigrid* FindMultigrid(int tgid);
+  // shear-periodic x1 support (Phase 1: uniform grid, single rank)
+  Real ComputeShearQomt(Real time) const;
+  void RootShearBoundaryX1();
+  // driver-independent task-list runner (MG tasks never use their Driver* argument,
+  // so this also supports static solves from pgens where no Driver exists yet)
+  void ExecuteMGTaskList(Driver *pdriver, const std::string &tlname);
   // container to hold names of TaskIDs
   MultigridTaskIDs id;
 
@@ -481,6 +493,12 @@ class MultigridDriver {
 
   bool full_multigrid_;
   int fmg_ncycle_;
+
+  // shear-periodic x1 boundary conditions (Phase 1: uniform grid, single rank)
+  bool mg_shear_enabled_;
+  Real mg_qshear_, mg_omega0_;
+  Real mg_qomt_;  // q*Omega*(time since last shear-periodic instant); frozen per Solve()
+  ReconstructionMethod mg_remap_order_;
 
   // Source masking (zero source outside mask_radius_)
   Real mask_radius_;

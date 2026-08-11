@@ -52,6 +52,11 @@ iso_sound_speed = 1.0
 solver    = fft       # fft | multigrid
 four_pi_G = 1.0
 vert_bc   = periodic  # periodic | open
+# multigrid-solver settings (active only with solver=multigrid; ignored by fft)
+threshold = 0.0       # 0.0 = automatic convergence control (stagnation exit)
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
 
 <hydro_srcterms>
 self_gravity = true

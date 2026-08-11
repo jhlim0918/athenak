@@ -46,6 +46,8 @@ MultigridDriver::MultigridDriver(MeshBlockPack *pmbp, int invar):
     needinit_(true), amr_seq_(0), nreflevel_(0), eps_(-1.0),
     niter_(-1), npresmooth_(1), npostsmooth_(1), coffset_(0),
     fprolongation_(0), mg_verbose_(0),
+    mg_shear_enabled_(false), mg_qshear_(0.0), mg_omega0_(0.0), mg_qomt_(0.0),
+    mg_remap_order_(ReconstructionMethod::plm),
     nb_rank_(0), ncoeff_(0),
     octets_(nullptr), octetmap_(nullptr), octetbflag_(nullptr), noctets_(nullptr),
     oct_u_buf_(nullptr), oct_def_buf_(nullptr),
@@ -80,11 +82,15 @@ MultigridDriver::MultigridDriver(MeshBlockPack *pmbp, int invar):
   }
 
   // Initialize MG mesh boundary conditions from mesh BCs.
-  // Periodic stays periodic; all other types default to mg_zerofixed (Dirichlet zero).
+  // Periodic stays periodic; shear_periodic (a periodic identification with a
+  // time-dependent y-offset) is kept distinct and handled by the shear ghost fills;
+  // all other types default to mg_zerofixed (Dirichlet zero).
   for (int f = 0; f < 6; ++f) {
     BoundaryFlag mbc = pmy_mesh_->mesh_bcs[f];
     if (mbc == BoundaryFlag::periodic) {
       mg_mesh_bcs_[f] = BoundaryFlag::periodic;
+    } else if (mbc == BoundaryFlag::shear_periodic) {
+      mg_mesh_bcs_[f] = BoundaryFlag::shear_periodic;
     } else {
       mg_mesh_bcs_[f] = BoundaryFlag::mg_zerofixed;
     }
@@ -362,14 +368,18 @@ void MultigridDriver::InitializeOctets() {
             nloc.level = oloc.level;
             bool outside = false;
             nloc.lx1 = oloc.lx1 + ox1;
+            // shear_periodic wraps like periodic (Phase 2: sheared octet ghosts;
+            // refinement + shear is fatal-guarded in MGGravityDriver for now)
             if (nloc.lx1 < 0) {
-              if (mg_mesh_bcs_[BoundaryFace::inner_x1] == BoundaryFlag::periodic)
+              if (mg_mesh_bcs_[BoundaryFace::inner_x1] == BoundaryFlag::periodic ||
+                  mg_mesh_bcs_[BoundaryFace::inner_x1] == BoundaryFlag::shear_periodic)
                 nloc.lx1 = maxlx1 - 1;
               else
                 outside = true;
             }
             if (nloc.lx1 >= maxlx1) {
-              if (mg_mesh_bcs_[BoundaryFace::outer_x1] == BoundaryFlag::periodic)
+              if (mg_mesh_bcs_[BoundaryFace::outer_x1] == BoundaryFlag::periodic ||
+                  mg_mesh_bcs_[BoundaryFace::outer_x1] == BoundaryFlag::shear_periodic)
                 nloc.lx1 = 0;
               else
                 outside = true;
@@ -583,7 +593,7 @@ void MultigridDriver::FMGProlongate(Driver *pdriver) {
   if (current_level_ >= nrootlevel_ + nreflevel_ - 1) { // MeshBlocks
     pmg = mglevels_;
     SetMGTaskListFMGProlongate(ngh, flag);
-    pdriver->ExecuteTaskList(pmy_mesh_, "mg_fmg_prolongate", 0);
+    ExecuteMGTaskList(pdriver, "mg_fmg_prolongate");
     current_level_++;
   } else if (current_level_ >= nrootlevel_ - 1) { // octets
     if (current_level_ == nrootlevel_ - 1)
@@ -620,7 +630,7 @@ void MultigridDriver::OneStepToFiner(Driver *pdriver, int nsmooth) {
 
     if (current_level_ == ntotallevel_ - 2) flag = 2;
     SetMGTaskListToFiner(nsmooth, ngh, flag);
-    pdriver->ExecuteTaskList(pmy_mesh_, "mg_to_finer", 0);
+    ExecuteMGTaskList(pdriver, "mg_to_finer");
     current_level_++;
   } else if (current_level_ >= nrootlevel_ - 1) { // octets
     if (current_level_ == nrootlevel_ - 1) {
@@ -663,7 +673,7 @@ void MultigridDriver::OneStepToCoarser(Driver *pdriver, int nsmooth) {
   if (current_level_ >= nrootlevel_ + nreflevel_) { // MeshBlocks
     pmg = mglevels_;
     SetMGTaskListToCoarser(nsmooth, ngh);
-    pdriver->ExecuteTaskList(pmy_mesh_, "mg_to_coarser", 0);
+    ExecuteMGTaskList(pdriver, "mg_to_coarser");
     if (current_level_ == nrootlevel_ + nreflevel_) {
       TransferFromBlocksToRoot(false);
       if (nreflevel_ > 0) {
@@ -820,7 +830,7 @@ void MultigridDriver::SolveIterative(Driver *pdriver) {
                   << "Failed to converge after " << n << " iterations (defect = "
                   << def << ", threshold = " << eps_ << ")" << std::endl;
       }
-      pdriver->nlim = pmy_mesh_->ncycle;
+      if (pdriver != nullptr) pdriver->nlim = pmy_mesh_->ncycle;
       break;
     }
   }
@@ -1742,8 +1752,9 @@ void MultigridDriver::ApplyPhysicalBoundariesOctet(MGOctet &oct, bool fcbuf) {
       return data[((v*nc + k)*nc + j)*nc + i];
     };
 
-    // inner x1
-    if (loc.lx1 == 0 && mg_mesh_bcs_[BoundaryFace::inner_x1] != BoundaryFlag::periodic) {
+    // inner x1 (shear_periodic is a wrap, not a wall: Phase 2 sheared octet ghosts)
+    if (loc.lx1 == 0 && mg_mesh_bcs_[BoundaryFace::inner_x1] != BoundaryFlag::periodic
+        && mg_mesh_bcs_[BoundaryFace::inner_x1] != BoundaryFlag::shear_periodic) {
       Real sign = (mg_mesh_bcs_[BoundaryFace::inner_x1] == BoundaryFlag::mg_zerofixed)
                   ? -1.0 : 1.0;
       for (int v = 0; v < nvar_; ++v)
@@ -1755,7 +1766,8 @@ void MultigridDriver::ApplyPhysicalBoundariesOctet(MGOctet &oct, bool fcbuf) {
     // outer x1
     int maxlx1 = nrbx1_ << lev;
     if (loc.lx1 == maxlx1-1
-        && mg_mesh_bcs_[BoundaryFace::outer_x1] != BoundaryFlag::periodic) {
+        && mg_mesh_bcs_[BoundaryFace::outer_x1] != BoundaryFlag::periodic
+        && mg_mesh_bcs_[BoundaryFace::outer_x1] != BoundaryFlag::shear_periodic) {
       Real sign = (mg_mesh_bcs_[BoundaryFace::outer_x1] == BoundaryFlag::mg_zerofixed)
                   ? -1.0 : 1.0;
       int ie = fcbuf ? ngh : ngh + 1;
@@ -1852,6 +1864,13 @@ void MultigridDriver::MGRootBoundary() {
     // ---- Device path: fill boundaries directly on d_view ----
     auto u = mgroot_->GetCurrentData();
     int nvar = u.extent_int(1);
+
+    // Shear-periodic x1: remapped fill of the interior-row ghosts (the x2/x3 passes
+    // below supply the ghost-corner rows by periodic wrap of the remapped rows).
+    // The x1 kernel below has no shear_periodic branch and leaves those faces alone.
+    if (bc_ix1 == BoundaryFlag::shear_periodic) {
+      RootShearBoundaryX1();
+    }
 
     // x1 boundaries
     Kokkos::parallel_for("MGRootBnd_x1",

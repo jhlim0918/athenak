@@ -178,6 +178,7 @@ Multigrid::Multigrid(MultigridDriver *pmd, MeshBlockPack *pmbp, int nghost,
 //! \brief Multigrid destroctor
 
 Multigrid::~Multigrid() {
+  delete [] shear_plane_;
   delete [] u_;
   delete [] src_;
   delete [] def_;

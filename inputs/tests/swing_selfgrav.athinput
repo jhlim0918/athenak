@@ -71,6 +71,11 @@ solver    = fft
 four_pi_G = 1.9
 vert_bc   = periodic
 fft_remap = ppmx
+# multigrid-solver settings (active only with solver=multigrid; ignored by fft)
+threshold = 0.0
+full_multigrid = true
+fmg_ncycle = 1
+mg_remap  = ppmx
 
 <hydro_srcterms>
 self_gravity = true

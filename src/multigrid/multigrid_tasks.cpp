@@ -136,6 +136,14 @@ TaskStatus MultigridDriver::PhysicalBoundary(Driver *pdrive, int stage) {
   int ncells = pmg->GetSize() >> shift;
   if (ncells < 1) return TaskStatus::complete;
 
+  // Shear-periodic x1: overwrite the (unsheared) periodic ghosts that the boundary
+  // comm just filled with the y-remapped image, over the whole x1 ghost slab
+  // including its y/z edge and corner cells (trilinear prolongation reads those).
+  // At qomt == 0 the plain periodic copy from the comm is already exact.
+  if (mg_shear_enabled_ && mg_qomt_ != 0.0) {
+    pmg->FillShearGhostPack(mg_qomt_, mg_remap_order_);
+  }
+
   int nmb = pmy_pack_->nmb_thispack;
   auto &mb_bcs = pmy_pack_->pmb->mb_bcs;
 
@@ -175,9 +183,10 @@ TaskStatus MultigridDriver::PhysicalBoundary(Driver *pdrive, int stage) {
     Kokkos::RangePolicy<DevExeSpace>(0, nmb),
     KOKKOS_LAMBDA(const int m) {
       for (int v = 0; v < nvar; ++v) {
-        // inner x1
+        // inner x1 (shear_periodic ghosts were set by FillShearGhostPack/comm above)
         if (mb_bcs.d_view(m, BoundaryFace::inner_x1) != BoundaryFlag::block &&
-            mb_bcs.d_view(m, BoundaryFace::inner_x1) != BoundaryFlag::periodic) {
+            mb_bcs.d_view(m, BoundaryFace::inner_x1) != BoundaryFlag::periodic &&
+            mb_bcs.d_view(m, BoundaryFace::inner_x1) != BoundaryFlag::shear_periodic) {
           if (bc_ix1 == BoundaryFlag::mg_multipole && d_mpc.data() != nullptr) {
             Real dx1 = (mb_size.d_view(m).x1max - mb_size.d_view(m).x1min)
                        / static_cast<Real>(nx1);
@@ -208,7 +217,8 @@ TaskStatus MultigridDriver::PhysicalBoundary(Driver *pdrive, int stage) {
         }
         // outer x1
         if (mb_bcs.d_view(m, BoundaryFace::outer_x1) != BoundaryFlag::block &&
-            mb_bcs.d_view(m, BoundaryFace::outer_x1) != BoundaryFlag::periodic) {
+            mb_bcs.d_view(m, BoundaryFace::outer_x1) != BoundaryFlag::periodic &&
+            mb_bcs.d_view(m, BoundaryFace::outer_x1) != BoundaryFlag::shear_periodic) {
           if (bc_ox1 == BoundaryFlag::mg_multipole && d_mpc.data() != nullptr) {
             Real dx2_l = (mb_size.d_view(m).x2max - mb_size.d_view(m).x2min)
                        / static_cast<Real>(nx2);

@@ -88,6 +88,7 @@ add_executable(
         multigrid/multigrid.cpp
         multigrid/multigrid_bvals.cpp
         multigrid/multigrid_driver.cpp
+        multigrid/multigrid_shear.cpp
         multigrid/multigrid_tasks.cpp
 
         mhd/mhd.cpp

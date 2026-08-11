@@ -80,13 +80,76 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
       std::exit(EXIT_FAILURE);
     }
     for (int f = 0; f < 6; ++f) {
-      if (mg_mesh_bcs_[f] != BoundaryFlag::periodic) {
+      if (mg_mesh_bcs_[f] != BoundaryFlag::periodic &&
+          mg_mesh_bcs_[f] != BoundaryFlag::shear_periodic) {
         mg_mesh_bcs_[f] = mg_bc;
       }
     }
   }
-  if (!pmy_mesh_->strictly_periodic) {
-    fsubtract_average_ = false;
+  // Shear-periodic x1 boundaries (Phase 1: uniform grid, single rank).
+  // mesh.cpp guarantees that shear_periodic appears on both x1 faces or neither,
+  // and only together with a <shearing_box> input block.
+  mg_shear_enabled_ =
+      (pmy_mesh_->mesh_bcs[BoundaryFace::inner_x1] == BoundaryFlag::shear_periodic);
+  if (mg_shear_enabled_) {
+    mg_qshear_ = pin->GetReal("shearing_box", "qshear");
+    mg_omega0_ = pin->GetReal("shearing_box", "omega0");
+    std::string rmap = pin->GetOrAddString("gravity", "mg_remap", "plm");
+    if (rmap == "dc") {
+      mg_remap_order_ = ReconstructionMethod::dc;
+    } else if (rmap == "plm") {
+      mg_remap_order_ = ReconstructionMethod::plm;
+    } else if (rmap == "ppmx") {
+      mg_remap_order_ = ReconstructionMethod::ppmx;
+    } else {
+      std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+                << "<gravity> mg_remap = '" << rmap << "' not recognized "
+                << "(must be 'dc', 'plm', or 'ppmx')" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    // Phase 1 restrictions
+    if (global_variable::nranks > 1) {
+      std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+                << "Multigrid gravity with shear-periodic boundaries currently "
+                << "supports a single MPI rank only (Phase 1)." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    if (pmy_mesh_->multilevel) {
+      std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+                << "Multigrid gravity with shear-periodic boundaries requires a "
+                << "uniform grid (refinement + shear is Phase 2)." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    if (pmy_mesh_->mesh_bcs[BoundaryFace::inner_x2] != BoundaryFlag::periodic ||
+        pmy_mesh_->mesh_bcs[BoundaryFace::outer_x2] != BoundaryFlag::periodic ||
+        pmy_mesh_->mesh_bcs[BoundaryFace::inner_x3] != BoundaryFlag::periodic ||
+        pmy_mesh_->mesh_bcs[BoundaryFace::outer_x3] != BoundaryFlag::periodic) {
+      std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+                << "Multigrid gravity with shear-periodic x1 requires periodic "
+                << "x2 and x3 boundaries." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    if (mg_bc_str != "none") {
+      std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+                << "<gravity> mg_bc cannot be combined with shear-periodic x1 "
+                << "boundaries." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+  }
+
+  // Mean-source subtraction is required for solvability whenever the domain is fully
+  // (shear-)periodic; disable it only when some face is a genuine physical boundary
+  // (shear_periodic is a periodic identification, so it does not count as one).
+  {
+    bool wrap_all = true;
+    for (int f = 0; f < 6; ++f) {
+      BoundaryFlag mbc = pmy_mesh_->mesh_bcs[f];
+      wrap_all = wrap_all && (mbc == BoundaryFlag::periodic ||
+                              mbc == BoundaryFlag::shear_periodic);
+    }
+    if (!wrap_all) {
+      fsubtract_average_ = false;
+    }
   }
 
   // Check if multipole BCs are active and configure
@@ -128,8 +191,23 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
   // Allocate the root multigrid
   int nghost = pin->GetOrAddInteger("gravity", "mg_nghost", 1);
   bool root_on_host = pin->GetOrAddBoolean("gravity", "root_on_host", false);
+  if (mg_shear_enabled_ && root_on_host) {
+    std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+              << "<gravity> root_on_host is not yet supported with shear-periodic "
+              << "boundaries (the root shear fill runs on device)." << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  if (mg_shear_enabled_ && nghost > 1) {
+    std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+              << "<gravity> mg_nghost > 1 is untested with shear-periodic "
+              << "boundaries (Phase 1)." << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
   mgroot_ = new MGGravity(this, nullptr, nghost, root_on_host);
   mglevels_ = new MGGravity(this, pmbp, nghost);
+  if (mg_shear_enabled_) {
+    mglevels_->AllocateShearPlanes();
+  }
   // allocate boundary buffers
   mglevels_->pbval = new MultigridBoundaryValues(pmbp, pin, false, mglevels_);
   mglevels_->pbval->InitializeBuffers((nvar_));
@@ -176,6 +254,13 @@ MGGravity::~MGGravity() {
 
 void MGGravityDriver::Solve(Driver *pdriver, int stage, Real dt) {
   RegionIndcs &indcs_ = pmy_pack_->pmesh->mb_indcs;
+
+  // Freeze the shear phase once per solve. Uses pmesh->time (not time+dt), the same
+  // convention as the FFT solver, so both solvers see identical boundary
+  // identifications at any instant. Note hydro's shear-periodic BC uses time+dt on
+  // the final RK stage (hydro_tasks.cpp); the O(dt) offset is a pre-existing,
+  // FFT-validated convention -- do not "fix" it here.
+  mg_qomt_ = ComputeShearQomt(pmy_pack_->pmesh->time);
 
   // Reallocate MG arrays and phi if AMR has changed the mesh
   PrepareForAMR();

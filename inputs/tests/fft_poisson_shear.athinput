@@ -61,6 +61,12 @@ solver    = fft       # fft | multigrid
 four_pi_G = 1.0
 vert_bc   = periodic  # periodic | open
 fft_remap = ppmx      # dc | plm | ppmx (y-remap interpolation order)
+# multigrid-solver settings (active only with solver=multigrid; ignored by fft)
+threshold = 0.0       # 0.0 = automatic convergence control (stagnation exit)
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+mg_remap  = ppmx      # dc | plm | ppmx (shear ghost remap order)
 
 <hydro_srcterms>
 self_gravity = true
