@@ -24,6 +24,10 @@
 #include <string>
 #include <vector>
 
+#if MPI_PARALLEL_ENABLED
+#include <mpi.h>
+#endif
+
 #include "athena.hpp"
 #include "globals.hpp"
 #include "parameter_input.hpp"
@@ -173,6 +177,9 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
     int m = idx/(ni*nj*nk);
     lsum += u0(m,IDN,k,j,i);
   }, Kokkos::Sum<Real>(rho_sum));
+#if MPI_PARALLEL_ENABLED
+  MPI_Allreduce(MPI_IN_PLACE, &rho_sum, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
   Real rho_mean = open_z ? 0.0 : rho_sum/ncells_tot;
 
   auto &phi = pmbp->pgrav->phi;
@@ -217,6 +224,16 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
   }, Kokkos::Max<Real>(res_max), Kokkos::Sum<Real>(res_sq), Kokkos::Max<Real>(rhs_max),
      Kokkos::Max<Real>(res_max_int), Kokkos::Sum<Real>(res_sq_int),
      Kokkos::Sum<Real>(nint_sum));
+#if MPI_PARALLEL_ENABLED
+  {
+    Real maxes[3] = {res_max, rhs_max, res_max_int};
+    Real sums[3] = {res_sq, res_sq_int, nint_sum};
+    MPI_Allreduce(MPI_IN_PLACE, maxes, 3, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, sums, 3, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+    res_max = maxes[0]; rhs_max = maxes[1]; res_max_int = maxes[2];
+    res_sq = sums[0]; res_sq_int = sums[1]; nint_sum = sums[2];
+  }
+#endif
 
   Real l2 = std::sqrt(res_sq/ncells_tot)/rhs_max;
   Real l2_int = (nint_sum > 0.0) ? std::sqrt(res_sq_int/nint_sum)/rhs_max : 0.0;
@@ -267,6 +284,13 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       lnum += phi(m,0,k,j,i);
       lana += phi_amp*cos(arg);
     }, Kokkos::Sum<Real>(sum_num), Kokkos::Sum<Real>(sum_ana));
+#if MPI_PARALLEL_ENABLED
+    {
+      Real sums[2] = {sum_num, sum_ana};
+      MPI_Allreduce(MPI_IN_PLACE, sums, 2, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+      sum_num = sums[0]; sum_ana = sums[1];
+    }
+#endif
     Real mean_num = sum_num/ncells_tot;
     Real mean_ana = sum_ana/ncells_tot;
 
@@ -289,6 +313,10 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       lmax = fmax(lmax, fabs(diff));
       lsq += SQR(diff);
     }, Kokkos::Max<Real>(dmax), Kokkos::Sum<Real>(dsq));
+#if MPI_PARALLEL_ENABLED
+    MPI_Allreduce(MPI_IN_PLACE, &dmax, 1, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &dsq, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
 
     if (global_variable::my_rank == 0) {
       std::cout << "# FFT-POISSON SHWAVE ERROR: max_rel= " << dmax/std::abs(phi_amp)

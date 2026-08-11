@@ -23,12 +23,20 @@
 //! trilinear prolongation reads) via periodic wrap in y and z. The root grid is a
 //! global array, so it is filled in place (RootShearBoundaryX1).
 //!
-//! Phase 1 scope (guarded in MGGravityDriver): 3D uniform grid, single rank, root grid
-//! on device. MPI support later inserts an Allgatherv between gather and remap.
+//! Scope (guarded in MGGravityDriver): 3D uniform grid, root grid on device.
+//! Multi-rank: each rank gathers only its own boundary blocks' columns into a
+//! zero-filled plane; one MPI_Allreduce(SUM) then reconstructs the global plane on
+//! every rank (each cell has exactly one writer, so summing zeros is exact and
+//! bit-deterministic), and remap/scatter proceed rank-locally. The root grid is
+//! replicated on every rank, so its shear fill needs no communication.
 
 // C++ headers
 #include <cmath>
 #include <string>
+
+#if MPI_PARALLEL_ENABLED
+#include <mpi.h>
+#endif
 
 // AthenaK headers
 #include "../athena.hpp"
@@ -147,6 +155,10 @@ void Multigrid::FillShearGhostPack(Real qomt, ReconstructionMethod order) {
   // 1. gather: interior columns adjacent to each x1 face -> global planes.
   //    plane face 0 (source for inner ghosts) <- columns at the outer boundary;
   //    plane face 1 (source for outer ghosts) <- columns at the inner boundary.
+#if MPI_PARALLEL_ENABLED
+  // each rank contributes only its own boundary blocks; zero first, sum after
+  Kokkos::deep_copy(plane, 0.0);
+#endif
   par_for("mgshear_gather", DevExeSpace(), 0, nmb-1, ngh, ngh+ncells-1, ngh,
           ngh+ncells-1,
   KOKKOS_LAMBDA(const int m, const int k, const int j) {
@@ -167,6 +179,16 @@ void Multigrid::FillShearGhostPack(Real qomt, ReconstructionMethod order) {
       }
     }
   });
+
+#if MPI_PARALLEL_ENABLED
+  // reconstruct the global plane on every rank: every cell was written by exactly
+  // one rank (boundary blocks tile the level's y-z extent), rest are zero, so the
+  // sum is exact and independent of reduction order. All ranks reach this collective
+  // in lockstep: the call sites skip it under level-global conditions only.
+  Kokkos::fence();
+  MPI_Allreduce(MPI_IN_PLACE, plane.data(), static_cast<int>(plane.size()),
+                MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
 
   // 2. remap each plane row in y (in place: the row is fully loaded into scratch
   //    before the write-back). Integer shift folded into the wrapped load;

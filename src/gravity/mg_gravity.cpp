@@ -108,12 +108,6 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
       std::exit(EXIT_FAILURE);
     }
     // Phase 1 restrictions
-    if (global_variable::nranks > 1) {
-      std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
-                << "Multigrid gravity with shear-periodic boundaries currently "
-                << "supports a single MPI rank only (Phase 1)." << std::endl;
-      std::exit(EXIT_FAILURE);
-    }
     if (pmy_mesh_->multilevel) {
       std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
                 << "Multigrid gravity with shear-periodic boundaries requires a "
