@@ -706,10 +706,17 @@ every face is \code{periodic} or \code{shear\_periodic} (it was silently disable
 for any not-strictly-periodic mesh before, one of three defects that made
 shearing-box multigrid gravity \emph{silently wrong} rather than unsupported: the
 ghosts were also overwritten with a $\Phi = 0$ Dirichlet wall after the periodic
-copy). Multi-rank support later inserts a single \code{MPI\_Allgatherv} between
-gather and remap; Phase 1 scope is enforced by fatal guards (single rank, uniform
-grid, periodic $x_2$/$x_3$, no \code{mg\_bc} override, \code{mg\_nghost=1}, device
-root grid).
+copy).
+
+Multi-rank support is one collective at one seam: each rank gathers only its own
+boundary blocks' columns into a zero-filled plane, and a single
+\code{MPI\_Allreduce(SUM)} then reconstructs the global plane on every rank before
+the (rank-redundant) remap. Every plane cell has exactly one writer, so summing the
+zeros is exact and independent of reduction order --- the multi-rank solve is
+\emph{bit-identical} to the serial one. The root-grid fill needs no communication
+(the root grid is already replicated on every rank). Remaining scope is enforced by
+fatal guards (uniform grid, periodic $x_2$/$x_3$, no \code{mg\_bc} override,
+\code{mg\_nghost=1}, device root grid).
 
 A byproduct worth noting: MG task lists are now executed through a
 driver-independent runner, so \code{pgrav->Solve(nullptr,\,1)} from a problem
@@ -790,6 +797,16 @@ histories differ by at most $2.0\times10^{-7}$ (rms $8.6\times10^{-8}$); phase
 locking (sine projection) holds at $4\times10^{-14}$ (MG) vs.\ $8\times10^{-14}$
 (FFT). At matched settings the two solvers are interchangeable.
 
+\paragraph{Multi-rank (the Allreduce seam).}
+With \code{-D Athena\_ENABLE\_MPI=ON}, the static tests across 1--8 ranks reproduce
+the serial results: residuals at machine precision, and the shwave error
+\emph{identical to all printed digits} (the plane reconstruction is exact, so the
+multi-rank solve is bit-identical to serial); the $\mathrm{qomt}=0$
+shear-vs-periodic bit-identity also holds at 2 ranks. The 2-rank swing run matches
+the serial multigrid history to $10^{-11}$ --- the MPI summation order of the
+history reductions, not the shear fill. (The rank-local diagnostics of the
+\code{fft\_poisson} pgen were made MPI-aware in the process.)
+
 \paragraph{Periodic regression.}
 With no \code{<shearing\_box>} block the code path is unchanged: the Jeans-wave
 evolution (\code{jeans\_wave} vs.\ \code{jeans\_fft}) reproduces the documented
@@ -809,6 +826,7 @@ Generic phase $32^3$--$128^3$ & discrete residual & $6\times10^{-15}$--$3\times1
 Analytic shwave, $128^3$ & max rel.\ $\Phi$ error (MG / FFT) & $9.5\times10^{-8}$ / $1.6\times10^{-6}$ \\
 V-cycle contraction, $\epsilon=0.52$ & per-cycle factor (vs.\ periodic) & $0.157$ (vs.\ $0.116$) \\
 Swing amplification vs.\ FFT & peak / trajectory / phase & $5.7\times10^{-8}$ / $2\times10^{-7}$ / $10^{-14}$ \\
+Multi-rank, 1--8 ranks & shwave digits / $\mathrm{qomt}{=}0$ identity & identical / bit-identical \\
 Jeans periodic regression & final density MG vs.\ FFT & bit-identical \\
 \bottomrule
 \end{tabular}
@@ -817,7 +835,6 @@ Jeans periodic regression & final density MG vs.\ FFT & bit-identical \\
 \noindent\textbf{Next: Phase 2} --- multigrid gravity on refined shearing-box meshes:
 sheared octet ghosts (the analogue of \S\ref{sec:p1_algo} at refinement levels),
 SMR rings with gravity against high-resolution uniform FFT references, then AMR;
-and the deferred infrastructure items (multi-rank \code{Allgatherv} seam,
-host-root shear fill).
+plus the one deferred infrastructure item (host-root shear fill).
 
 \end{document}
