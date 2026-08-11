@@ -14,9 +14,10 @@
 \newcommand{\code}[1]{\texttt{#1}}
 
 \title{Multigrid Self-Gravity in the AthenaK Shearing Box:\\
-       I.\ Mesh-Refinement Infrastructure (Phase 0)}
+       I.\ Mesh-Refinement Infrastructure (Phase 0)\\
+       and Shear-Periodic Boundary Conditions (Phase 1)}
 \author{\code{athenak-multigrid} tree, branch \code{multigrid}}
-\date{August 7, 2026}
+\date{August 11, 2026}
 
 \begin{document}
 \maketitle
@@ -43,7 +44,18 @@ created and destroyed every orbit for 20 orbits ($2296$ MeshBlocks created, $224
 destroyed) conserves mass exactly and matches the static-ring run an order of
 magnitude more closely than either matches the uniform grid; on the vortical-shwave
 problem the moving-ring solution converges to the static-ring one
-($4.7\times10^{-2}$ apart at $64^2$, $1.8\times10^{-4}$ at $128^2$). The companion document
+($4.7\times10^{-2}$ apart at $64^2$, $1.8\times10^{-4}$ at $128^2$).
+Phase 1 (\S\ref{sec:phase1}) then makes the multigrid Poisson solver itself
+shear-aware: shear-periodicity is imposed purely as a boundary \emph{identification}
+--- a $y$-remapped $x_1$ ghost fill applied at every level of the multigrid hierarchy
+through global boundary planes, with the 7-point operator untouched. Validated
+against the FFT oracle: solves at shear-periodic instants are bit-identical to
+plain-periodic solves; the analytic shearing-wave potential is recovered with errors
+\emph{below} the FFT solver's own ($9.5\times10^{-8}$ vs.\ $1.6\times10^{-6}$ at
+$128^3$); the swing-amplification history matches the FFT run to $2\times10^{-7}$;
+and the V-cycle contraction factor --- the one open risk named in Phase 0 --- degrades
+only from $0.116$ to $0.157$ per cycle at a near-worst fractional shift, reaching the
+same $10^{-11}$ roundoff floor. The companion document
 \code{fft\_selfgravity\_validation.pdf} covers the FFT solver used as the
 machine-precision oracle throughout this program; a Julia notebook
 (\code{multigrid\_validation\_tests.ipynb}) reproduces every test here.
@@ -78,12 +90,13 @@ The phases of the multigrid track:
         before Phase 2 couples them.
         Without 0b, refined shearing boxes pay a timestep penalty of
         $\sim(c_s + q\Omega L_x/2)/c_s \approx 10$--$30$ for gravito-turbulence boxes.
-  \item \textbf{Phase 1:} shear-periodic boundary conditions in the multigrid driver
-        (\code{MultigridDriver}), validated against the FFT oracle: exactness at
-        shear-periodic instants, shearing-wave convergence at generic shear phase,
-        and the swing-amplification test with \code{solver=multigrid}. The V-cycle
-        convergence rate with remapped boundaries is the one open risk of the program
-        and is measured here.
+  \item \textbf{Phase 1 (this document, \S\ref{sec:phase1}, done):} shear-periodic
+        boundary conditions in the multigrid driver (\code{MultigridDriver}),
+        validated against the FFT oracle: exactness at shear-periodic instants,
+        shearing-wave accuracy at generic shear phase, and the swing-amplification
+        test with \code{solver=multigrid}. The V-cycle convergence rate with
+        remapped boundaries --- the one open risk of the program --- is measured:
+        the per-cycle contraction factor degrades only from $0.116$ to $0.157$.
   \item \textbf{Phase 2:} multigrid gravity on refined shearing-box meshes (SMR
         first, then AMR), compared against high-resolution uniform FFT references.
   \item \textbf{Phase 3--5:} merge with the \code{athenak-dust} particle-mesh dust
@@ -625,10 +638,186 @@ AMR determinism & reruns, all counts/columns & bit-reproducible \\
 \end{tabular}
 \end{center}
 
-\noindent\textbf{Next: Phase 1} --- \code{shear\_periodic} boundary conditions in the
-multigrid driver, validated against the FFT oracle (exactness at shear-periodic
-instants; shearing-wave convergence order at generic phase; the swing test with
-\code{solver=multigrid}), with the V-cycle convergence rate under remapped boundaries
-as the quantity to watch.
+%=======================================================================
+\section{Phase 1: shear-periodic multigrid boundary conditions}
+\label{sec:phase1}
+
+\subsection{Method: an identification, not an operator change}
+\label{sec:p1_method}
+Shear-periodicity identifies the two radial faces with a time-dependent azimuthal
+offset,
+\begin{equation}
+  u(x,\,y,\,z) \;=\; u(x + L_x,\; y - q\Omega L_x\, t_s,\; z),
+  \qquad t_s = t \bmod T_{\rm shear},\quad
+  T_{\rm shear} = \frac{L_y}{q\Omega L_x},
+\label{eq:shear_ident}
+\end{equation}
+and nothing more: the interior 7-point Laplacian, the red--black smoother,
+restriction, and prolongation are all untouched. Only the $x_1$ ghost fill changes
+--- the ghost column is the opposite boundary column with its content shifted by
+$\Delta y = \pm\, q\Omega t_s L_x$ (henceforth $\pm\,\mathrm{qomt}\,L_x$; the sign
+convention, validated in the FFT track, is: inner ghosts shift by $+$, outer by
+$-$). The shift is generally a non-integer number of cells \emph{at every multigrid
+level}: the same $\Delta y$ is $35.52$ fine cells but $4.44$ cells four levels down.
+The integer part is index arithmetic with periodic wrap; the fractional part
+$\epsilon$ is applied with the same conservative remap kernels
+(\code{DC/PLM/PPMX\_RemapFlx}) shared by orbital advection, the hydro shear
+boundary, and the FFT solver (order selected by the new \code{<gravity> mg\_remap},
+default \code{plm}).
+
+Two structural facts make this cheap. First, the fixed point of the V-cycle (and of
+FAS) satisfies the \emph{finest-level} discrete system, so the remap quality on
+coarse levels affects only the convergence \emph{rate}, never the converged answer
+--- one code path serves every level with no accuracy tax. Second, because each
+boundary plane is remapped as a full-period global row, the wrap supplies all guard
+cells and the \code{ngh=1} multigrid ghost width imposes no stencil restriction even
+for PPMX.
+
+The shear phase is frozen once per solve as
+$\mathrm{qomt} = q\Omega\,(t \bmod T_{\rm shear})$ evaluated at \code{pmesh->time} ---
+the FFT solver's convention exactly, so both solvers see identical boundary
+identifications at any instant (hydro's shear BC uses $t+\mathrm{d}t$ on the final RK
+stage; that $O(\mathrm{d}t)$ offset is a pre-existing, FFT-validated convention).
+
+\subsection{The global boundary-plane algorithm}
+\label{sec:p1_algo}
+At each MeshBlock level the driver keeps two global boundary planes (full $y$--$z$
+extent of that level, \code{ngh} deep in $x$). One fill is three stream-ordered
+kernels: \emph{gather} the interior columns adjacent to each $x_1$ face of the
+boundary blocks into the planes; \emph{remap} each plane row by $\pm\,\mathrm{qomt}
+\,L_x$ in place; \emph{scatter} into the $x_1$ ghost slabs of the opposite-face
+blocks --- over the \emph{entire} slab $k,j \in [0, n{+}2\,\code{ngh})$, with
+periodic wrap in $y$ and $z$ supplying the slab's edge and corner ghosts (trilinear
+prolongation reads the full $3^3$ stencil, so corners matter). The fill is invoked
+at the top of \code{MultigridDriver::PhysicalBoundary}, which already runs after
+every boundary exchange in all three MG task lists including the final
+finest-level exchange --- so the one ghost layer of $\Phi$ handed to the
+\code{SelfGravity} source term is also sheared, and no task-graph surgery was
+needed. It overwrites the unsheared periodic copy the neighbor communication just
+wrote (the tree wraps \code{shear\_periodic} $x_1$ exactly like \code{periodic});
+at $\mathrm{qomt}=0$ the fill is skipped since that copy is already exact.
+
+The root grid is a single replicated array, so \code{MGRootBoundary} gains a shear
+branch (\code{RootShearBoundaryX1}) that remaps the interior-row ghost columns in
+place; the existing $x_2$/$x_3$ passes then wrap the corner rows, and the 1-cell
+block level inherits correct ghosts through \code{SetFromRootGrid} unchanged.
+Mean-source subtraction --- required for solvability --- is re-enabled whenever
+every face is \code{periodic} or \code{shear\_periodic} (it was silently disabled
+for any not-strictly-periodic mesh before, one of three defects that made
+shearing-box multigrid gravity \emph{silently wrong} rather than unsupported: the
+ghosts were also overwritten with a $\Phi = 0$ Dirichlet wall after the periodic
+copy). Multi-rank support later inserts a single \code{MPI\_Allgatherv} between
+gather and remap; Phase 1 scope is enforced by fatal guards (single rank, uniform
+grid, periodic $x_2$/$x_3$, no \code{mg\_bc} override, \code{mg\_nghost=1}, device
+root grid).
+
+A byproduct worth noting: MG task lists are now executed through a
+driver-independent runner, so \code{pgrav->Solve(nullptr,\,1)} from a problem
+generator works with \code{solver=multigrid} --- static Poisson tests (below) run
+the multigrid solver through the identical code path as evolution.
+
+\subsection{Tests and results}
+\label{sec:p1_tests}
+All tests use the shared inputs of the FFT track with the single override
+\code{gravity/solver=multigrid} (the inputs now carry the MG parameters:
+\code{threshold=0.0} stagnation mode, FMG with one V-cycle per level,
+\code{mg\_remap=ppmx}); the FFT solver runs the same input as the oracle. Multigrid
+requires cubic MeshBlocks, so the swing runs override \code{meshblock/nx*=16}.
+
+\paragraph{Shear-periodic instants (plumbing arbiter).}
+\code{fft\_poisson\_shear.athinput} with \code{solver=multigrid} at $t_0 = 0$
+\emph{and} at $t_0 = T_{\rm shear} = 2/3$ (exercising the phase wrap) produces
+$\Phi$ \textbf{bit-identical} to the same solve with plain-periodic $x_1$ and no
+shearing box. Any plumbing or indexing error shows up here first.
+
+\paragraph{Generic phase: residual, and what it does and does not prove.}
+At $t_0 = 0.37$ ($\Delta y = 0.555\,L_y$) the discrete residual
+$L[\Phi] - 4\pi G(\rho - \bar\rho)$ evaluated with the solver-filled ghosts is
+$5.9\times10^{-15}$ / $5.5\times10^{-14}$ / $2.7\times10^{-13}$ at
+$32^3/64^3/128^3$: the V-cycles converge to machine precision with no floor from
+the sheared boundary. But for multigrid this residual is a \emph{self-consistency}
+check only --- a converged solve with a wrong boundary identification would also
+drive it to zero (the FFT solver's $\sim10^{-3}$ values on the same metric measure
+its remap truncation against the \emph{exact} identification instead). The accuracy
+arbiter is the next test.
+
+\paragraph{Analytic shearing wave (the sign arbiter).}
+\code{profile=shwave} initializes a single rolled-frame Fourier mode whose discrete
+potential is known in closed form; the pointwise $\Phi$ error is $O(1)$ under any
+sign or offset error. Both solvers converge; the multigrid errors are
+\emph{smaller} than the FFT solver's own, because MG remaps only the boundary
+ghosts while the FFT rolls and unrolls the entire field:
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+max rel.\ $\Phi$ error & $32^3$ ($\epsilon{=}0.76$) & $64^3$ ($\epsilon{=}0.52$)
+  & $128^3$ ($\epsilon{=}0.04$) \\
+\midrule
+multigrid (\code{mg\_remap=ppmx}) & $3.2\times10^{-5}$ & $4.9\times10^{-6}$ & $9.5\times10^{-8}$ \\
+FFT (\code{fft\_remap=ppmx})      & $1.1\times10^{-4}$ & $1.3\times10^{-5}$ & $1.6\times10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+($\epsilon$ = fractional part of the cell shift at that resolution; it varies with
+$N$, so these are not clean order measurements --- the FFT track's fixed-$\epsilon$
+study established the remap orders.)
+
+\paragraph{V-cycle convergence rate (the named open risk).}
+Iterative mode (\code{full\_multigrid=false}, warm start off a zero guess) at
+$64^3$, $t_0=0.37$ --- a near-worst fractional shift $\epsilon = 0.52$ --- against
+the identical solve at shear phase zero:
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+ & contraction/cycle & cycles to floor & floor \\
+\midrule
+periodic phase ($\mathrm{qomt}=0$) & $0.116$ & 15 & $1.28\times10^{-11}$ \\
+sheared ($\epsilon=0.52$)          & $0.157$ & 17 & $1.27\times10^{-11}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The remapped boundary costs two extra V-cycles and reaches the \emph{same} roundoff
+floor --- no stall, no loss of the solution. The open risk is retired.
+
+\paragraph{Dynamic oracle A/B: swing amplification.}
+\code{swing\_selfgrav.athinput} (the Phase-0/FFT-track configuration:
+$128^2\times16$, self-gravity at $4\pi G = 1.9$, two swing times) run twice,
+changing only the solver. Peak amplification $-3.511418$ in \textbf{both} runs
+(relative difference $5.7\times10^{-8}$); the full 401-point amplification
+histories differ by at most $2.0\times10^{-7}$ (rms $8.6\times10^{-8}$); phase
+locking (sine projection) holds at $4\times10^{-14}$ (MG) vs.\ $8\times10^{-14}$
+(FFT). At matched settings the two solvers are interchangeable.
+
+\paragraph{Periodic regression.}
+With no \code{<shearing\_box>} block the code path is unchanged: the Jeans-wave
+evolution (\code{jeans\_wave} vs.\ \code{jeans\_fft}) reproduces the documented
+post-merge comparison --- final density bit-identical between MG and FFT,
+velocities within $4\times10^{-14}$ --- and the static periodic Poisson test now
+also runs under \code{solver=multigrid} (residual $5.9\times10^{-14}$).
+
+\subsection{Summary}
+\begin{center}
+\small
+\begin{tabular}{@{}llc@{}}
+\toprule
+Check & Metric & Result \\
+\midrule
+Shear-periodic instants ($t_0=0$ and $T_{\rm shear}$) & $\Phi$ vs.\ periodic solve & bit-identical \\
+Generic phase $32^3$--$128^3$ & discrete residual & $6\times10^{-15}$--$3\times10^{-13}$ \\
+Analytic shwave, $128^3$ & max rel.\ $\Phi$ error (MG / FFT) & $9.5\times10^{-8}$ / $1.6\times10^{-6}$ \\
+V-cycle contraction, $\epsilon=0.52$ & per-cycle factor (vs.\ periodic) & $0.157$ (vs.\ $0.116$) \\
+Swing amplification vs.\ FFT & peak / trajectory / phase & $5.7\times10^{-8}$ / $2\times10^{-7}$ / $10^{-14}$ \\
+Jeans periodic regression & final density MG vs.\ FFT & bit-identical \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Next: Phase 2} --- multigrid gravity on refined shearing-box meshes:
+sheared octet ghosts (the analogue of \S\ref{sec:p1_algo} at refinement levels),
+SMR rings with gravity against high-resolution uniform FFT references, then AMR;
+and the deferred infrastructure items (multi-rank \code{Allgatherv} seam,
+host-root shear fill).
 
 \end{document}
