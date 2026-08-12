@@ -409,7 +409,7 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
               << " l2_rel_int= " << l2_int << std::endl;
   }
 
-  // ---- analytic triple-sine comparison (profile = sin3, Tomida & Stone 4.1) ------------
+  // ---- analytic triple-sine comparison (profile = sin3, Tomida & Stone 4.1) -----------
   // rms of phi - phi_analytic (their eq. 6, means subtracted), for any solver
   if (sin3) {
     Real phi_amp3 = -four_pi_G*amp/(SQR(2.0*M_PI/lx) + SQR(2.0*M_PI/ly)

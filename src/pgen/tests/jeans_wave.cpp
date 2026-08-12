@@ -463,7 +463,7 @@ void JeansWaveErrors(ParameterInput *pin, Mesh *pm) {
     std::cout << "=====================================================" << std::endl;
   }
 
-  // ---- Tomida & Stone (2023) sec. 4.3 error metric -------------------------------------
+  // ---- Tomida & Stone (2023) sec. 4.3 error metric ------------------------------------
   // L1 errors of the conserved variables (rho, M1, M2, M3, E) against the analytic
   // linear solution, and their rms. The initial perturbation decomposes into a static
   // self-gravitating mode (fraction f_st; zero for an isentropic perturbation, and
