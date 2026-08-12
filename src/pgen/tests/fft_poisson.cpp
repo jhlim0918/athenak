@@ -72,6 +72,9 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
   std::string profile = pin->GetOrAddString("problem", "profile", "modes");
   bool slab = (profile == "slab");
   bool shwave = (profile == "shwave");
+  // sin3: the Tomida & Stone (2023) sec. 4.1 triple-sine wave with an analytic
+  // potential; enables the per-iteration convergence study (<problem> conv_niter)
+  bool sin3 = (profile == "sin3");
   // shwave: single rolled-frame Fourier mode (a slanted wave in the current frame),
   // whose discrete solution is analytic: phi = -|amp*rho0*four_pi_G/D| * same wave
   int wn1 = pin->GetOrAddInteger("problem", "n1", 1);
@@ -134,6 +137,8 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
     if (slab) {
       Real sech = 1.0/cosh((z - zc)/slab_h);
       rho = rho0*sech*sech + 1.0e-10*rho0;
+    } else if (sin3) {
+      rho = rho0 + amp*sin(2.0*M_PI*x/lx)*sin(2.0*M_PI*y/ly)*sin(2.0*M_PI*z/lz);
     } else if (shwave) {
       // single rolled-frame mode, slanted into the current frame by the shear phase
       Real arg = 2.0*M_PI*(wn1*x/lx + wn2*(y + qomt*x)/ly + wn3*z/lz);
@@ -154,8 +159,167 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
     if (is_ideal) u0(m,IEN,k,j,i) = p0/gm1;
   });
 
-  // solve for the potential with the configured solver
-  pmbp->pgrav->Solve(nullptr, 1);
+  // ---- per-iteration convergence study (Tomida & Stone 2023, sec. 4.1) ---------------
+  // With <problem> conv_niter = N and solver=multigrid, run N successive V-cycle
+  // iterations (in MGI mode each Solve() warm-starts from pgrav->phi, so N calls with
+  // niteration=1 are N V-cycles; in FMG mode iteration 1 is one full FMG sweep and the
+  // rest are V-cycles -- the conventions of their Figure 5). After each iteration print
+  //   eps    = rms(phi - phi_analytic)           (their eq. 6, means subtracted)
+  //   delta  = rms(phi - phi_fully_converged)    (their eq. 5; reference = the solution
+  //            after conv_niter iterations, built by a bit-identical first pass)
+  //   defect = rms(4piG*(rho-rho_mean) - L[phi]) (their eq. 7)
+  int conv_niter = pin->GetOrAddInteger("problem", "conv_niter", 0);
+  bool conv_study = (conv_niter > 0) && (pmbp->pgrav->pmgd != nullptr) && sin3;
+  if (conv_study) {
+    auto &phi = pmbp->pgrav->phi;
+    auto pmgd = pmbp->pgrav->pmgd;
+    bool fmg_mode = pin->GetOrAddBoolean("gravity", "full_multigrid", false);
+
+    int ni = ie - is + 1, nj = je - js + 1, nk = ke - ks + 1;
+    int nmkji = nmb*nk*nj*ni;
+    Real ncells_tot = static_cast<Real>(pmy_mesh_->mesh_indcs.nx1)
+                     *static_cast<Real>(pmy_mesh_->mesh_indcs.nx2)
+                     *static_cast<Real>(pmy_mesh_->mesh_indcs.nx3);
+    Real phi_amp3 = -four_pi_G*amp/(SQR(2.0*M_PI/lx) + SQR(2.0*M_PI/ly)
+                                    + SQR(2.0*M_PI/lz));
+
+    // mean density for the defect RHS
+    Real rsum = 0.0;
+    Kokkos::parallel_reduce("ts41_mean", Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+    KOKKOS_LAMBDA(int idx, Real &lsum) {
+      int i = is + (idx % ni);
+      int j = js + ((idx/ni) % nj);
+      int k = ks + ((idx/(ni*nj)) % nk);
+      int m = idx/(ni*nj*nk);
+      lsum += u0(m,IDN,k,j,i);
+    }, Kokkos::Sum<Real>(rsum));
+#if MPI_PARALLEL_ENABLED
+    MPI_Allreduce(MPI_IN_PLACE, &rsum, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    Real rmean = rsum/ncells_tot;
+
+    DvceArray5D<Real> phi_ref("ts41_ref", phi.extent(0), phi.extent(1),
+                              phi.extent(2), phi.extent(3), phi.extent(4));
+
+    // metric evaluators (each returns a volume-weighted rms over active zones)
+    Real lx_c = lx, ly_c = ly, lz_c = lz;
+    auto rms_eps = [&]() -> Real {
+      Real snum = 0.0, sana = 0.0;
+      Kokkos::parallel_reduce("ts41_means",
+          Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+      KOKKOS_LAMBDA(int idx, Real &ln, Real &la) {
+        int i = is + (idx % ni);
+        int j = js + ((idx/ni) % nj);
+        int k = ks + ((idx/(ni*nj)) % nk);
+        int m = idx/(ni*nj*nk);
+        Real &x1min = size.d_view(m).x1min, &x1max = size.d_view(m).x1max;
+        Real &x2min = size.d_view(m).x2min, &x2max = size.d_view(m).x2max;
+        Real &x3min = size.d_view(m).x3min, &x3max = size.d_view(m).x3max;
+        Real x = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+        Real y = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+        Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+        ln += phi(m,0,k,j,i);
+        la += phi_amp3*sin(2.0*M_PI*x/lx_c)*sin(2.0*M_PI*y/ly_c)*sin(2.0*M_PI*z/lz_c);
+      }, Kokkos::Sum<Real>(snum), Kokkos::Sum<Real>(sana));
+#if MPI_PARALLEL_ENABLED
+      Real ms[2] = {snum, sana};
+      MPI_Allreduce(MPI_IN_PLACE, ms, 2, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+      snum = ms[0]; sana = ms[1];
+#endif
+      Real mnum = snum/ncells_tot, mana = sana/ncells_tot;
+      Real ssq = 0.0;
+      Kokkos::parallel_reduce("ts41_eps",
+          Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+      KOKKOS_LAMBDA(int idx, Real &lsq) {
+        int i = is + (idx % ni);
+        int j = js + ((idx/ni) % nj);
+        int k = ks + ((idx/(ni*nj)) % nk);
+        int m = idx/(ni*nj*nk);
+        Real &x1min = size.d_view(m).x1min, &x1max = size.d_view(m).x1max;
+        Real &x2min = size.d_view(m).x2min, &x2max = size.d_view(m).x2max;
+        Real &x3min = size.d_view(m).x3min, &x3max = size.d_view(m).x3max;
+        Real x = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+        Real y = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+        Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+        Real ana = phi_amp3*sin(2.0*M_PI*x/lx_c)*sin(2.0*M_PI*y/ly_c)
+                          *sin(2.0*M_PI*z/lz_c);
+        lsq += SQR((phi(m,0,k,j,i) - mnum) - (ana - mana));
+      }, Kokkos::Sum<Real>(ssq));
+#if MPI_PARALLEL_ENABLED
+      MPI_Allreduce(MPI_IN_PLACE, &ssq, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+      return std::sqrt(ssq/ncells_tot);
+    };
+    auto rms_delta = [&]() -> Real {
+      Real ssq = 0.0;
+      Kokkos::parallel_reduce("ts41_delta",
+          Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+      KOKKOS_LAMBDA(int idx, Real &lsq) {
+        int i = is + (idx % ni);
+        int j = js + ((idx/ni) % nj);
+        int k = ks + ((idx/(ni*nj)) % nk);
+        int m = idx/(ni*nj*nk);
+        lsq += SQR(phi(m,0,k,j,i) - phi_ref(m,0,k,j,i));
+      }, Kokkos::Sum<Real>(ssq));
+#if MPI_PARALLEL_ENABLED
+      MPI_Allreduce(MPI_IN_PLACE, &ssq, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+      return std::sqrt(ssq/ncells_tot);
+    };
+    auto rms_defect = [&]() -> Real {
+      Real ssq = 0.0;
+      Kokkos::parallel_reduce("ts41_defect",
+          Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+      KOKKOS_LAMBDA(int idx, Real &lsq) {
+        int i = is + (idx % ni);
+        int j = js + ((idx/ni) % nj);
+        int k = ks + ((idx/(ni*nj)) % nk);
+        int m = idx/(ni*nj*nk);
+        Real dx1 = size.d_view(m).dx1;
+        Real dx2 = size.d_view(m).dx2;
+        Real dx3 = size.d_view(m).dx3;
+        Real lap = (phi(m,0,k,j,i+1) - 2.0*phi(m,0,k,j,i) + phi(m,0,k,j,i-1))/SQR(dx1)
+                 + (phi(m,0,k,j+1,i) - 2.0*phi(m,0,k,j,i) + phi(m,0,k,j-1,i))/SQR(dx2)
+                 + (phi(m,0,k+1,j,i) - 2.0*phi(m,0,k,j,i) + phi(m,0,k-1,j,i))/SQR(dx3);
+        lsq += SQR(four_pi_G*(u0(m,IDN,k,j,i) - rmean) - lap);
+      }, Kokkos::Sum<Real>(ssq));
+#if MPI_PARALLEL_ENABLED
+      MPI_Allreduce(MPI_IN_PLACE, &ssq, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+      return std::sqrt(ssq/ncells_tot);
+    };
+    auto report = [&](int it) {
+      Real e = rms_eps(), dl = rms_delta(), df = rms_defect();
+      if (global_variable::my_rank == 0) {
+        std::cout << std::scientific << std::setprecision(6)
+                  << "# TS41: iter= " << it << " eps= " << e
+                  << " delta= " << dl << " defect= " << df << std::endl;
+      }
+    };
+
+    // pass 0 builds the fully-converged reference; pass 1 repeats bit-identically
+    // (cycle parity reset) and records the metrics, so delta(conv_niter) == 0
+    for (int pass = 0; pass < 2; ++pass) {
+      bool record = (pass == 1);
+      Kokkos::deep_copy(phi, 0.0);
+      pmgd->ResetCycleParity();
+      pmgd->SetFullMultigrid(fmg_mode);
+      pmgd->SetNumIterations(fmg_mode ? 0 : 1);
+      if (record && !fmg_mode) report(0);  // MGI: the (zero) initial guess
+      for (int it = 1; it <= conv_niter; ++it) {
+        pmbp->pgrav->Solve(nullptr, 1);
+        if (fmg_mode && it == 1) {  // after the FMG sweep, continue with V-cycles
+          pmgd->SetFullMultigrid(false);
+          pmgd->SetNumIterations(1);
+        }
+        if (record) report(it);
+      }
+      if (!record) Kokkos::deep_copy(phi_ref, phi);
+    }
+  } else {
+    // solve for the potential with the configured solver
+    pmbp->pgrav->Solve(nullptr, 1);
+  }
 
   // ---- residual diagnostics -----------------------------------------------------------
   bool open_z = (pin->GetOrAddString("gravity", "vert_bc", "periodic") == "open");
@@ -243,6 +407,62 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
               << " l2_rel_all= " << l2
               << " max_rel_int= " << res_max_int/rhs_max
               << " l2_rel_int= " << l2_int << std::endl;
+  }
+
+  // ---- analytic triple-sine comparison (profile = sin3, Tomida & Stone 4.1) ------------
+  // rms of phi - phi_analytic (their eq. 6, means subtracted), for any solver
+  if (sin3) {
+    Real phi_amp3 = -four_pi_G*amp/(SQR(2.0*M_PI/lx) + SQR(2.0*M_PI/ly)
+                                    + SQR(2.0*M_PI/lz));
+    Real lx_c = lx, ly_c = ly, lz_c = lz;
+    Real snum = 0.0, sana = 0.0;
+    Kokkos::parallel_reduce("ts41f_means",
+        Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+    KOKKOS_LAMBDA(int idx, Real &ln, Real &la) {
+      int i = is + (idx % ni);
+      int j = js + ((idx/ni) % nj);
+      int k = ks + ((idx/(ni*nj)) % nk);
+      int m = idx/(ni*nj*nk);
+      Real &x1min = size.d_view(m).x1min, &x1max = size.d_view(m).x1max;
+      Real &x2min = size.d_view(m).x2min, &x2max = size.d_view(m).x2max;
+      Real &x3min = size.d_view(m).x3min, &x3max = size.d_view(m).x3max;
+      Real x = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+      Real y = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+      Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+      ln += phi(m,0,k,j,i);
+      la += phi_amp3*sin(2.0*M_PI*x/lx_c)*sin(2.0*M_PI*y/ly_c)*sin(2.0*M_PI*z/lz_c);
+    }, Kokkos::Sum<Real>(snum), Kokkos::Sum<Real>(sana));
+#if MPI_PARALLEL_ENABLED
+    {
+      Real ms[2] = {snum, sana};
+      MPI_Allreduce(MPI_IN_PLACE, ms, 2, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+      snum = ms[0]; sana = ms[1];
+    }
+#endif
+    Real ssq = 0.0;
+    Kokkos::parallel_reduce("ts41f_eps",
+        Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+    KOKKOS_LAMBDA(int idx, Real &lsq) {
+      int i = is + (idx % ni);
+      int j = js + ((idx/ni) % nj);
+      int k = ks + ((idx/(ni*nj)) % nk);
+      int m = idx/(ni*nj*nk);
+      Real &x1min = size.d_view(m).x1min, &x1max = size.d_view(m).x1max;
+      Real &x2min = size.d_view(m).x2min, &x2max = size.d_view(m).x2max;
+      Real &x3min = size.d_view(m).x3min, &x3max = size.d_view(m).x3max;
+      Real x = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+      Real y = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+      Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+      Real ana = phi_amp3*sin(2.0*M_PI*x/lx_c)*sin(2.0*M_PI*y/ly_c)
+                        *sin(2.0*M_PI*z/lz_c);
+      lsq += SQR((phi(m,0,k,j,i) - snum/ncells_tot) - (ana - sana/ncells_tot));
+    }, Kokkos::Sum<Real>(ssq));
+#if MPI_PARALLEL_ENABLED
+    MPI_Allreduce(MPI_IN_PLACE, &ssq, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    if (global_variable::my_rank == 0) {
+      std::cout << "# TS41-EPS: rms_eps= " << std::sqrt(ssq/ncells_tot) << std::endl;
+    }
   }
 
   // ---- analytic shearing-wave comparison (profile = shwave) ----------------------------

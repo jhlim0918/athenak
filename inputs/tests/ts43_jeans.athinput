@@ -1,0 +1,79 @@
+# Tomida & Stone (2023) ApJS 266, 7 -- section 4.3 dynamical test: Jeans wave.
+# Periodic box Lx=1, Ly=Lz=0.5 with k = 2pi(1/Lx, 1/Ly, 1/Lz) (the pgen's oblique-wave
+# machinery reproduces exactly this wavevector and lambda = 1/3), rho0 = 1, p0 = 1,
+# A = 1e-6, adiabatic Gamma = 5/3, isothermal pressure perturbation, and G set through
+# nu_Jeans = lambda/lambda_J (<problem> n_jeans; 0.5 = their stable case, zero initial
+# momentum). With ts_errors = true the pgen prints "# TS43-ERRS:" at the end: the L1
+# errors of the conserved variables vs the analytic linear solution (static mode +
+# standing gravito-acoustic wave) and their rms -- the metric of their Figure 10.
+# Their hydro is PLM + VL2 + HLLC; AthenaK's rk2 replaces VL2 (both second order).
+# Gravity: fully converged = threshold=0.0 (as in the file);
+# one FMG sweep (Niter=0)   = override gravity/threshold=-1.0 gravity/niteration=0.
+# Resolution scan: mesh/nx1=N mesh/nx2=N/2 mesh/nx3=N/2 (+ cubic meshblocks).
+
+<comment>
+problem   = Tomida & Stone 2023 sec 4.3 (Jeans wave)
+
+<job>
+basename  = TS43
+
+<mesh>
+nghost    = 3
+nx1       = 64
+x1min     = -0.5
+x1max     = 0.5
+ix1_bc    = periodic
+ox1_bc    = periodic
+
+nx2       = 32
+x2min     = -0.25
+x2max     = 0.25
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 32
+x3min     = -0.25
+x3max     = 0.25
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 32
+nx2       = 32
+nx3       = 32
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 1.5      # the time quoted for their Figure 11
+ndiag      = 100
+
+<hydro>
+eos         = ideal
+gamma       = 1.6666666666666667
+reconstruct = plm
+rsolver     = hllc
+
+<gravity>
+solver    = multigrid
+four_pi_G = 1.0       # overwritten by the pgen from n_jeans
+threshold = 0.0       # fully converged mode; -1.0 + niteration=0 = one FMG sweep
+niteration = -1
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+pgen_name = gravity
+rho0      = 1.0
+p0        = 1.0
+amp       = 1.0e-6
+n_jeans   = 0.5       # nu_Jeans = lambda/lambda_J (< 1 stable, zero initial momentum)
+v0        = 0.0
+perturb   = isothermal  # their delta_p = p0*A*sin(kx); isentropic = pure eigenmode
+ts_errors = true

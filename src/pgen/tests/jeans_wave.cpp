@@ -57,6 +57,11 @@ namespace {
   Real jw_sin_a2 = 0.0;
   Real jw_sin_a3 = 0.0;
   Real jw_v0 = 0.0;
+  Real jw_p0 = 1.0;
+  Real jw_gamma = 5.0/3.0;
+  bool jw_perturb_iso = false;   // isothermal (Tomida & Stone 4.3) vs isentropic
+  bool jw_ts_errors = false;     // print the TS43 L1-error line at the end
+  bool jw_is_ideal = false;
 }  // namespace
 
 void JeansWaveRefinement(MeshBlockPack *pmbp);
@@ -108,6 +113,18 @@ void ProblemGenerator::SelfGravity(ParameterInput *pin, const bool restart) {
 
   Real amp = pin->GetOrAddReal("problem", "amp", 1.0e-6);
   Real v0 = pin->GetOrAddReal("problem", "v0", 0.0);
+
+  // pressure-perturbation type: "isentropic" (the acoustic eigenmode, default) or
+  // "isothermal" (delta_p = p0*A*sin kx, the Tomida & Stone 2023 sec. 4.3 setup,
+  // which excites a mix of the gravito-acoustic wave and a static self-gravitating
+  // mode). Irrelevant for an isothermal EOS.
+  std::string perturb = pin->GetOrAddString("problem", "perturb", "isentropic");
+  bool perturb_iso = (perturb == "isothermal");
+  jw_perturb_iso = perturb_iso;
+  jw_ts_errors = pin->GetOrAddBoolean("problem", "ts_errors", false);
+  jw_p0 = p0;
+  jw_gamma = gamma;
+  jw_is_ideal = !is_isothermal;
 
   // Get domain size to compute actual wavenumber
   Real Lx1 = pin->GetReal("mesh", "x1max") - pin->GetReal("mesh", "x1min");
@@ -185,6 +202,7 @@ void ProblemGenerator::SelfGravity(ParameterInput *pin, const bool restart) {
   int &ks = indcs.ks; int &ke = indcs.ke;
   auto &size = pmbp->pmb->mb_size;
   int nmb = pmbp->nmb_thispack;
+  Real pfac = perturb_iso ? 1.0 : gamma;
 
   // Initialize Hydro variables -------------------------------
   if (pmbp->phydro != nullptr) {
@@ -215,7 +233,7 @@ void ProblemGenerator::SelfGravity(ParameterInput *pin, const bool restart) {
       u0(m, IM2, k, j, i) = M*sin_a3*cos_a2 + dens*v0*sin_a3*cos_a2;
       u0(m, IM3, k, j, i) = M*sin_a2         + dens*v0*sin_a2;
       if (!is_isothermal) {
-        u0(m, IEN, k, j, i) = p0/gm1*(1.0 + gamma*amp*sinkx);
+        u0(m, IEN, k, j, i) = p0/gm1*(1.0 + pfac*amp*sinkx);
         u0(m, IEN, k, j, i) += 0.5*SQR(u0(m, IM1, k, j, i))/u0(m, IDN, k, j, i);
         u0(m, IEN, k, j, i) += 0.5*SQR(u0(m, IM2, k, j, i))/u0(m, IDN, k, j, i);
         u0(m, IEN, k, j, i) += 0.5*SQR(u0(m, IM3, k, j, i))/u0(m, IDN, k, j, i);
@@ -252,7 +270,7 @@ void ProblemGenerator::SelfGravity(ParameterInput *pin, const bool restart) {
       u0(m, IM2, k, j, i) = M*sin_a3*cos_a2 + dens*v0*sin_a3*cos_a2;
       u0(m, IM3, k, j, i) = M*sin_a2         + dens*v0*sin_a2;
       if (!is_isothermal) {
-        u0(m, IEN, k, j, i) = p0/gm1*(1.0 + gamma*amp*sinkx);
+        u0(m, IEN, k, j, i) = p0/gm1*(1.0 + pfac*amp*sinkx);
         u0(m, IEN, k, j, i) += 0.5*SQR(u0(m, IM1, k, j, i))/u0(m, IDN, k, j, i);
         u0(m, IEN, k, j, i) += 0.5*SQR(u0(m, IM2, k, j, i))/u0(m, IDN, k, j, i);
         u0(m, IEN, k, j, i) += 0.5*SQR(u0(m, IM3, k, j, i))/u0(m, IDN, k, j, i);
@@ -443,5 +461,78 @@ void JeansWaveErrors(ParameterInput *pin, Mesh *pm) {
     std::cout << "Jeans wave omega measured  : " << omega_measured << std::endl;
     std::cout << "Jeans wave omega analytical: " << omega << std::endl;
     std::cout << "=====================================================" << std::endl;
+  }
+
+  // ---- Tomida & Stone (2023) sec. 4.3 error metric -------------------------------------
+  // L1 errors of the conserved variables (rho, M1, M2, M3, E) against the analytic
+  // linear solution, and their rms. The initial perturbation decomposes into a static
+  // self-gravitating mode (fraction f_st; zero for an isentropic perturbation, and
+  // (1-1/gamma)/(1-nu^2) for the isothermal perturbation of their setup, which has
+  // delta_p = c_s^2 nu^2 delta_rho and no velocity) plus a standing gravito-acoustic
+  // wave (fraction f_ac = 1-f_st, oscillating at the dispersion-relation omega):
+  //   drho(x,t) = rho0 A sin(kx) [f_st + f_ac cos(omega t)]
+  //   M(x,t)    = -k_hat rho0 A (omega/k) f_ac sin(omega t) cos(kx)
+  //   p(x,t)    = p0 (1 + gamma A sin(kx) [nu^2 f_st + f_ac cos(omega t)])
+  // Valid for the stable (nu < 1), v0 = 0, ideal-EOS case only.
+  if (jw_ts_errors) {
+    if (!jw_is_ideal || is_unstable || v0 != 0.0) {
+      if (global_variable::my_rank == 0) {
+        std::cout << "### WARNING: ts_errors requires the stable, v0=0, ideal-EOS "
+                  << "case; skipping" << std::endl;
+      }
+      return;
+    }
+    Real p0 = jw_p0, gamma = jw_gamma;
+    Real nu = n_jeans;
+    Real f_st = jw_perturb_iso ? (1.0 - 1.0/gamma)/(1.0 - nu*nu) : 0.0;
+    Real f_ac = 1.0 - f_st;
+    Real gm1 = gamma - 1.0;
+    Real cwt = std::cos(omega*t), swt = std::sin(omega*t);
+
+    Real l1d = 0.0, l1m1 = 0.0, l1m2 = 0.0, l1m3 = 0.0, l1e = 0.0;
+    Kokkos::parallel_reduce("jeans_ts43_errs",
+        Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+    KOKKOS_LAMBDA(int idx, Real &ed, Real &em1, Real &em2, Real &em3, Real &ee) {
+      int ii = idx % ni;
+      int jj = (idx / ni) % nj;
+      int kk = (idx / (ni * nj)) % nk;
+      int mm = idx / (ni * nj * nk);
+      int i = is + ii, j = js + jj, k = ks + kk;
+      Real x1min = size.d_view(mm).x1min, x1max = size.d_view(mm).x1max;
+      Real x2min = size.d_view(mm).x2min, x2max = size.d_view(mm).x2max;
+      Real x3min = size.d_view(mm).x3min, x3max = size.d_view(mm).x3max;
+      Real vol = size.d_view(mm).dx1 * size.d_view(mm).dx2 * size.d_view(mm).dx3;
+      Real x1v = CellCenterX(i - is, indcs.nx1, x1min, x1max);
+      Real x2v = CellCenterX(j - js, indcs.nx2, x2min, x2max);
+      Real x3v = CellCenterX(k - ks, indcs.nx3, x3min, x3max);
+      Real x = cos_a2*(x1v*cos_a3 + x2v*sin_a3) + x3v*sin_a2;
+      Real sinkx = std::sin(k_wave*x), coskx = std::cos(k_wave*x);
+      Real d_ana = rho0*(1.0 + amp*sinkx*(f_st + f_ac*cwt));
+      Real mpar  = -rho0*amp*(omega/k_wave)*f_ac*swt*coskx;
+      Real m1_ana = mpar*cos_a2*cos_a3;
+      Real m2_ana = mpar*cos_a2*sin_a3;
+      Real m3_ana = mpar*sin_a2;
+      Real p_ana = p0*(1.0 + gamma*amp*sinkx*(nu*nu*f_st + f_ac*cwt));
+      Real e_ana = p_ana/gm1 + 0.5*mpar*mpar/d_ana;
+      ed  += Kokkos::fabs(u0(mm,IDN,k,j,i) - d_ana)*vol;
+      em1 += Kokkos::fabs(u0(mm,IM1,k,j,i) - m1_ana)*vol;
+      em2 += Kokkos::fabs(u0(mm,IM2,k,j,i) - m2_ana)*vol;
+      em3 += Kokkos::fabs(u0(mm,IM3,k,j,i) - m3_ana)*vol;
+      ee  += Kokkos::fabs(u0(mm,IEN,k,j,i) - e_ana)*vol;
+    }, Kokkos::Sum<Real>(l1d), Kokkos::Sum<Real>(l1m1), Kokkos::Sum<Real>(l1m2),
+       Kokkos::Sum<Real>(l1m3), Kokkos::Sum<Real>(l1e));
+#if MPI_PARALLEL_ENABLED
+    Real sums[5] = {l1d, l1m1, l1m2, l1m3, l1e};
+    MPI_Allreduce(MPI_IN_PLACE, sums, 5, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+    l1d = sums[0]; l1m1 = sums[1]; l1m2 = sums[2]; l1m3 = sums[3]; l1e = sums[4];
+#endif
+    l1d /= tvol; l1m1 /= tvol; l1m2 /= tvol; l1m3 /= tvol; l1e /= tvol;
+    Real rms = std::sqrt((SQR(l1d) + SQR(l1m1) + SQR(l1m2) + SQR(l1m3) + SQR(l1e))/5.0);
+    if (global_variable::my_rank == 0) {
+      std::cout << "# TS43-ERRS: rms_l1= " << rms
+                << " l1_dens= " << l1d << " l1_mom1= " << l1m1
+                << " l1_mom2= " << l1m2 << " l1_mom3= " << l1m3
+                << " l1_etot= " << l1e << std::endl;
+    }
   }
 }

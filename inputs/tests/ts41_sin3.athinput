@@ -1,0 +1,74 @@
+# Tomida & Stone (2023) ApJS 266, 7 -- section 4.1 static test: sinusoidal density
+# rho = rho0 + A sin(2pi x/Lx) sin(2pi y/Ly) sin(2pi z/Lz) in a fully periodic unit
+# box with A=1, rho0=2, G=1 (four_pi_G = 4pi), and the analytic potential of their
+# eq. (29). With <problem> conv_niter = N the pgen runs N V-cycle iterations and
+# prints "# TS41:" lines with eps (vs analytic, eq. 6), delta (vs the fully
+# converged discrete solution, eq. 5), and the defect (eq. 7) after each iteration.
+# full_multigrid=false is their MGI mode (zero initial guess); override
+# gravity/full_multigrid=true for FMG mode (iteration 1 = one FMG sweep).
+# Their reference results: convergence factor ~0.125 per V-cycle, second-order
+# eps vs h, first FMG sweep already at the truncation-error level.
+# Resolution scans via CLI overrides, e.g. mesh/nx1=128 ... meshblock/nx1=64 ...
+
+<comment>
+problem   = Tomida & Stone 2023 sec 4.1 (sinusoidal waves, uniform grid)
+
+<job>
+basename  = TS41
+
+<mesh>
+nghost    = 2         # nghost=2 suffices: pgen only differences one ghost layer
+nx1       = 64
+x1min     = -0.5
+x1max     = 0.5
+ix1_bc    = periodic
+ox1_bc    = periodic
+
+nx2       = 64
+x2min     = -0.5
+x2max     = 0.5
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 64
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 32
+nx2       = 32
+nx3       = 32
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.2
+nlim       = 0        # static test: pgen-only, no evolution
+tlim       = 1.0
+ndiag      = 1
+
+<hydro>
+eos         = isothermal
+reconstruct = plm
+rsolver     = llf
+iso_sound_speed = 1.0
+
+<gravity>
+solver    = multigrid
+four_pi_G = 12.566370614359172   # 4*pi (G = 1)
+niteration = 1                   # per-Solve V-cycle count; the pgen loop drives it
+full_multigrid = false           # MGI mode (zero guess); true = FMG mode
+fmg_ncycle = 1
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+pgen_name = fft_poisson
+profile   = sin3
+amp       = 1.0       # A
+rho0      = 2.0
+conv_niter = 20       # iterations for the convergence study (0 = single solve)

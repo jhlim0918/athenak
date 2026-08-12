@@ -358,6 +358,12 @@ class MultigridDriver {
   virtual void Solve(Driver *pdriver, int step, Real dt = 0.0) = 0;
   void PrepareForAMR();
   int GetCoffset() const { return coffset_; }
+  // knobs for per-iteration convergence studies (e.g. the Tomida & Stone 2023
+  // sec. 4.1 test): successive Solve() calls in iterative mode warm-start from
+  // pgrav->phi, so N calls with niter=1 reproduce N V-cycle iterations
+  void SetFullMultigrid(bool f) { full_multigrid_ = f; }
+  void SetNumIterations(int n) { niter_ = n; eps_ = -1.0; }
+  void ResetCycleParity() { coffset_ = 0; }
   void MGRootBoundary();
   void TransferFromBlocksToRoot(bool initflag);
   void TransferFromRootToBlocks(bool folddata);
