@@ -814,6 +814,78 @@ post-merge comparison --- final density bit-identical between MG and FFT,
 velocities within $4\times10^{-14}$ --- and the static periodic Poisson test now
 also runs under \code{solver=multigrid} (residual $5.9\times10^{-14}$).
 
+\subsection{Consistency with the published Athena++ solver (Tomida \& Stone 2023)}
+\label{sec:ts_tests}
+Before Phase 2 builds on this solver, we anchor it to the published results of the
+Athena++ multigrid method paper it descends from (Tomida \& Stone 2023, ApJS 266, 7;
+\code{docs/Tomida\_2023\_ApJS\_266\_7.pdf}), reproducing their uniform-grid tests of
+\S4.1 and \S4.3 on our tree (notebook \S10--11; inputs
+\code{tests/ts41\_sin3.athinput}, \code{tests/ts43\_jeans.athinput}). Their \S4.2
+(binary potential on refined meshes) is the planned acceptance test for Phase 2.
+
+\paragraph{\S4.1: static sinusoidal waves.}
+Triple-sine density ($A=1$, $\rho_0=2$, $G=1$) in a fully periodic unit box, with
+the analytic potential of their eq.~(29). The \code{fft\_poisson} pgen gains
+\code{profile=sin3} and a per-iteration study mode (\code{<problem> conv\_niter}):
+in MGI mode successive \code{Solve()} calls warm-start from \code{pgrav->phi}, so
+$N$ calls with \code{niteration=1} reproduce $N$ V-cycles from the zero initial
+guess, and $\epsilon$ (vs.\ analytic, their eq.~6), $\delta$ (vs.\ the fully
+converged discrete solution, eq.~5, built by a bit-identical reference pass so
+$\delta_{20} \equiv 0$), and the defect $d$ (eq.~7) are measured after every
+iteration inside one process; in FMG mode iteration~1 is one full FMG sweep.
+Results at $h = 1/16 \ldots 1/256$ (their $1/512$--$1/1024$ points exceed laptop
+memory):
+\begin{itemize}
+  \item convergence factor per V-cycle $0.125$ at $64^3$ (rising to $0.127$ at
+        $256^3$, $0.088$ at $16^3$) in both $\delta$ and $d$, for both MGI and FMG
+        --- their reported $\sim\!0.125$ (Yavneh 1996). The $0.116$ measured in
+        \S\ref{sec:p1_tests} on the modes+blob source is source-dependent
+        variation, not a discrepancy;
+  \item converged $\epsilon$ exactly second order (order $2.008 \to 2.000$),
+        \textbf{identical to the FFT solver's $\epsilon$ to every printed digit}
+        at all resolutions (both solve the same discrete system);
+  \item the first FMG sweep alone already \emph{below} the converged discretization
+        error ($\epsilon_{\rm sweep}/\epsilon_{\rm conv} = 0.39$--$0.60$), their
+        ``remarkable'' finding.
+\end{itemize}
+
+\paragraph{\S4.3: Jeans-wave dynamical test.}
+Periodic $1 \times 0.5 \times 0.5$ box; the \code{jeans\_wave} pgen's oblique-wave
+machinery reproduces their $\mathbf{k} = 2\pi(1/L_x, 1/L_y, 1/L_z)$ exactly
+($\lambda = 1/3$), and its \code{n\_jeans} is their $\nu_{\rm Jeans}$
+($\lambda_J = \sqrt{\pi c_s^2/(G\rho_0)}$; stable case $\nu = 0.5$, $A = 10^{-6}$,
+$\Gamma = 5/3$, PLM + HLLC + \code{rk2} in place of their VL2). Two additions were
+needed: their \emph{isothermal} pressure perturbation
+(\code{<problem> perturb=isothermal}; $\delta p = p_0 A \sin kx$), and their error
+metric (\code{ts\_errors=true}): the rms of the L1 errors of the five conserved
+variables against the analytic linear solution. The isothermal perturbation is not
+an eigenmode --- it excites a \emph{static} self-gravitating mode
+($\delta p = c_s^2 \nu^2 \delta\rho$ balancing gravity, fraction
+$f_{\rm st} = (1 - 1/\Gamma)/(1 - \nu^2) = 8/15$ of the density perturbation) plus
+a standing gravito-acoustic wave at the dispersion-relation frequency --- and the
+metric compares against this two-mode solution. (Its correctness is validated by
+the convergence itself: a wrong decomposition floors the error at
+$\mathcal{O}(10^{-7})$.) At $t = 1.5$ (the time of their Fig.~11; Fig.~10's is
+unstated), $N_x = 16 \ldots 128$:
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+rms of L1 errors & $N_x{=}16$ & $32$ & $64$ & $128$ \\
+\midrule
+fully converged & $3.60\times10^{-7}$ & $1.92\times10^{-7}$ & $3.98\times10^{-8}$ & $8.12\times10^{-9}$ \\
+one FMG sweep ($N_{\rm iter}{=}0$) & $3.99\times10^{-5}$ & $6.00\times10^{-6}$ & $1.37\times10^{-6}$ & $3.13\times10^{-7}$ \\
+FFT (exact potential) & $3.60\times10^{-7}$ & $1.92\times10^{-7}$ & $3.98\times10^{-8}$ & $7.86\times10^{-9}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+Both of their findings reproduce: the converged runs are roughly second order with
+a slight deviation (order $2.27$--$2.29$; $N_x{=}16$ is pre-asymptotic at
+$\sim$5 cells per wavelength), while the single-sweep error is \emph{precisely}
+second order (2.13) but $30$--$40\times$ larger --- gravity-dominated, so
+``use of the fully converged solutions improves the accuracy.'' The FFT solver
+(exact discrete potential every stage) bounds the converged curve to six digits.
+
 \subsection{Summary}
 \begin{center}
 \small
@@ -828,6 +900,10 @@ V-cycle contraction, $\epsilon=0.52$ & per-cycle factor (vs.\ periodic) & $0.157
 Swing amplification vs.\ FFT & peak / trajectory / phase & $5.7\times10^{-8}$ / $2\times10^{-7}$ / $10^{-14}$ \\
 Multi-rank, 1--8 ranks & shwave digits / $\mathrm{qomt}{=}0$ identity & identical / bit-identical \\
 Jeans periodic regression & final density MG vs.\ FFT & bit-identical \\
+\midrule
+T\&S \S4.1: CF / $\epsilon$ order / FMG sweep & vs.\ published & $0.125$ / $2.00$ / sub-truncation \\
+T\&S \S4.1: converged $\epsilon$ vs.\ FFT & all $N$, all digits & identical \\
+T\&S \S4.3: converged / one-sweep orders & vs.\ published & $2.3$ / $2.13$, sweep $30$--$40\times$ larger \\
 \bottomrule
 \end{tabular}
 \end{center}
