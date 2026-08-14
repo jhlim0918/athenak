@@ -16,9 +16,9 @@
 \title{Multigrid Self-Gravity in the AthenaK Shearing Box:\\
        I.\ Mesh-Refinement Infrastructure (Phase 0),\\
        Shear-Periodic Boundary Conditions (Phase 1),\\
-       and Gravity on Refined Meshes: Interior Rings (Phase 2a)}
+       and Gravity on Refined Meshes (Phases 2a--2b)}
 \author{\code{athenak-multigrid} tree, branch \code{multigrid}}
-\date{August 13, 2026}
+\date{August 14, 2026}
 
 \begin{document}
 \maketitle
@@ -69,7 +69,19 @@ converges at second order in $L_2$ (first order at the max, which sits on the
 refinement interface exactly as in the periodic case); the swing test on a level-1
 ring matches its uniform twin to the hydro truncation level --- the gravity-off
 control deviates \emph{more} than the gravity-on run --- and multi-rank solves
-reproduce serial to a float32 ulp. The companion document
+reproduce serial to a float32 ulp.
+Phase 2b (\S\ref{sec:phase2b}) then admits refinement \emph{on} the shear
+boundary (boundary annuli): the octets tiling the shear faces receive a
+$y$-remapped $x_1$ ghost fill --- the Phase-1 plane algorithm at octet
+granularity, in host code with no MPI seam (octets are rank-replicated) ---
+through scalar per-face twins of the validated remap kernels, and the block
+shear planes are sized at the boundary blocks' level. Annuli solves at
+shear-periodic instants are bit-identical to their periodic twins at one and two
+refinement levels; the generic-phase $L_2$ equals the interior-ring value to
+four digits (the meshes differ by a half-box shift); contraction and floors
+match the periodic twins; and the annuli swing run matches its uniform twin to
+hydro truncation (again dominated by the gravity-off control) at machine-level
+phase lock. The companion document
 \code{fft\_selfgravity\_validation.pdf} covers the FFT solver used as the
 machine-precision oracle throughout this program; a Julia notebook
 (\code{multigrid\_validation\_tests.ipynb}) reproduces every test here.
@@ -1230,8 +1242,145 @@ Swing: phase lock & $\max|d_{\sin}|/A$, all runs & ${\sim}10^{-13}$ \\
 \end{center}
 
 \noindent\textbf{Next: Phase 2b} --- sheared octet ghosts, so refined blocks may sit
-\emph{on} the shear boundary (boundary annuli): a host-side gather--remap--scatter
-over per-level octet planes, which should also retire the deferred host-root shear
-fill; then Phase 2c (AMR: rebuild of shear planes and offset tables after remesh).
+\emph{on} the shear boundary (boundary annuli); delivered in \S\ref{sec:phase2b}.
+
+%=======================================================================
+\section{Phase 2b: sheared octet ghosts --- refinement on the shear boundary}
+\label{sec:phase2b}
+
+\subsection{Where the shear enters the octet machinery}
+With boundary annuli --- both $x_1$ faces uniformly refined over the full
+$x_2$/$x_3$ extent, the configuration Phase 0c-lite validated for hydro --- the
+multigrid hierarchy places \emph{octets} (per-cell $2^3$ refinement units bridging
+the block levels down to the root grid) directly on the shear-periodic faces.
+Phase 1 had already wrapped the octet $x_1$ neighbor tables like periodic and
+exempted the shear faces from the physical-boundary reflection, so octet $x_1$
+ghosts received \emph{unsheared} periodic values --- correct only at
+$\mathrm{qomt}=0$, and the reason 2b was fatal-guarded. Every consumer of those
+ghosts (octet smoothing, the FAS right-hand side, restriction, FMG and V-cycle
+prolongation, and the octet$\to$block transfer \code{SetFromRootGrid}) funnels
+through exactly two chokepoints, \code{SetBoundariesOctets} (per level, inside the
+V-cycle) and \code{SetOctetBoundariesBeforeTransfer} (before the root$\to$block
+transfer), which makes the fix local.
+
+Two structural facts shape the implementation. First, octets are \emph{host-side}
+flat buffers, and they are \emph{globally replicated} on every rank (the
+block$\to$root transfer runs an \code{MPI\_Allgatherv} and every rank populates
+every octet), so the sheared fill is plain serial host code with \textbf{no MPI
+seam at all}. Second, under the uniform-boundary-level policy the boundary octets
+tile the full $y$--$z$ surface at every octet level --- precisely the precondition
+for the Phase-1 global-plane algorithm to transplant.
+
+\subsection{The fill}
+\code{FillShearOctetGhosts(lev, folddata)} is the Phase-1 algorithm at octet
+granularity: gather the interior cell columns adjacent to each $x_1$ face from the
+boundary octets into a per-level $(y,z)$ plane (level resolution
+$2\,(\code{nrbx2} \ll \mathrm{lev})$ cells), remap each row by
+$\pm\,\mathrm{qomt}\,L_x$, and scatter into the $x_1$ ghost slabs of the
+opposite-face octets --- the whole slab including its $y$/$z$ edge and corner
+ghosts (trilinear and flux-conserving prolongation read those), overwriting the
+unsheared values the neighbor-table exchange just wrote, with the same sign
+convention as \code{FillShearGhostPack}. The conservative remap runs through new
+\emph{scalar per-face twins} of the team kernels
+(\code{DC/PLM/PPMX\_RemapFlxFace} in \code{remap\_fluxes.hpp}, host-callable,
+kept in documented lockstep with the validated device versions --- the device path
+is untouched, preserving every Phase-1/2a result bit-for-bit). As in Phase 1,
+octet ghost quality can only affect the convergence \emph{rate}: the V-cycle fixed
+point is set by the finest block level, whose ghosts come from the (generalized)
+block planes.
+
+On the block side, the only change is plane geometry: the participating blocks ---
+the only ones whose \code{mb\_bcs} carry \code{shear\_periodic} --- now sit at a
+uniform level $L$ above root, so the planes are sized at that level
+(\code{shear\_reflev\_} $= L - \mathrm{root}$); the per-block offsets were already
+expressed at each block's own level. The constructor guard weakens accordingly:
+$x_1$-face blocks must share \emph{one} uniform level (the hydro invariant), AMR
+remains fatal (Phase 2c), and the deferred host-root shear fill stays guarded.
+
+\subsection{Static validation}
+\label{sec:p2b_static}
+Input \code{tests/mg\_poisson\_shear\_bndry.athinput}: the \S\ref{sec:p2a_static}
+problem with the level-1 ring replaced by two annuli hugging the $x_1$ faces
+($|x| \in [1/4, 1/2]$, full $x_2$/$x_3$); a two-level variant (level-2 annuli of
+width $1/16$ plus the automatically graded level-1 buffers) runs off the same
+input via CLI overrides. The Phase-2a interior-ring results reproduce digit-exact
+with the new code in place (the octet fill is inert without boundary octets).
+\begin{itemize}
+  \item \textbf{Shear-periodic instants.} At $t_0=0$ the annuli solves are
+        \textbf{bit-identical} to their periodic twins --- at one \emph{and} two
+        refinement levels --- and their norms equal the interior-ring values to
+        all printed digits, as they must: the two meshes differ by a half-box
+        shift in $x$, under which the periodic mode's norms are invariant.
+  \item \textbf{Generic phase} ($t_0=0.37$): $L_2 = 2.057\times10^{-3}$,
+        \emph{equal to the interior-ring value to four digits} (the same
+        half-shift symmetry, now with the remap active across the refined wrap);
+        $\max = 5.95\times10^{-3}$ at the annulus' interior interface --- $5\%$
+        above the ring's peak, and still no feature \emph{on} the shear faces
+        themselves, now covered by fine blocks. Two-level:
+        $6.03\times10^{-3}$ / $4.88\times10^{-3}$ (the larger $L_2$ is the
+        root-eigenvalue reference artifact growing with off-root volume,
+        \S\ref{sec:p2a_static}).
+  \item \textbf{Contraction.} Static FMG: $0.18$--$0.20$/cycle at both one and two
+        levels, with the \emph{sheared} runs reaching floors slightly below their
+        periodic twins ($2.0\times10^{-10}$ vs.\ $8.2\times10^{-10}$ at one
+        level) --- the sheared octet coarse correction costs nothing.
+  \item \textbf{Multi-rank.} $\mathrm{np}=2/4$ reproduce the serial digits exactly
+        (the octet fill is replicated host work; the block planes keep their
+        Phase-1 Allreduce).
+\end{itemize}
+
+\subsection{Dynamic validation: swing on boundary annuli}
+\label{sec:p2b_swing}
+Input \code{tests/swing\_selfgrav\_bndry.athinput}: the \S\ref{sec:p2a_swing} swing
+configuration with the level-1 interior ring replaced by two annuli hugging the
+$x_1$ faces (2 of 8 block columns refined vs.\ the ring's 4). The full-length run
+completes with no multigrid warnings:
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+ & peak $d_{\cos}/A$ & shift vs.\ uniform & $\max|d_{\sin}|/A$ \\
+\midrule
+uniform, multigrid  & $-3.511418$ & --- & $0.7\times10^{-13}$ \\
+annuli, multigrid   & $-3.550196$ & $+1.10\%$ & $1.4\times10^{-13}$ \\
+ring (\S\ref{sec:p2a_swing}) & $-3.583481$ & $+2.05\%$ & $1.3\times10^{-13}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+All three peak at the same $t = 7.804$ at machine-level phase lock. The annuli
+shift is again \emph{toward} the converged answer (theory $3.605$), and its size
+scales with the refined volume --- half the ring's columns, roughly half the
+ring's shift. The gravity-off control closes the attribution exactly as in
+\S\ref{sec:p2a_swing}: hydro-only annuli-vs-uniform deviates \emph{more} than the
+self-gravitating run (peak $+1.70\%$ vs.\ $+1.10\%$; normalized trajectory
+deviation $6.4\times10^{-2}$ vs.\ $4.3\times10^{-2}$) --- the sheared octet
+machinery and level-1 shear planes add no deviation of their own beyond hydro
+truncation.
+
+\subsection{Summary}
+\begin{center}
+\small
+\begin{tabular}{@{}llc@{}}
+\toprule
+Check & Metric & Result \\
+\midrule
+2a regression & interior-ring shwave digits & exact \\
+Annuli shear instants, 1 and 2 levels & $\Phi$ vs.\ periodic twin & bit-identical \\
+Annuli vs.\ ring, $\mathrm{qomt}=0$ & norms (half-shift symmetry) & all digits \\
+Annuli generic phase & $L_2$ vs.\ ring $L_2$ & equal to 4 digits \\
+Contraction, 1 and 2 levels & per-cycle, sheared vs.\ periodic & $0.18$--$0.20$, floor below \\
+Multi-rank $\mathrm{np}=2/4$ & printed digits & identical \\
+Swing: annuli peak & shift vs.\ uniform, direction & $+1.10\%$, toward theory \\
+Swing: gravity-off control & hydro-only shift (must dominate) & $+1.70\%$ \\
+Swing: phase lock & $\max|d_{\sin}|/A$ & $1.4\times10^{-13}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Next: Phase 2c} --- AMR in the shearing box with multigrid
+gravity: rebuild the block shear planes and offset tables (and re-flag the octet
+levels) after every mesh update, the analogue of
+\code{ShearingBox::ReinitAfterMeshUpdate}; plus the still-deferred host-root
+shear fill.
 
 \end{document}

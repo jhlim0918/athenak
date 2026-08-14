@@ -1,52 +1,58 @@
 \contentsline {section}{\numberline {1}Plan and scope}{3}{section.1}%
 \contentsline {subsection}{\numberline {1.1}Goal and roadmap}{3}{subsection.1.1}%
-\contentsline {subsection}{\numberline {1.2}Phase-0 scope and restrictions}{3}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.2}Phase-0 scope and restrictions}{4}{subsection.1.2}%
 \contentsline {section}{\numberline {2}Numerical method}{4}{section.2}%
 \contentsline {subsection}{\numberline {2.1}Two frames for the shearing box}{4}{subsection.2.1}%
 \contentsline {paragraph}{FARGO frame (\texttt {orbital\_advection = true}, default).}{4}{section*.2}%
-\contentsline {paragraph}{Full-velocity frame (\texttt {orbital\_advection = false}).}{4}{section*.3}%
+\contentsline {paragraph}{Full-velocity frame (\texttt {orbital\_advection = false}).}{5}{section*.3}%
 \contentsline {subsection}{\numberline {2.2}Orbital advection and its refinement problem}{5}{subsection.2.2}%
 \contentsline {subsection}{\numberline {2.3}Refinement policies}{5}{subsection.2.3}%
 \contentsline {paragraph}{Uniform-boundary-level policy (always).}{5}{section*.4}%
-\contentsline {paragraph}{Annular policy (when FARGO is on).}{5}{section*.5}%
+\contentsline {paragraph}{Annular policy (when FARGO is on).}{6}{section*.5}%
 \contentsline {paragraph}{Buffer-depth safety.}{6}{section*.6}%
 \contentsline {section}{\numberline {3}What was built}{6}{section.3}%
-\contentsline {section}{\numberline {4}Building and compiling}{6}{section.4}%
-\contentsline {section}{\numberline {5}Tests and results}{7}{section.5}%
-\contentsline {subsection}{\numberline {5.1}Frame consistency: FARGO vs.\ full-velocity, uniform grid}{7}{subsection.5.1}%
-\contentsline {subsection}{\numberline {5.2}Refinement without FARGO (Phase 0a)}{7}{subsection.5.2}%
+\contentsline {section}{\numberline {4}Building and compiling}{8}{section.4}%
+\contentsline {section}{\numberline {5}Tests and results}{8}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Frame consistency: FARGO vs.\ full-velocity, uniform grid}{8}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}Refinement without FARGO (Phase 0a)}{8}{subsection.5.2}%
 \contentsline {subsection}{\numberline {5.3}Guard checks (must abort)}{8}{subsection.5.3}%
-\contentsline {subsection}{\numberline {5.4}FARGO on an annular ring (Phase 0b)}{8}{subsection.5.4}%
-\contentsline {subsection}{\numberline {5.5}Refined $x_1$ boundary faces}{8}{subsection.5.5}%
+\contentsline {subsection}{\numberline {5.4}FARGO on an annular ring (Phase 0b)}{9}{subsection.5.4}%
+\contentsline {subsection}{\numberline {5.5}Refined $x_1$ boundary faces}{9}{subsection.5.5}%
 \contentsline {subsection}{\numberline {5.6}Two-level refinement (levels 1 and 2)}{9}{subsection.5.6}%
-\contentsline {subsection}{\numberline {5.7}The endurance test: epicycles for 20 orbits}{9}{subsection.5.7}%
-\contentsline {subsection}{\numberline {5.8}AMR in the shearing box (Phase 0c)}{9}{subsection.5.8}%
+\contentsline {subsection}{\numberline {5.7}The endurance test: epicycles for 20 orbits}{10}{subsection.5.7}%
+\contentsline {subsection}{\numberline {5.8}AMR in the shearing box (Phase 0c)}{11}{subsection.5.8}%
 \contentsline {subsubsection}{\numberline {5.8.1}Dynamic ring creation and destruction: the moving-ring criterion}{11}{subsubsection.5.8.1}%
-\contentsline {subsubsection}{\numberline {5.8.2}Wave structure through a moving refinement boundary}{11}{subsubsection.5.8.2}%
+\contentsline {subsubsection}{\numberline {5.8.2}Wave structure through a moving refinement boundary}{12}{subsubsection.5.8.2}%
 \contentsline {subsection}{\numberline {5.9}Summary}{12}{subsection.5.9}%
 \contentsline {section}{\numberline {6}Phase 1: shear-periodic multigrid boundary conditions}{13}{section.6}%
 \contentsline {subsection}{\numberline {6.1}Method: an identification, not an operator change}{13}{subsection.6.1}%
-\contentsline {subsection}{\numberline {6.2}The global boundary-plane algorithm}{13}{subsection.6.2}%
-\contentsline {subsection}{\numberline {6.3}Tests and results}{14}{subsection.6.3}%
-\contentsline {paragraph}{Shear-periodic instants (plumbing arbiter).}{14}{section*.7}%
-\contentsline {paragraph}{Generic phase: residual, and what it does and does not prove.}{14}{section*.8}%
-\contentsline {paragraph}{Analytic shearing wave (the sign arbiter).}{14}{section*.9}%
-\contentsline {paragraph}{V-cycle convergence rate (the named open risk).}{14}{section*.10}%
-\contentsline {paragraph}{Dynamic oracle A/B: swing amplification.}{15}{section*.11}%
-\contentsline {paragraph}{Multi-rank (the Allreduce seam).}{15}{section*.12}%
-\contentsline {paragraph}{Periodic regression.}{15}{section*.13}%
-\contentsline {subsection}{\numberline {6.4}Consistency with the published Athena++ solver (Tomida \& Stone 2023)}{15}{subsection.6.4}%
-\contentsline {paragraph}{\S 4.1: static sinusoidal waves.}{15}{section*.14}%
-\contentsline {paragraph}{\S 4.3: Jeans-wave dynamical test.}{16}{section*.15}%
-\contentsline {subsection}{\numberline {6.5}Summary}{16}{subsection.6.5}%
-\contentsline {section}{\numberline {7}Phase 2a: multigrid gravity on refined shearing-box meshes --- interior rings}{16}{section.7}%
-\contentsline {subsection}{\numberline {7.1}Scope and the incremental decomposition}{16}{subsection.7.1}%
-\contentsline {subsection}{\numberline {7.2}Step 0: the binary-potential octet control (no shear)}{17}{subsection.7.2}%
-\contentsline {subsection}{\numberline {7.3}What 2a required --- and what it did not}{18}{subsection.7.3}%
-\contentsline {subsection}{\numberline {7.4}Static tests: bit-identity, the analytic arbiter on SMR, MPI}{18}{subsection.7.4}%
-\contentsline {paragraph}{Shear-periodic instants.}{18}{section*.16}%
-\contentsline {paragraph}{Analytic shearing wave.}{18}{section*.17}%
-\contentsline {paragraph}{Contraction and MPI.}{20}{section*.18}%
-\contentsline {subsection}{\numberline {7.5}Dynamic test: swing amplification on a ring, with control}{20}{subsection.7.5}%
-\contentsline {subsection}{\numberline {7.6}The stopping rule on refined meshes (practical note)}{20}{subsection.7.6}%
-\contentsline {subsection}{\numberline {7.7}Summary}{22}{subsection.7.7}%
+\contentsline {subsection}{\numberline {6.2}The global boundary-plane algorithm}{14}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Tests and results}{15}{subsection.6.3}%
+\contentsline {paragraph}{Shear-periodic instants (plumbing arbiter).}{15}{section*.7}%
+\contentsline {paragraph}{Generic phase: residual, and what it does and does not prove.}{15}{section*.8}%
+\contentsline {paragraph}{Analytic shearing wave (the sign arbiter).}{15}{section*.9}%
+\contentsline {paragraph}{V-cycle convergence rate (the named open risk).}{15}{section*.10}%
+\contentsline {paragraph}{Dynamic oracle A/B: swing amplification.}{16}{section*.11}%
+\contentsline {paragraph}{Multi-rank (the Allreduce seam).}{16}{section*.12}%
+\contentsline {paragraph}{Periodic regression.}{16}{section*.13}%
+\contentsline {subsection}{\numberline {6.4}Consistency with the published Athena++ solver (Tomida \& Stone 2023)}{16}{subsection.6.4}%
+\contentsline {paragraph}{\S 4.1: static sinusoidal waves.}{16}{section*.14}%
+\contentsline {paragraph}{\S 4.3: Jeans-wave dynamical test.}{17}{section*.15}%
+\contentsline {subsection}{\numberline {6.5}Summary}{17}{subsection.6.5}%
+\contentsline {section}{\numberline {7}Phase 2a: multigrid gravity on refined shearing-box meshes --- interior rings}{17}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Scope and the incremental decomposition}{17}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Step 0: the binary-potential octet control (no shear)}{18}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}What 2a required --- and what it did not}{19}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}Static tests: bit-identity, the analytic arbiter on SMR, MPI}{19}{subsection.7.4}%
+\contentsline {paragraph}{Shear-periodic instants.}{19}{section*.16}%
+\contentsline {paragraph}{Analytic shearing wave.}{19}{section*.17}%
+\contentsline {paragraph}{Contraction and MPI.}{21}{section*.18}%
+\contentsline {subsection}{\numberline {7.5}Dynamic test: swing amplification on a ring, with control}{21}{subsection.7.5}%
+\contentsline {subsection}{\numberline {7.6}The stopping rule on refined meshes (practical note)}{21}{subsection.7.6}%
+\contentsline {subsection}{\numberline {7.7}Summary}{23}{subsection.7.7}%
+\contentsline {section}{\numberline {8}Phase 2b: sheared octet ghosts --- refinement on the shear boundary}{23}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Where the shear enters the octet machinery}{23}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}The fill}{23}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}Static validation}{24}{subsection.8.3}%
+\contentsline {subsection}{\numberline {8.4}Dynamic validation: swing on boundary annuli}{24}{subsection.8.4}%
+\contentsline {subsection}{\numberline {8.5}Summary}{25}{subsection.8.5}%
