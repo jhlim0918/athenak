@@ -107,12 +107,36 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
                 << "(must be 'dc', 'plm', or 'ppmx')" << std::endl;
       std::exit(EXIT_FAILURE);
     }
-    // Phase 1 restrictions
+    // Phase 2a: refinement must stay interior in x1 — every MeshBlock touching a
+    // shear-periodic x1 face must be at the root level, so the shear-plane fill only
+    // ever involves root-level blocks and the plane geometry (root-block units, sized
+    // once at construction) stays valid. This is stricter than the hydro policy
+    // (Mesh::CheckShearingBoxRefinement), which also allows a uniformly refined
+    // boundary: that would put octets at the shear faces, and the sheared octet
+    // ghost fill is Phase 2b.
     if (pmy_mesh_->multilevel) {
-      std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
-                << "Multigrid gravity with shear-periodic boundaries requires a "
-                << "uniform grid (refinement + shear is Phase 2)." << std::endl;
-      std::exit(EXIT_FAILURE);
+      if (pmy_mesh_->adaptive) {
+        std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+                  << "Multigrid gravity with shear-periodic boundaries supports "
+                  << "static refinement only (AMR shear-plane rebuild is Phase 2c)."
+                  << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
+      for (int m = 0; m < pmy_mesh_->nmb_total; ++m) {
+        LogicalLocation &lloc = pmy_mesh_->lloc_eachmb[m];
+        std::int32_t nmbx1 =
+            (pmy_mesh_->nmb_rootx1 << (lloc.level - pmy_mesh_->root_level));
+        if ((lloc.lx1 == 0 || lloc.lx1 == (nmbx1-1)) &&
+            (lloc.level != pmy_mesh_->root_level)) {
+          std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+                    << "Multigrid gravity with shear-periodic boundaries requires "
+                    << "all MeshBlocks on the x1 boundaries to be at the root level "
+                    << "(refined blocks at the shear faces need sheared octet "
+                    << "ghosts: Phase 2b). Keep refined regions interior in x1."
+                    << std::endl;
+          std::exit(EXIT_FAILURE);
+        }
+      }
     }
     if (pmy_mesh_->mesh_bcs[BoundaryFace::inner_x2] != BoundaryFlag::periodic ||
         pmy_mesh_->mesh_bcs[BoundaryFace::outer_x2] != BoundaryFlag::periodic ||

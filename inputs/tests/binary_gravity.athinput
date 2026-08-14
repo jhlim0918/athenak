@@ -91,6 +91,9 @@ iso_sound_speed = 1.0
 
 <gravity>
 four_pi_G = 1.0
+mg_bc     = none      # override to "multipole" (+ outflow mesh BCs) for the isolated
+mporder   = 4         # T&S 4.2 comparison; the periodic default is NOT comparable
+                      # to the isolated two-sphere analytic solution
 # Use threshold-based convergence and show defect to diagnose convergence
 threshold = -1
 niteration = 20
@@ -119,3 +122,8 @@ z2          = 0.0
 radius      = 0.005859375
 m1          = 2.0
 m2          = 1.0
+
+<output1>
+file_type = bin
+variable  = grav_phi
+dt        = 1.0e-8    # potential snapshot for the region-wise error analysis
