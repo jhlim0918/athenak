@@ -1,0 +1,113 @@
+# AthenaK input file: swing-driven gravitational collapse with density-triggered AMR
+# (the first genuinely nonlinear application of the Phase-2 machinery). 4piG=6,
+# amp=0.2 puts the swing crest past its own Jeans threshold: fragmentation at t~4.5,
+# runaway to a bound clump (uniform-grid run peaks at rho=203*rho0, ABOVE the 128^2
+# Truelove ceiling of 171 — the AMR run refines it properly, level-1 ceiling 684).
+# The min_max density criterion (refine blocks with max rho > 2) flags the crest and
+# clump; under FARGO the annular policy completes full x2 rings automatically
+# (zooming = rings, not patches; see validation PDF sec. 13.3).
+# Uniform twin: override mesh_refinement/refinement=none.
+# See validation/multigrid_selfgravity_validation.pdf sec. 13 for the full ladder of
+# initial conditions (4piG in {1.9, 2.1, 3, 5, 6}, amp in {1e-4, 0.05, 0.1, 0.2}).
+<comment>
+problem   = Swing amplification with self-gravity
+
+<job>
+basename  = SwingSG
+
+<mesh>
+nghost    = 4
+nx1       = 128
+x1min     = -3.14159265358979
+x1max     =  3.14159265358979
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+
+nx2       = 128
+x2min     = -3.14159265358979
+x2max     =  3.14159265358979
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 16
+x3min     = -0.39269908169872
+x3max     =  0.39269908169872
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim      = 10.0
+ndiag      = 100
+
+<hydro>
+eos             = isothermal
+reconstruct     = plm
+rsolver         = hlle
+iso_sound_speed = 1.0
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true  # false = non-FARGO: integrate the full shear flow
+
+<gravity>
+solver    = multigrid
+four_pi_G = 6.0
+vert_bc   = periodic
+fft_remap = ppmx
+# multigrid-solver settings (active only with solver=multigrid; ignored by fft)
+threshold = -1        # fixed-count mode: stagnation control (0.0) can hit the 40-cycle
+                      # cap mid-run on refined meshes (CF~0.55 for the wound-up kx~0 mode
+                      # whose coarse-grid correction crosses the sheared x1 wrap)
+niteration = 10       # used when threshold = -1 (fixed V-cycle count)
+full_multigrid = true
+fmg_ncycle = 1
+mg_remap  = ppmx
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+amr_moving_ring = false
+ring_xc0     = 0.0
+ring_xamp    = 0.78539816339745   # pi/4; set 0.0 for the fixed-ring bit-identity test
+ring_freq    = 1.0
+ring_hwidth  = 0.19634954084936   # pi/16
+pgen_name = swing
+rho0      = 1.0
+amp       = 0.2
+nwx       = -6          # leading wave (kx0 < 0)
+nwy       = 1
+user_hist = true
+
+<output1>
+file_type      = hst
+dt             = 0.02
+data_format    = %14.7e
+user_hist_only = true
+
+<mesh_refinement>
+refinement = adaptive          # Phase 2c: AMR + multigrid gravity + shear
+num_levels = 2
+refinement_interval = 5
+max_nmb_per_rank = 1024
+
+<amr_criterion1>
+method    = min_max            # refine any block whose max density exceeds value_max
+variable  = hydro_u_d
+value_max = 2.0                # rings form on the swing crest, then follow the clump
+
+
+<output2>
+file_type      = bin
+variable       = hydro_u_d
+dt             = 0.05
