@@ -105,11 +105,24 @@ void MultigridDriver::ExecuteMGTaskList(Driver *pdriver, const std::string &tlna
 
 void Multigrid::AllocateShearPlanes() {
   if (pmy_pack_ == nullptr) return;  // root grid is filled in place
+  // Phase 2b: with boundary annuli the participating blocks (the only ones whose
+  // mb_bcs carry shear_periodic on an x1 face) sit at a uniform level above root
+  // (guarded in MGGravityDriver); the planes span the y-z extent at THAT level.
+  shear_reflev_ = 0;
+  for (int m = 0; m < pmy_mesh_->nmb_total; ++m) {
+    LogicalLocation &lloc = pmy_mesh_->lloc_eachmb[m];
+    std::int32_t nmbx1 =
+        (pmy_mesh_->nmb_rootx1 << (lloc.level - pmy_mesh_->root_level));
+    if (lloc.lx1 == 0 || lloc.lx1 == (nmbx1-1)) {
+      shear_reflev_ = lloc.level - pmy_mesh_->root_level;
+      break;  // uniform boundary level: any face block gives the answer
+    }
+  }
   shear_plane_ = new DvceArray4D<Real>[nlevel_];
   for (int l = 0; l < nlevel_; ++l) {
     int ll = nlevel_ - 1 - l;
-    int gny = nmmbx2_*(indcs_.nx2 >> ll);
-    int gnz = nmmbx3_*(indcs_.nx3 >> ll);
+    int gny = (nmmbx2_ << shear_reflev_)*(indcs_.nx2 >> ll);
+    int gnz = (nmmbx3_ << shear_reflev_)*(indcs_.nx3 >> ll);
     Kokkos::realloc(shear_plane_[l], 2, nvar_*ngh_, gnz, gny);
   }
   Kokkos::realloc(shear_goffs_, nmmb_, 2);
@@ -139,8 +152,8 @@ void Multigrid::FillShearGhostPack(Real qomt, ReconstructionMethod order) {
   int ll = nlevel_ - 1 - current_level_;
   int ncells = indcs_.nx1 >> ll;
   if (ncells < 1) return;
-  int gny = nmmbx2_*(indcs_.nx2 >> ll);
-  int gnz = nmmbx3_*(indcs_.nx3 >> ll);
+  int gny = (nmmbx2_ << shear_reflev_)*(indcs_.nx2 >> ll);
+  int gnz = (nmmbx3_ << shear_reflev_)*(indcs_.nx3 >> ll);
   int ngh = ngh_, nvar = nvar_, nmb = nmmb_;
   auto &msize = pmy_mesh_->mesh_size;
   Real lx = msize.x1max - msize.x1min;
@@ -251,6 +264,128 @@ void Multigrid::FillShearGhostPack(Real qomt, ReconstructionMethod order) {
       }
     }
   });
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void MultigridDriver::FillShearOctetGhosts(int lev, bool folddata)
+//! \brief shear-periodic x1 ghost fill for the octets of refinement level lev (host
+//! code: octet buffers live on the host and are globally replicated on every rank, so
+//! no communication is needed). The Phase-1 global-plane algorithm at octet
+//! granularity: gather the interior cell columns adjacent to each x1 face from the
+//! boundary octets (which tile the full y-z extent under the uniform-boundary-level
+//! policy), remap each row in y with the scalar twins of the conservative remap
+//! kernels, and scatter into the x1 ghost slabs of the opposite-face octets --
+//! including the slab's y/z edge and corner ghosts (trilinear prolongation and the
+//! flux-conserving boundary prolongation read those), which overwrites the unsheared
+//! periodic values the neighbor-table exchange just wrote. Sign convention identical
+//! to FillShearGhostPack: inner ghosts = outer-boundary content shifted by +qomt*Lx,
+//! outer ghosts = inner content shifted by -qomt*Lx. Assumes mg_nghost == 1 (guarded
+//! in MGGravityDriver): the plane is one cell deep and octet interiors are 2 cells.
+//! Coarse-level ghost quality only affects the convergence rate -- the V-cycle fixed
+//! point is set by the finest block level (FillShearGhostPack) -- but a consistent
+//! fill keeps the sheared contraction at its periodic value.
+
+void MultigridDriver::FillShearOctetGhosts(int lev, bool folddata) {
+  if (!mg_shear_enabled_ || mg_qomt_ == 0.0) return;
+  if (!oct_shear_face_[lev]) return;
+  const int ngh = mgroot_->ngh_;
+  const int maxlx1 = nrbx1_ << lev;
+  const int gny = (nrbx2_ << lev) * 2;
+  const int gnz = (nrbx3_ << lev) * 2;
+  const int nc = 2 + 2*ngh;
+  auto &msize = pmy_mesh_->mesh_size;
+  const Real lx = msize.x1max - msize.x1min;
+  const Real ly = msize.x2max - msize.x2min;
+  const Real dy_l = ly/static_cast<Real>(gny);
+  const int nfield = folddata ? 2 : 1;
+
+  // plane(face, field, v, gk, gj); face 0 = source for inner ghosts (gathered at the
+  // outer boundary), face 1 = source for outer ghosts (gathered at the inner boundary)
+  std::vector<Real> plane(static_cast<std::size_t>(2)*nfield*nvar_*gnz*gny, 0.0);
+  auto P = [&](int f, int fd, int v, int gk, int gj) -> Real& {
+    return plane[(((static_cast<std::size_t>(f)*nfield + fd)*nvar_ + v)*gnz + gk)*gny
+                 + gj];
+  };
+
+  // 1. gather interior columns adjacent to each x1 face
+  for (int o = 0; o < noctets_[lev]; ++o) {
+    MGOctet &oct = octets_[lev][o];
+    int fx, isrc;
+    if (oct.loc.lx1 == maxlx1-1)   { fx = 0; isrc = ngh + 1; }
+    else if (oct.loc.lx1 == 0)     { fx = 1; isrc = ngh; }
+    else continue;
+    const int gj0 = 2*static_cast<int>(oct.loc.lx2);
+    const int gk0 = 2*static_cast<int>(oct.loc.lx3);
+    for (int v = 0; v < nvar_; ++v) {
+      for (int k = 0; k <= 1; ++k) {
+        for (int j = 0; j <= 1; ++j) {
+          P(fx, 0, v, gk0+k, gj0+j) = oct.U(v, ngh+k, ngh+j, isrc);
+          if (folddata) P(fx, 1, v, gk0+k, gj0+j) = oct.Uold(v, ngh+k, ngh+j, isrc);
+        }
+      }
+    }
+  }
+
+  // 2. remap each row in y: integer part of the shift folded into the wrapped scratch
+  //    load, fractional part via the conservative remap fluxes (scalar face twins)
+  std::vector<Real> q(gny + 2*PAD), flx(gny + 2*PAD);
+  for (int f = 0; f < 2; ++f) {
+    const Real ysh = (f == 0) ? mg_qomt_*lx : -mg_qomt_*lx;
+    const int joffset = static_cast<int>(ysh/dy_l);
+    const Real eps = std::fmod(ysh, dy_l)/dy_l;
+    for (int fd = 0; fd < nfield; ++fd) {
+      for (int v = 0; v < nvar_; ++v) {
+        for (int gk = 0; gk < gnz; ++gk) {
+          for (int jf = 0; jf < gny + 2*PAD; ++jf) {
+            int jsrc = ((jf - PAD - joffset) % gny + gny) % gny;
+            q[jf] = P(f, fd, v, gk, jsrc);
+          }
+          for (int jf = PAD; jf <= PAD + gny; ++jf) {
+            switch (mg_remap_order_) {
+              case ReconstructionMethod::dc:
+                flx[jf] = DC_RemapFlxFace(q.data(), jf, eps);
+                break;
+              case ReconstructionMethod::plm:
+                flx[jf] = PLM_RemapFlxFace(q.data(), jf, eps);
+                break;
+              default:
+                flx[jf] = PPMX_RemapFlxFace(q.data(), jf, eps);
+                break;
+            }
+          }
+          for (int j = 0; j < gny; ++j) {
+            P(f, fd, v, gk, j) = q[j+PAD] - (flx[j+PAD+1] - flx[j+PAD]);
+          }
+        }
+      }
+    }
+  }
+
+  // 3. scatter into the x1 ghost slabs (full j,k range incl. corners, periodic wrap)
+  for (int o = 0; o < noctets_[lev]; ++o) {
+    MGOctet &oct = octets_[lev][o];
+    const bool inner = (oct.loc.lx1 == 0);
+    const bool outer = (oct.loc.lx1 == maxlx1-1);
+    if (!inner && !outer) continue;
+    const int gj0 = 2*static_cast<int>(oct.loc.lx2);
+    const int gk0 = 2*static_cast<int>(oct.loc.lx3);
+    for (int k = 0; k < nc; ++k) {
+      int gk = ((gk0 + k - ngh) % gnz + gnz) % gnz;
+      for (int j = 0; j < nc; ++j) {
+        int gj = ((gj0 + j - ngh) % gny + gny) % gny;
+        for (int v = 0; v < nvar_; ++v) {
+          if (inner) {
+            oct.U(v, k, j, ngh-1) = P(0, 0, v, gk, gj);
+            if (folddata) oct.Uold(v, k, j, ngh-1) = P(0, 1, v, gk, gj);
+          }
+          if (outer) {
+            oct.U(v, k, j, ngh+2) = P(1, 0, v, gk, gj);
+            if (folddata) oct.Uold(v, k, j, ngh+2) = P(1, 1, v, gk, gj);
+          }
+        }
+      }
+    }
+  }
 }
 
 //----------------------------------------------------------------------------------------

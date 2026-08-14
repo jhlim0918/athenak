@@ -1,0 +1,129 @@
+# AthenaK input file: multigrid self-gravity static-solve test with BOUNDARY-ANNULI
+# refinement on a shearing box (Phase 2b: refined blocks ON the shear-periodic x1
+# faces -> sheared octet ghosts). Same problem as mg_poisson_shear_smr.athinput, but
+# the two level-1 refined regions hug the x1 boundaries (full x2/x3, uniform level on
+# both faces), so the multigrid boundary octets tile the shear faces at every octet
+# level and the sheared octet ghost fill (FillShearOctetGhosts) is exercised.
+#
+# Validation (see validation/multigrid_selfgravity_validation.pdf sec. 11):
+# - profile=shwave, time0=0: BIT-identical to the periodic-x1 twin
+#   (mesh/ix1_bc=periodic mesh/ox1_bc=periodic); norms equal the interior-ring
+#   qomt=0 values to all digits (the two meshes differ by a half-box x-shift).
+# - generic phase (time0=0.37): l2_rel = 2.057e-3 (equal to the interior-ring value
+#   to 4 digits, as the half-shift symmetry requires), max_rel = 5.95e-3 at the
+#   annulus' interior interface.
+# - two-level variant via CLI overrides (level-2 annuli + auto-graded level-1
+#   buffers): refined_region1/level=2 refined_region1/x1max=-0.4375
+#   refined_region2/level=2 refined_region2/x1min=0.4375
+#   -> qomt=0 bit-identity holds; generic phase 6.03e-3 / 4.88e-3.
+# - static FMG contraction 0.18-0.20/cycle, sheared floor below the periodic twin's;
+#   multi-rank runs reproduce serial digits (octets are rank-replicated host data).
+# NOTE: SMR requires nghost even (4); the multigrid solver needs cubic MeshBlocks.
+<comment>
+problem   = Multigrid Poisson on a refined shearing box (interior ring)
+
+<job>
+basename  = MGPoissonShearBndry
+
+<mesh>
+nghost    = 4         # Number of ghost cells
+nx1       = 64        # Number of cells in X1-direction
+x1min     = -0.5      # minimum value of X1
+x1max     = 0.5       # maximum value of X1
+ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
+ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
+
+nx2       = 64        # Number of cells in X2-direction
+x2min     = -0.5      # minimum value of X2
+x2max     = 0.5       # maximum value of X2
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 64        # Number of cells in X3-direction
+x3min     = -0.5      # minimum value of X3
+x3max     = 0.5       # maximum value of X3
+ix3_bc    = periodic  # Inner-X3 boundary condition flag
+ox3_bc    = periodic  # Outer-X3 boundary condition flag
+
+<meshblock>
+nx1       = 16        # Number of cells in each MeshBlock, X1-dir
+nx2       = 16        # Number of cells in each MeshBlock, X2-dir
+nx3       = 16        # Number of cells in each MeshBlock, X3-dir
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integrator
+cfl_number = 0.2      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = 0        # cycle limit (pgen-only test; no evolution)
+tlim       = 1.0      # time limit
+ndiag      = 1        # cycles between diagnostic output
+
+<hydro>
+eos         = isothermal  # EOS type
+reconstruct = plm         # spatial reconstruction method
+rsolver     = llf         # Riemann-solver to be used
+iso_sound_speed = 1.0
+
+<shearing_box>
+qshear    = 1.5       # shear rate parameter q
+omega0    = 1.0       # rotation frequency
+
+<gravity>
+solver    = multigrid       # fft | multigrid
+four_pi_G = 1.0
+vert_bc   = periodic  # periodic | open
+fft_remap = ppmx      # dc | plm | ppmx (y-remap interpolation order)
+# multigrid-solver settings (active only with solver=multigrid; ignored by fft)
+threshold = 0.0       # 0.0 = automatic convergence control (stagnation exit)
+niteration = 20       # used when threshold = -1 (fixed V-cycle count)
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+mg_remap  = ppmx      # dc | plm | ppmx (shear ghost remap order)
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+pgen_name = fft_poisson   # problem generator name
+profile   = modes         # modes | shwave (single rolled-frame mode, phi vs analytic)
+rho0      = 1.0
+amp       = 0.1
+blob_amp  = 1.0
+time0     = 0.37          # generic shear phase (Tshear = Ly/(q*Om*Lx) = 2/3 here)
+n1        = 1             # shwave mode numbers (rolled frame)
+n2        = 1
+n3        = 1
+slab_h    = 0.05          # slab scale height (profile = slab)
+
+<output1>
+file_type = bin
+variable  = hydro_w
+dt        = 1.0
+
+<output2>
+file_type = bin
+variable  = grav_phi
+dt        = 1.0
+
+<mesh_refinement>
+refinement = static
+max_nmb_per_rank = 256
+
+<refined_region1>
+level = 1
+x1min = -0.5
+x1max = -0.25
+x2min = -0.5
+x2max = 0.5
+x3min = -0.5
+x3max = 0.5
+
+<refined_region2>
+level = 1
+x1min = 0.25
+x1max = 0.5
+x2min = -0.5
+x2max = 0.5
+x3min = -0.5
+x3max = 0.5

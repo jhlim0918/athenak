@@ -327,6 +327,10 @@ class Multigrid {
   BoundaryFlag mg_block_bcs_[6];
   int nlevel_, ngh_, nvar_, ncoeff_, nmatrix_, current_level_;
   int nmmbx1_, nmmbx2_, nmmbx3_;
+  // refinement offset of the x1-boundary blocks above root (Phase 2b boundary
+  // annuli: the shear planes span the y-z extent at the boundary blocks' level;
+  // 0 on uniform grids and for interior-only refinement)
+  int shear_reflev_ = 0;
   int nmmb_;
   bool on_host_;
 
@@ -462,9 +466,10 @@ class MultigridDriver {
   Real CalculateDefectNorm(MGNormType nrm, int n);
   void CalculateMatrix(Real dt);
   Multigrid* FindMultigrid(int tgid);
-  // shear-periodic x1 support (Phase 1: uniform grid, single rank)
+  // shear-periodic x1 support (Phase 1: uniform grid; Phase 2b: boundary annuli)
   Real ComputeShearQomt(Real time) const;
   void RootShearBoundaryX1();
+  void FillShearOctetGhosts(int lev, bool folddata);
   // driver-independent task-list runner (MG tasks never use their Driver* argument,
   // so this also supports static solves from pgens where no Driver exists yet)
   void ExecuteMGTaskList(Driver *pdriver, const std::string &tlname);
@@ -532,6 +537,10 @@ class MultigridDriver {
   // Layout: octet_stride_ consecutive Reals per octet (nvar*nc*nc*nc).
   std::vector<Real> *oct_u_buf_, *oct_def_buf_, *oct_src_buf_, *oct_uold_buf_;
   int octet_stride_;  // elements per octet = nvar * nc^3
+
+  // per-octet-level flag: octets tile both shear-periodic x1 faces (Phase 2b);
+  // set in InitializeOctets, gates FillShearOctetGhosts
+  std::vector<char> oct_shear_face_;
 
   std::vector<Real> root_u_buf_, root_uold_buf_;
   int root_buf_nc_;

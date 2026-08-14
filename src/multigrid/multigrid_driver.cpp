@@ -439,6 +439,23 @@ void MultigridDriver::InitializeOctets() {
     octetbflag_[l].resize(noctets_[l], false);
   }
 
+  // Phase 2b: flag octet levels whose octets sit on the shear-periodic x1 faces.
+  // Under the uniform-boundary-level policy either both faces are tiled at a level
+  // or neither is; FillShearOctetGhosts is gated on this flag.
+  oct_shear_face_.assign(std::max(nreflevel_, 1), 0);
+  if (mg_mesh_bcs_[BoundaryFace::inner_x1] == BoundaryFlag::shear_periodic) {
+    for (int l = 0; l < nreflevel_; ++l) {
+      bool inner = false, outer = false;
+      int maxlx1 = nrbx1_ << l;
+      for (int o = 0; o < noctets_[l]; ++o) {
+        if (octets_[l][o].loc.lx1 == 0) inner = true;
+        if (octets_[l][o].loc.lx1 == maxlx1-1) outer = true;
+        if (inner && outer) break;
+      }
+      oct_shear_face_[l] = (inner && outer) ? 1 : 0;
+    }
+  }
+
   // Allocate scratch buffers for boundary exchange
   int nv = std::max(nvar_, std::max(ncoeff_, 1));
   int cbnc = 3;  // coarse buffer is 3x3x3
@@ -1329,6 +1346,10 @@ void MultigridDriver::SetBoundariesOctets(bool fprolong, bool folddata) {
     }
     ApplyPhysicalBoundariesOctet(oct, false);
   }
+
+  // Phase 2b: overwrite the (unsheared) x1-wrap ghost slabs of the boundary octets
+  // with the y-remapped image; must follow the per-octet exchange above
+  FillShearOctetGhosts(lev, folddata);
 }
 
 
@@ -1722,6 +1743,12 @@ void MultigridDriver::SetOctetBoundariesBeforeTransfer(bool folddata) {
     else
       ProlongateOctetBoundaries(oct, cbuf_, cbufold_, nvar_, ncoarse_, false);
     ApplyPhysicalBoundariesOctet(oct, false);
+  }
+
+  // Phase 2b: sheared x1 ghosts for boundary octets at every level (these ghosts
+  // feed SetFromRootGrid for the boundary blocks' coarsest levels)
+  for (int l = 0; l < nreflevel_; ++l) {
+    FillShearOctetGhosts(l, folddata);
   }
 }
 

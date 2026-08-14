@@ -11,6 +11,7 @@
 // C++ headers
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include <sstream>    // sstream
 #include <stdexcept>  // runtime_error
 #include <string>     // c_str()
@@ -107,13 +108,13 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
                 << "(must be 'dc', 'plm', or 'ppmx')" << std::endl;
       std::exit(EXIT_FAILURE);
     }
-    // Phase 2a: refinement must stay interior in x1 — every MeshBlock touching a
-    // shear-periodic x1 face must be at the root level, so the shear-plane fill only
-    // ever involves root-level blocks and the plane geometry (root-block units, sized
-    // once at construction) stays valid. This is stricter than the hydro policy
-    // (Mesh::CheckShearingBoxRefinement), which also allows a uniformly refined
-    // boundary: that would put octets at the shear faces, and the sheared octet
-    // ghost fill is Phase 2b.
+    // Phase 2a/2b: static refinement in the shearing box. The MeshBlocks on the
+    // shear-periodic x1 faces must share ONE uniform level (the same invariant the
+    // hydro side enforces in Mesh::CheckShearingBoxRefinement): the block shear
+    // planes are sized at that level, and the octet shear fill (Phase 2b) relies on
+    // the boundary octets tiling the full y-z extent at every octet level. Interior
+    // rings (boundary at root, Phase 2a) and uniformly refined boundary annuli
+    // (boundary above root, Phase 2b) both pass.
     if (pmy_mesh_->multilevel) {
       if (pmy_mesh_->adaptive) {
         std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
@@ -122,20 +123,25 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
                   << std::endl;
         std::exit(EXIT_FAILURE);
       }
+      int blev_min = std::numeric_limits<int>::max();
+      int blev_max = std::numeric_limits<int>::min();
       for (int m = 0; m < pmy_mesh_->nmb_total; ++m) {
         LogicalLocation &lloc = pmy_mesh_->lloc_eachmb[m];
         std::int32_t nmbx1 =
             (pmy_mesh_->nmb_rootx1 << (lloc.level - pmy_mesh_->root_level));
-        if ((lloc.lx1 == 0 || lloc.lx1 == (nmbx1-1)) &&
-            (lloc.level != pmy_mesh_->root_level)) {
-          std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
-                    << "Multigrid gravity with shear-periodic boundaries requires "
-                    << "all MeshBlocks on the x1 boundaries to be at the root level "
-                    << "(refined blocks at the shear faces need sheared octet "
-                    << "ghosts: Phase 2b). Keep refined regions interior in x1."
-                    << std::endl;
-          std::exit(EXIT_FAILURE);
+        if (lloc.lx1 == 0 || lloc.lx1 == (nmbx1-1)) {
+          blev_min = std::min(blev_min, static_cast<int>(lloc.level));
+          blev_max = std::max(blev_max, static_cast<int>(lloc.level));
         }
+      }
+      if (blev_min != blev_max) {
+        std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+                  << "Multigrid gravity with shear-periodic boundaries requires all "
+                  << "MeshBlocks on the x1 boundaries to share ONE uniform level "
+                  << "(levels " << blev_min << ".." << blev_max << " found). Keep "
+                  << "refined regions interior in x1, or refine BOTH x1 faces "
+                  << "uniformly (full x2/x3 extent, same level)." << std::endl;
+        std::exit(EXIT_FAILURE);
       }
     }
     if (pmy_mesh_->mesh_bcs[BoundaryFace::inner_x2] != BoundaryFlag::periodic ||

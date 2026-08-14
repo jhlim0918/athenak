@@ -149,4 +149,118 @@ const Real eps, const ScrArray1D<Real> &u, ScrArray1D<Real> &ust) {
   return;
 }
 
+//----------------------------------------------------------------------------------------
+// Scalar per-face twins of the team kernels above, for callers outside a Kokkos team
+// (the multigrid octet shear fill runs in host serial code on octet buffers). Each
+// returns the remap flux at cell face jf of the padded scratch row u (same convention
+// as ust(jf) above: the team loops write faces jl..ju, so jf spans [PAD, PAD+gny]).
+// The math MUST stay in lockstep with the team versions; any change to one is a
+// change to both.
+
+KOKKOS_INLINE_FUNCTION
+Real DC_RemapFlxFace(const Real *u, const int jf, const Real eps) {
+  return (eps > 0.0) ? eps*u[jf-1] : eps*u[jf];
+}
+
+KOKKOS_INLINE_FUNCTION
+Real PLM_RemapFlxFace(const Real *u, const int jf, const Real eps) {
+  if (eps > 0.0) {
+    Real dql = u[jf-1] - u[jf-2];
+    Real dqr = u[jf  ] - u[jf-1];
+    Real dq2 = dql*dqr;
+    Real dqm = 2.0*dq2/(dql + dqr);
+    if (dq2 <= 0.0) dqm = 0.0;
+    return eps*(u[jf-1] + 0.5*(1.0 - eps)*dqm);
+  } else {
+    Real dql = u[jf  ] - u[jf-1];
+    Real dqr = u[jf+1] - u[jf  ];
+    Real dq2 = dql*dqr;
+    Real dqm = 2.0*dq2/(dql + dqr);
+    if (dq2 <= 0.0) dqm = 0.0;
+    return eps*(u[jf] - 0.5*(1.0 + eps)*dqm);
+  }
+}
+
+KOKKOS_INLINE_FUNCTION
+Real PPMX_RemapFlxFace(const Real *u, const int jf, const Real eps) {
+  // reconstruct the upwind cell c: face jf is cell (jf-1)'s right face for eps > 0,
+  // cell jf's left face for eps < 0 (the team version writes ust(j+1) resp. ust(j))
+  const int c = (eps > 0.0) ? jf-1 : jf;
+  Real ulv=(7.0*(u[c-1]+u[c]) - (u[c-2]+u[c+1]))/12.0;
+  Real d2uc = 3.0*(u[c-1] - 2.0*ulv + u[c]);
+  Real d2ul = (u[c-2] - 2.0*u[c-1] + u[c  ]);
+  Real d2ur = (u[c-1] - 2.0*u[c  ] + u[c+1]);
+  Real d2ulim = 0.0;
+  Real lim_slope = fmin(fabs(d2ul),fabs(d2ur));
+  if (d2uc > 0.0 && d2ul > 0.0 && d2ur > 0.0) {
+    d2ulim = SIGN(d2uc)*fmin(1.25*lim_slope,fabs(d2uc));
+  }
+  if (d2uc < 0.0 && d2ul < 0.0 && d2ur < 0.0) {
+    d2ulim = SIGN(d2uc)*fmin(1.25*lim_slope,fabs(d2uc));
+  }
+  ulv = 0.5*((u[c-1]+u[c]) - d2ulim/3.0);
+
+  Real urv=(7.0*(u[c]+u[c+1]) - (u[c-1]+u[c+2]))/12.0;
+  d2uc = 3.0*(u[c] - 2.0*urv + u[c+1]);
+  d2ul = (u[c-1] - 2.0*u[c  ] + u[c+1]);
+  d2ur = (u[c  ] - 2.0*u[c+1] + u[c+2]);
+  d2ulim = 0.0;
+  lim_slope = fmin(fabs(d2ul),fabs(d2ur));
+  if (d2uc > 0.0 && d2ul > 0.0 && d2ur > 0.0) {
+    d2ulim = SIGN(d2uc)*fmin(1.25*lim_slope,fabs(d2uc));
+  }
+  if (d2uc < 0.0 && d2ul < 0.0 && d2ur < 0.0) {
+    d2ulim = SIGN(d2uc)*fmin(1.25*lim_slope,fabs(d2uc));
+  }
+  urv = 0.5*((u[c]+u[c+1]) - d2ulim/3.0);
+
+  Real qa = (urv-u[c])*(u[c]-ulv);
+  Real qb = (u[c-1]-u[c])*(u[c]-u[c+1]);
+  if (qa <= 0.0 && qb <= 0.0) {
+    Real d2u = -12.0*(u[c] - 0.5*(ulv+urv));
+    d2uc = (u[c-1] - 2.0*u[c  ] + u[c+1]);
+    d2ul = (u[c-2] - 2.0*u[c-1] + u[c  ]);
+    d2ur = (u[c  ] - 2.0*u[c+1] + u[c+2]);
+    d2ulim = 0.0;
+    lim_slope = fmin(fabs(d2ul),fabs(d2ur));
+    lim_slope = fmin(fabs(d2uc),lim_slope);
+    if (d2uc > 0.0 && d2ul > 0.0 && d2ur > 0.0 && d2u > 0.0) {
+      d2ulim = SIGN(d2u)*fmin(1.25*lim_slope,fabs(d2u));
+    }
+    if (d2uc < 0.0 && d2ul < 0.0 && d2ur < 0.0 && d2u < 0.0) {
+      d2ulim = SIGN(d2u)*fmin(1.25*lim_slope,fabs(d2u));
+    }
+    if (d2u == 0.0) {
+      ulv = u[c];
+      urv = u[c];
+    } else {
+      ulv = u[c] + (ulv - u[c])*d2ulim/d2u;
+      urv = u[c] + (urv - u[c])*d2ulim/d2u;
+    }
+  }
+
+  qa = (urv-u[c])*(u[c]-ulv);
+  qb = urv-ulv;
+  Real qc = 6.0*(u[c] - 0.5*(ulv+urv));
+  if (qa <= 0.0) {
+    ulv = u[c];
+    urv = u[c];
+  } else if ((qb*qc) > (qb*qb)) {
+    ulv = 3.0*u[c] - 2.0*urv;
+  } else if ((qb*qc) < -(qb*qb)) {
+    urv = 3.0*u[c] - 2.0*ulv;
+  }
+
+  Real du = urv - ulv;
+  Real u6 = 6.0*(u[c] - 0.5*(ulv + urv));
+
+  if (eps > 0.0) {
+    Real qx = TWO_3RDS*eps;
+    return eps*(urv - 0.75*qx*(du - (1.0 - qx)*u6));
+  } else {
+    Real qx = -TWO_3RDS*eps;
+    return eps*(ulv + 0.75*qx*(du + (1.0 - qx)*u6));
+  }
+}
+
 #endif // SHEARING_BOX_REMAP_FLUXES_HPP_

@@ -1,0 +1,117 @@
+# AthenaK input file: swing amplification with multigrid self-gravity on BOUNDARY-
+# ANNULI refinement (Phase 2b: refined blocks on the shear-periodic x1 faces, so the
+# sheared octet ghost fill and the level-1-sized block shear planes are exercised
+# dynamically). Same physics as swing_selfgrav_smr.athinput, with the level-1 ring
+# replaced by two annuli hugging the x1 faces (full x2/x3, uniform level on both).
+#
+# Validated behavior (validation/multigrid_selfgravity_validation.pdf sec. 11):
+# see the notebook (sec. 13) for the peak, phase-lock, and gravity-off-control
+# numbers; the annuli run must match its uniform twin to hydro-truncation level
+# (the gravity-off control deviates more), at machine-level phase lock.
+# Gravity uses FMG + fixed niteration (stopping-rule note, PDF sec. 10.6).
+<comment>
+problem   = Swing amplification with self-gravity
+
+<job>
+basename  = SwingSG
+
+<mesh>
+nghost    = 4
+nx1       = 128
+x1min     = -3.14159265358979
+x1max     =  3.14159265358979
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+
+nx2       = 128
+x2min     = -3.14159265358979
+x2max     =  3.14159265358979
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 16
+x3min     = -0.39269908169872
+x3max     =  0.39269908169872
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 8.0        # 2 x t_swing
+ndiag      = 100
+
+<hydro>
+eos             = isothermal
+reconstruct     = plm
+rsolver         = hlle
+iso_sound_speed = 1.0
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true  # false = non-FARGO: integrate the full shear flow
+
+<gravity>
+solver    = multigrid
+four_pi_G = 1.9
+vert_bc   = periodic
+fft_remap = ppmx
+# multigrid-solver settings (active only with solver=multigrid; ignored by fft)
+threshold = -1        # fixed-count mode: stagnation control (0.0) can hit the 40-cycle
+                      # cap mid-run on refined meshes (CF~0.55 for the wound-up kx~0 mode
+                      # whose coarse-grid correction crosses the sheared x1 wrap)
+niteration = 10       # used when threshold = -1 (fixed V-cycle count)
+full_multigrid = true
+fmg_ncycle = 1
+mg_remap  = ppmx
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+pgen_name = swing
+rho0      = 1.0
+amp       = 1.0e-4      # small enough to stay linear through the amplification
+nwx       = -6          # leading wave (kx0 < 0)
+nwy       = 1
+user_hist = true
+
+<output1>
+file_type      = hst
+dt             = 0.02
+data_format    = %14.7e
+user_hist_only = true
+
+<mesh_refinement>
+refinement = static
+max_nmb_per_rank = 512
+
+<refined_region1>
+level = 1
+x1min = -3.14159265358979
+x1max = -2.35619449019234
+x2min = -3.14159265358979
+x2max =  3.14159265358979
+x3min = -0.39269908169872
+x3max =  0.39269908169872
+
+<refined_region2>
+level = 1
+x1min =  2.35619449019234
+x1max =  3.14159265358979
+x2min = -3.14159265358979
+x2max =  3.14159265358979
+x3min = -0.39269908169872
+x3max =  0.39269908169872
+<output2>
+file_type      = bin
+variable       = hydro_w
+dt             = 8.0     # t=0 and final density snapshot (doc figure / notebook)
