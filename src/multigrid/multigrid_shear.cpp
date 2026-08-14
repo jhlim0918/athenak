@@ -100,8 +100,11 @@ void MultigridDriver::ExecuteMGTaskList(Driver *pdriver, const std::string &tlna
 
 //----------------------------------------------------------------------------------------
 //! \fn void Multigrid::AllocateShearPlanes()
-//! \brief allocate the per-level global boundary planes and the per-block global
-//! (y,z) cell-offset table (uniform grid: all blocks at root level)
+//! \brief allocate (or, after AMR, rebuild) the per-level global boundary planes and
+//! the per-block global (y,z) cell-offset table. Idempotent: PrepareForAMR calls it
+//! again after every mesh update (Phase 2c) — Kokkos::realloc resizes the planes if
+//! the boundary level changed, and the offsets are recomputed from the current
+//! logical locations (load balancing can reassign blocks without changing nmmb_).
 
 void Multigrid::AllocateShearPlanes() {
   if (pmy_pack_ == nullptr) return;  // root grid is filled in place
@@ -118,7 +121,7 @@ void Multigrid::AllocateShearPlanes() {
       break;  // uniform boundary level: any face block gives the answer
     }
   }
-  shear_plane_ = new DvceArray4D<Real>[nlevel_];
+  if (shear_plane_ == nullptr) shear_plane_ = new DvceArray4D<Real>[nlevel_];
   for (int l = 0; l < nlevel_; ++l) {
     int ll = nlevel_ - 1 - l;
     int gny = (nmmbx2_ << shear_reflev_)*(indcs_.nx2 >> ll);

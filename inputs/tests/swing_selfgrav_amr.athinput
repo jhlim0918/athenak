@@ -1,25 +1,20 @@
-# AthenaK input file: swing amplification with multigrid self-gravity on a refined
-# (SMR) shearing box — Phase 2a dynamic test (interior-ring refinement + shear).
-# Same physics as swing_selfgrav.athinput (single leading shearing wave, epicyclic-
-# resonant regime, peak amplification ~3.6 in linear theory), on 128^2 x 16 with
-# 16^3 MeshBlocks and a level-1 ring over the middle SIX of eight x1 block columns
-# (the region edges, pi/2 in decimal, sit 3e-15 inside the neighbors and pull them
-# in; full x2/x3), so no
-# refined block touches the shear-periodic x1 faces.
+# AthenaK input file: swing amplification with multigrid self-gravity under AMR
+# (Phase 2c: adaptive refinement + shear-periodic multigrid gravity). The swing pgen
+# enrolls the prescribed moving-ring criterion (same as the shwave pgen's):
+# xc(t) = ring_xamp*sin(ring_freq*t), refining MeshBlocks overlapping
+# [xc-hwidth, xc+hwidth] and derefining all others, so rings are created and
+# destroyed continuously through the swing. PrepareForAMR rebuilds the multigrid
+# shear planes, per-block offsets, and octet face flags after every remesh.
 #
-# Validated behavior (validation/multigrid_selfgravity_validation.pdf):
-# - uniform twin (override mesh_refinement/refinement=none): peak d_cos/amp
-#   = -3.511418, identical to FFT and to the Phase-1 A/B.
-# - this SMR run: peak = -3.583481 at the same t, i.e. 2.1% from the uniform twin
-#   IN THE DIRECTION of the converged answer (theory 3.605; 256^2 doc run 3.62).
-#   The gravity-OFF control (hydro_srcterms/self_gravity=false) shows a slightly
-#   LARGER SMR-vs-uniform deviation (2.8% peak, 7.7e-2 vs 5.6e-2 normalized max),
-#   so the shift is entirely the hydro resolution blend: multigrid gravity on the
-#   refined shearing box adds no deviation of its own.
-# - phase lock max|d_sin|/amp ~ 1e-13 (machine level): shear phases exact.
-# NOTE: SMR requires nghost even (4); the multigrid solver needs cubic MeshBlocks.
-# Gravity uses FMG + fixed niteration (see threshold comment below).
-
+# Validation (validation/multigrid_selfgravity_validation.pdf sec. 12): full run
+# with 392 MeshBlocks created / 280 destroyed; peak -3.510989 at t=7.804 (-0.01%
+# vs the static uniform run: the thin transient ring adds negligible net
+# resolution); max|d_sin|/A ~ 1e-4 is hydro REGRIDDING truncation, not gravity
+# (the gravity-off control shows the same at 3.7e-5, scaling with wave amplitude,
+# and dominates the trajectory deviation: 5.1e-2 vs 2.9e-2 gravity-on).
+# The fixed-ring variant (ring_xamp=0, ring_hwidth=pi/2) reproduces the static-SMR
+# ring mesh with no mid-run remesh (see the notebook for its comparison).
+# Gravity uses FMG + fixed niteration (stopping-rule note, PDF sec. 10.6).
 <comment>
 problem   = Swing amplification with self-gravity
 
@@ -88,6 +83,11 @@ mg_remap  = ppmx
 self_gravity = true
 
 <problem>
+amr_moving_ring = true
+ring_xc0     = 0.0
+ring_xamp    = 0.78539816339745   # pi/4; set 0.0 for the fixed-ring bit-identity test
+ring_freq    = 1.0
+ring_hwidth  = 0.19634954084936   # pi/16
 pgen_name = swing
 rho0      = 1.0
 amp       = 1.0e-4      # small enough to stay linear through the amplification
@@ -102,17 +102,14 @@ data_format    = %14.7e
 user_hist_only = true
 
 <mesh_refinement>
-refinement = static
-max_nmb_per_rank = 512
+refinement = adaptive          # Phase 2c: AMR + multigrid gravity + shear
+num_levels = 2
+refinement_interval = 5
+max_nmb_per_rank = 384
 
-<refined_region1>
-level = 1
-x1min = -1.5707963267949
-x1max =  1.5707963267949
-x2min = -3.14159265358979
-x2max =  3.14159265358979
-x3min = -0.39269908169872
-x3max =  0.39269908169872
+<amr_criterion1>
+method = user                  # SwingMovingRingRefine enrolled by the swing pgen
+
 
 <output2>
 file_type      = bin

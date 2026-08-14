@@ -46,6 +46,9 @@
 
 // User-defined history function
 void SwingHistory(HistoryData *pdata, Mesh *pm);
+// User-defined refinement criterion: prescribed moving ring (same as the shwave
+// pgen's; here it exercises AMR + self-gravity in the shearing box, Phase 2c)
+void SwingMovingRingRefine(MeshBlockPack *pmbp);
 
 //----------------------------------------------------------------------------------------
 //! \struct SwingTestVariables
@@ -56,6 +59,12 @@ struct SwingTestVariables {
   Real kx0, ky, qshear, omega0, rho0, inv_vol;
 };
 SwingTestVariables swing_var;
+
+// parameters for the prescribed moving-ring AMR criterion
+struct SwingRingVariables {
+  Real xc0, xamp, freq, hwidth;
+};
+SwingRingVariables swing_ring_var;
 } // namespace
 
 //----------------------------------------------------------------------------------------
@@ -74,6 +83,20 @@ void ProblemGenerator::SwingAmplification(ParameterInput *pin, const bool restar
               << "swing test requires a <shearing_box> block in the input file"
               << std::endl;
     exit(EXIT_FAILURE);
+  }
+
+  // Prescribed moving-ring AMR criterion (Phase 2c: AMR + multigrid self-gravity in
+  // the shearing box). Same criterion as the shwave pgen: refine every MeshBlock
+  // whose x1 extent overlaps [xc(t)-hwidth, xc(t)+hwidth], xc(t) = xc0 +
+  // xamp*sin(freq*t), derefine all others. Requires <mesh_refinement>
+  // refinement=adaptive and an <amr_criterion> block with method=user.
+  // Must be enrolled on both fresh starts and restarts.
+  if (pin->GetOrAddBoolean("problem", "amr_moving_ring", false)) {
+    swing_ring_var.xc0    = pin->GetOrAddReal("problem", "ring_xc0", 0.0);
+    swing_ring_var.xamp   = pin->GetOrAddReal("problem", "ring_xamp", 0.0);
+    swing_ring_var.freq   = pin->GetOrAddReal("problem", "ring_freq", 1.0);
+    swing_ring_var.hwidth = pin->GetReal("problem", "ring_hwidth");
+    user_ref_func = SwingMovingRingRefine;
   }
 
   // geometry and wave numbers (mode numbers are w.r.t. the whole mesh)
@@ -204,5 +227,36 @@ void SwingHistory(HistoryData *pdata, Mesh *pm) {
   for (int n=pdata->nhist; n<NHISTORY_VARIABLES; ++n) {
     pdata->hdata[n] = 0.0;
   }
+  return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SwingMovingRingRefine()
+//! \brief User AMR criterion: refine MBs whose x1 extent overlaps a prescribed moving
+//! interval [xc(t)-hwidth, xc(t)+hwidth], derefine all others. Criterion depends only
+//! on x1, so it naturally flags complete x2-rings; the shearing-box ring-sync and
+//! x1-boundary vetoes in MeshRefinement::CheckForRefinement enforce the rest of the
+//! refinement policy. Runs on host data (MeshBlock bounds), no kernel needed.
+//! Identical to the shwave pgen's MovingRingRefine.
+
+void SwingMovingRingRefine(MeshBlockPack *pmbp) {
+  auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
+  int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
+  auto &size = pmbp->pmb->mb_size;
+  auto &rv = swing_ring_var;
+  Real xc = rv.xc0 + rv.xamp*std::sin(rv.freq*(pmbp->pmesh->time));
+
+  for (int m=0; m<(pmbp->nmb_thispack); ++m) {
+    Real &x1min = size.h_view(m).x1min;
+    Real &x1max = size.h_view(m).x1max;
+    if ((x1max > (xc - rv.hwidth)) && (x1min < (xc + rv.hwidth))) {
+      refine_flag.h_view(m + mbs) = 1;
+    } else {
+      refine_flag.h_view(m + mbs) = -1;
+    }
+  }
+  // sync host array with device
+  refine_flag.template modify<HostMemSpace>();
+  refine_flag.template sync<DevExeSpace>();
   return;
 }

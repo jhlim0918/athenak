@@ -116,13 +116,10 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
     // rings (boundary at root, Phase 2a) and uniformly refined boundary annuli
     // (boundary above root, Phase 2b) both pass.
     if (pmy_mesh_->multilevel) {
-      if (pmy_mesh_->adaptive) {
-        std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
-                  << "Multigrid gravity with shear-periodic boundaries supports "
-                  << "static refinement only (AMR shear-plane rebuild is Phase 2c)."
-                  << std::endl;
-        std::exit(EXIT_FAILURE);
-      }
+      // Adaptive refinement is supported (Phase 2c): PrepareForAMR rebuilds the
+      // shear planes, per-block offsets, and octet face flags after every remesh,
+      // and Mesh::CheckShearingBoxRefinement re-enforces the invariant below after
+      // every AMR update.
       int blev_min = std::numeric_limits<int>::max();
       int blev_max = std::numeric_limits<int>::min();
       for (int m = 0; m < pmy_mesh_->nmb_total; ++m) {

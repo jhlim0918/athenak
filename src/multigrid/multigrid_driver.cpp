@@ -237,6 +237,14 @@ void MultigridDriver::PrepareForAMR() {
     if (pmy_mesh_->multilevel) {
       mglevels_->UpdateBlockDx();
     }
+    // Phase 2c: rebuild the shear planes and per-block offsets after any remesh
+    // (plane sizes track the x1-boundary blocks' level; offsets track the current
+    // logical locations; octet face flags were just rebuilt by InitializeOctets).
+    // The uniform-boundary-level invariant is re-enforced after every AMR update
+    // by Mesh::CheckShearingBoxRefinement.
+    if (mg_shear_enabled_) {
+      mglevels_->AllocateShearPlanes();
+    }
   }
   needinit_ = false;
 }
