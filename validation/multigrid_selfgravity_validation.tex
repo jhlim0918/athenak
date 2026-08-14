@@ -14,10 +14,11 @@
 \newcommand{\code}[1]{\texttt{#1}}
 
 \title{Multigrid Self-Gravity in the AthenaK Shearing Box:\\
-       I.\ Mesh-Refinement Infrastructure (Phase 0)\\
-       and Shear-Periodic Boundary Conditions (Phase 1)}
+       I.\ Mesh-Refinement Infrastructure (Phase 0),\\
+       Shear-Periodic Boundary Conditions (Phase 1),\\
+       and Gravity on Refined Meshes: Interior Rings (Phase 2a)}
 \author{\code{athenak-multigrid} tree, branch \code{multigrid}}
-\date{August 11, 2026}
+\date{August 13, 2026}
 
 \begin{document}
 \maketitle
@@ -55,7 +56,20 @@ plain-periodic solves; the analytic shearing-wave potential is recovered with er
 $128^3$); the swing-amplification history matches the FFT run to $2\times10^{-7}$;
 and the V-cycle contraction factor --- the one open risk named in Phase 0 --- degrades
 only from $0.116$ to $0.157$ per cycle at a near-worst fractional shift, reaching the
-same $10^{-11}$ roundoff floor. The companion document
+same $10^{-11}$ roundoff floor.
+Phase 2a (\S\ref{sec:phase2a}) puts the solver on \emph{refined} shearing-box
+meshes with interior-ring static refinement. The never-exercised octet machinery
+inherited with Athena++ \#776 is first anchored on the isolated binary-potential
+test of Tomida \& Stone \S4.2 (region-wise second order against the analytic
+two-sphere solution); opening the shear machinery to multilevel meshes whose $x_1$
+boundary blocks remain at the root level then requires \emph{no new shear-fill
+code} --- only a relaxed guard. Validation: sheared-instant solves on the refined
+mesh are bit-identical to the periodic twin; the analytic shearing-wave error
+converges at second order in $L_2$ (first order at the max, which sits on the
+refinement interface exactly as in the periodic case); the swing test on a level-1
+ring matches its uniform twin to the hydro truncation level --- the gravity-off
+control deviates \emph{more} than the gravity-on run --- and multi-rank solves
+reproduce serial to a float32 ulp. The companion document
 \code{fft\_selfgravity\_validation.pdf} covers the FFT solver used as the
 machine-precision oracle throughout this program; a Julia notebook
 (\code{multigrid\_validation\_tests.ipynb}) reproduces every test here.
@@ -908,9 +922,316 @@ T\&S \S4.3: converged / one-sweep orders & vs.\ published & $2.3$ / $2.13$, swee
 \end{tabular}
 \end{center}
 
-\noindent\textbf{Next: Phase 2} --- multigrid gravity on refined shearing-box meshes:
-sheared octet ghosts (the analogue of \S\ref{sec:p1_algo} at refinement levels),
-SMR rings with gravity against high-resolution uniform FFT references, then AMR;
-plus the one deferred infrastructure item (host-root shear fill).
+\noindent\textbf{Next: Phase 2} --- multigrid gravity on refined shearing-box meshes;
+delivered for interior rings in \S\ref{sec:phase2a}.
+
+%=======================================================================
+\section{Phase 2a: multigrid gravity on refined shearing-box meshes ---
+         interior rings}
+\label{sec:phase2a}
+
+\subsection{Scope and the incremental decomposition}
+Phase 2 combines the two halves validated so far --- refinement in the shearing box
+(Phase 0) and the shear-aware multigrid solver (Phase 1) --- in three steps that
+track \emph{where refined blocks sit relative to the shear boundary}:
+\begin{itemize}
+  \item \textbf{2a (this section): interior rings.} Under the Phase-0 interior-$x_1$
+        policy, refined blocks never touch the shear-periodic $x_1$ faces, so the
+        boundary blocks --- the only participants in the Phase-1 shear-plane fill ---
+        all remain at the root level. No octet ever needs a sheared ghost.
+  \item \textbf{2b: boundary annuli.} Uniformly refined $x_1$ boundary faces (allowed
+        by the Phase-0c-lite hydro policy) put octets \emph{at} the shear faces and
+        need a sheared octet ghost fill --- the host-side analogue of
+        \S\ref{sec:p1_algo}.
+  \item \textbf{2c: AMR.} The shear planes and offset tables are sized once at
+        construction; adaptive refinement adds a rebuild-after-remesh step
+        (the analogue of \code{ShearingBox::ReinitAfterMeshUpdate}).
+\end{itemize}
+The \code{MGGravityDriver} constructor now enforces exactly this decomposition: with
+shear-periodic $x_1$ it aborts if refinement is \emph{adaptive} (2c), or if any $x_1$
+boundary MeshBlock sits above the root level (2b) --- a check stricter than the
+hydro-side \code{CheckShearingBoxRefinement}, which also admits uniformly refined
+boundary faces. Static interior rings pass.
+
+\subsection{Step 0: the binary-potential octet control (no shear)}
+\label{sec:p2_binary}
+Upstream \#776 ships the Athena++ binary-potential test
+(\code{pgen/tests/binary\_gravity.cpp}, \code{tests/binary\_gravity.athinput}) ---
+precisely the mesh-refinement acceptance test of Tomida \& Stone \S4.2: two uniform
+spheres ($M_1{=}2$ at $x{=}6/1024$, $M_2{=}1$ at $x{=}-12/1024$, $R = 6/1024$,
+$10^3$-subcell surface averaging) under four nested static refinement levels. Since
+none of our Phase-0/1 work had ever exercised the octet machinery (every earlier
+multigrid run was uniform), we run this control \emph{first}, so that any later
+failure on sheared refined meshes indicts the shear coupling and not the inherited
+octet code.
+
+Two caveats about the shipped input. First, its periodic boundaries are
+\emph{not comparable} to the isolated two-sphere analytic solution the pgen's error
+norms use (the errors come out $O(1)$ by construction); the meaningful configuration
+is the paper's: outflow mesh boundaries with
+\code{gravity/mg\_bc=multipole}, \code{mporder=4} (hexadecapole), now present as
+overridable defaults in the input. Second, the pgen's printed ``Potential L2'' is
+$\sqrt{\langle|\delta\Phi/\Phi|\rangle}$ (Athena++ convention), and the
+\code{<refined\_region>} blocks are \emph{absolute physical} volumes: doubling the
+root resolution leaves every region at its absolute size, so between the $64^3$- and
+$128^3$-root runs only the innermost box gains resolution and the global mean is
+frozen \emph{by construction} --- region-wise norms are the meaningful metric.
+
+With 40 V-cycles (FMG), roots $32^3/64^3/128^3$ + 4 levels (232/232/288 blocks; at
+$64^3$ the level-1 region force-refines all root blocks, so the far field lands at
+$h{=}1/128$ in both larger runs):
+\begin{center}
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+rms rel.\ $\Phi$ error per region & $R_0$ (far) & $R_1$ & $R_2$ & $R_3$ & $R_4$ (inner) \\
+\midrule
+$32^3$ root  & $1.26\times10^{-4}$ & $1.58\times10^{-4}$ & $2.56\times10^{-4}$ & $3.43\times10^{-4}$ & $9.57\times10^{-4}$ \\
+$64^3$ root  & $3.19\times10^{-5}$ & $4.23\times10^{-5}$ & $6.55\times10^{-5}$ & $8.68\times10^{-5}$ & $2.44\times10^{-4}$ \\
+ratio        & $3.94$ & $3.73$ & $3.91$ & $3.95$ & $3.92$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+Second order in every region (the $h$ of each region halves exactly between these two
+runs). From $64^3$ to $128^3$ only $R_4$ refines ($h = 1/1024 \to 1/2048$) and its
+error drops by $2.37$ --- saturated by the unimproved surrounding regions, whose
+inherited error it cannot undercut; the same-resolution regions agree between the two
+runs to four digits (a strong bit-level reproducibility check through the float32
+snapshots). On the Tomida \& Stone normalized-rms metric (their eq.~31) the $64^3$
+run gives $7.5\times10^{-5}$ against their Fig.~7(d) value of ${\sim}1.3\times10^{-4}$
+at $h{=}1/64$ --- consistent, ours slightly lower because of the force-refined far
+field. The late-stage convergence factor is ${\sim}0.5$ per V-cycle, their reported
+refined-mesh value (\S\ref{sec:p1_tests} measured $0.12$--$0.16$ on uniform grids:
+refinement, not shear, is what costs convergence rate). The defect reaches its
+$10^{-12}$ relative floor. The octet machinery works as published.
+
+\subsection{What 2a required --- and what it did not}
+The entire code change is the constructor guard described above. The Phase-1
+shear-plane fill needed \emph{nothing}:
+\begin{itemize}
+  \item \code{FillShearGhostPack} gathers and scatters only blocks whose own
+        \code{mb\_bcs} carry \code{shear\_periodic} on an $x_1$ face. Interior fine
+        blocks have internal (\code{BoundaryFlag::block}) faces there, so they are
+        skipped automatically --- their (root-unit, hence meaningless) entries in the
+        per-block offset table are never read. No level test was needed.
+  \item The plane geometry (\code{nmmbx2\_} $\times$ block cells per MG level) is
+        expressed in root-grid units, and under the 2a guard every participating
+        block \emph{is} a root-level block, so the planes tile exactly as on the
+        uniform grid.
+  \item Octet $x_1$ neighbor tables already wrap shear-periodic like periodic
+        (Phase-1 groundwork); under the 2a guard no octet abuts the $x_1$ faces, so
+        the unsheared wrap is never consulted. (It becomes live --- and wrong --- only
+        in Phase 2b, which is why boundary-level refinement stays fatal.)
+\end{itemize}
+SMR additionally requires \code{nghost=4} (AthenaK wants even ghosts with
+refinement) and, as always for this solver, cubic MeshBlocks; the test inputs use
+$16^3$ blocks, giving four $x_1$ block columns of which the middle two are refined.
+
+\subsection{Static tests: bit-identity, the analytic arbiter on SMR, MPI}
+\label{sec:p2a_static}
+Input \code{tests/mg\_poisson\_shear\_smr.athinput}: the Phase-1 shear test
+(\S\ref{sec:p1_tests}) with a level-1 ring over $x_1 \in [-1/4, 1/4]$ (full
+$x_2$/$x_3$).
+
+\paragraph{Shear-periodic instants.}
+At $t_0 = 0$ the refined-mesh solve with shear-periodic $x_1$ is
+\textbf{bit-identical} (float64 comparison of every cell of every block) to the same
+mesh with plain-periodic $x_1$, for both the multi-mode and shwave sources. (Compare
+the bin \emph{data}: the file header echoes the input, so whole-file comparison
+always differs.)
+
+\paragraph{Analytic shearing wave.}
+The reference potential $\Phi_{\rm ref}$ is the \emph{exact solution of the
+discrete system on the uniform root grid} --- not the continuum potential. The
+shwave profile initializes a single rolled-frame Fourier mode,
+\begin{equation}
+\rho = \rho_0 + A\cos(k_x x + k_y y + k_z z), \qquad
+k_x = \frac{2\pi}{L_x}\Big(n_1 + \mathrm{qomt}\,\frac{L_x}{L_y}\,n_2\Big),\quad
+k_y = \frac{2\pi}{L_y}n_2,\quad k_z = \frac{2\pi}{L_z}n_3,
+\end{equation}
+a plane wave tilted by the current shear phase and therefore exactly
+shear-periodic across the $x_1$ wrap. Acting on a cosine, the 7-point Laplacian
+has the exact (no-expansion) eigenvalue
+\begin{equation}
+\lambda_h = \frac{2\cos(k_x\Delta x)-2}{\Delta x^2}
+          + \frac{2\cos(k_y\Delta y)-2}{\Delta y^2}
+          + \frac{2\cos(k_z\Delta z)-2}{\Delta z^2},
+\label{eq:disc_eig}
+\end{equation}
+so $L_h\Phi = 4\pi G(\rho-\bar\rho)$ is solved exactly by
+$\Phi_{\rm ref} = [4\pi G A/\lambda_h]\cos(k_x x + k_y y + k_z z)$ at cell
+centers, with the $\Delta$'s at the \emph{root} spacing and both fields
+mean-subtracted (the periodic gauge). This is the closed form behind the pgen's
+\code{SHWAVE ERROR} line, inherited from the FFT track --- the rolled $k$-space
+kernel \emph{is} $1/\lambda_h$, which is why FFT solves it to machine precision.
+The choice fixes the attribution: on a \emph{uniform} grid $\Phi_{\rm ref}$ is
+exact, so a correct solver deviates only through its ghost-fill remap
+(Fig.~\ref{fig:p2a_shwave}, third panel: $5\times10^{-6}$, and the roundoff floor
+at $\mathrm{qomt}=0$); against the \emph{continuum} $-1/k^2$ instead, both
+regions would show their own $O(h^2)$ discretization error
+($\sim\!(k\Delta x)^2/12$ per direction, $8\times10^{-4}$ at the root spacing)
+and the refinement structure would blur. On the refined mesh the composite
+operator is \emph{not} the root-grid operator: the fine region's eigenvalue is
+closer to the continuum, differing per direction by $(k h)^2/12$ terms that sum
+to $6.0\times10^{-4}$ relative at $64^3$ --- and the measured fine-region
+plateau is $6.7\times10^{-4}$: the fine grid deviating from $\Phi_{\rm ref}$ by
+\emph{being more accurate than it}. The pointwise maximum sits in
+the first fine cell at the refinement interface ($x = \pm 0.246$ at $64^3$),
+symmetric about the box center, decaying harmonically into the coarse region, with
+\emph{no} feature at the shear faces $x = \pm 1/2$; at the generic phase it is
+within $3\%$ of the $\mathrm{qomt}{=}0$ value at $64^3$ and $0.6\%$ at $128^3$ ---
+the interface, not the shear, owns the error:
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+ & \multicolumn{2}{c}{$\mathrm{qomt}=0$} & \multicolumn{2}{c}{generic phase $t_0=0.37$} \\
+ & max rel. & $L_2$ rel. & max rel. & $L_2$ rel. \\
+\midrule
+$32^3$  & $1.18\times10^{-2}$ & $5.05\times10^{-3}$ & $1.44\times10^{-2}$ & $8.14\times10^{-3}$ \\
+$64^3$  & $5.51\times10^{-3}$ & $1.28\times10^{-3}$ & $5.66\times10^{-3}$ & $2.06\times10^{-3}$ \\
+$128^3$ & $2.66\times10^{-3}$ & $3.25\times10^{-4}$ & $2.68\times10^{-3}$ & $5.18\times10^{-4}$ \\
+$L_2$ ratios & & $3.94,\ 3.94$ & & $3.96,\ 3.97$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+$L_2$ is cleanly second order at both phases --- the same interface behavior Tomida
+\& Stone report (their rms metric) --- while the interface \emph{peak} converges at
+first order, the known local property of the mass-conserving level-boundary stencil.
+The shear remap contributes only the small, second-order-converging difference
+between the two $L_2$ columns. Figure~\ref{fig:p2a_shwave} shows all of this at
+once: the error concentrates in the fine region (the reference uses the root-grid
+eigenvalue) and peaks on the interfaces, while the shear faces are featureless ---
+and the same metric on the uniform Phase-1 run is three decades smaller, so the
+entire visible structure is refinement, not shear.
+One warning: the \code{profile=modes} residual norms
+print $O(1)$ on any refined mesh because the pgen evaluates a naive per-block
+Laplacian, which is \emph{not} the composite multigrid operator at level interfaces;
+on SMR the shwave comparison is the valid metric.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/mg2a_shwave.png}
+\caption{The static shwave test at the generic shear phase ($64^3$ root, level-1
+ring over $|x| < 1/4$, block outlines in white). First panel: the sheared density
+mode. Second: $\log_{10}$ relative potential error against the root-grid closed
+form (eq.~\ref{eq:disc_eig}) on the two-level mesh --- the error lives in the \emph{fine} region
+(root--fine eigenvalue mismatch, the $6\times10^{-4}$ plateau of
+\S\ref{sec:p2a_static}), peaks in the first fine-cell layer on the refinement
+interfaces (dashed; bright cells modulated by the mode phase, pinched at its
+zero-crossing curves), and shows no feature at the shear-periodic faces
+$x = \pm1/2$. Third: the \emph{same} metric on the uniform Phase-1 run --- pure
+remap truncation at $5\times10^{-6}$, three decades below the interface and
+eigenvalue structure. Fourth: error vs.\ resolution at both shear phases ---
+$L_2$ second order, interface peak first order, the two phases nearly
+coincident.}
+\label{fig:p2a_shwave}
+\end{figure}
+
+\paragraph{Contraction and MPI.}
+Static FMG solves contract at $0.18$/cycle on this two-level mesh (identically for
+periodic and sheared boundaries; uniform grids gave $0.12$--$0.16$). Runs at 1/2/4
+ranks print identical doubles and their float32 snapshots agree to one ulp
+($5.8\times10^{-11}$, $\mathrm{np}{=}2 \equiv \mathrm{np}{=}4$).
+
+\subsection{Dynamic test: swing amplification on a ring, with control}
+\label{sec:p2a_swing}
+Input \code{tests/swing\_selfgrav\_smr.athinput}: the \S\ref{sec:p1_tests} swing
+configuration ($128^2{\times}16$, $4\pi G = 1.9$, two swing times) with a level-1
+ring over the middle half in $x_1$; the uniform twin is the single override
+\code{mesh\_refinement/refinement=none}, the oracle twin additionally
+\code{gravity/solver=fft}.
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+ & peak $d_{\cos}/A$ & peak time & $\max|d_{\sin}|/A$ \\
+\midrule
+uniform, FFT       & $-3.511418$ & $7.804$ & $2.8\times10^{-13}$ \\
+uniform, multigrid & $-3.511418$ & $7.804$ & $0.7\times10^{-13}$ \\
+ring SMR, multigrid & $-3.583481$ & $7.804$ & $1.3\times10^{-13}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The uniform twins reproduce the Phase-1 A/B exactly (the $16^3$-block relayout and
+\code{nghost=4} change nothing). The SMR peak differs from the uniform one by
+$2.05\%$ --- \emph{toward} the converged answer (linear theory $3.605$; the
+$256^2$ FFT-track run gave $3.62$), as refining half the domain should move it, at
+machine-level phase lock. The decisive attribution is the \textbf{gravity-off
+control} (\code{hydro\_srcterms/self\_gravity=false}, both meshes): the hydro-only
+SMR-vs-uniform deviation is \emph{larger} than the self-gravitating one --- peak
+shift $+2.78\%$ vs.\ $+2.05\%$, normalized trajectory deviation $7.7\times10^{-2}$
+vs.\ $5.6\times10^{-2}$ --- so multigrid gravity on the refined shearing mesh
+contributes \emph{no} deviation of its own beyond hydro truncation.
+Figure~\ref{fig:p2a_traj} shows the three amplification histories (indistinguishable
+at plot scale) with the pairwise differences: the SMR-vs-uniform gap rides at
+$10^{-2}$--$10^{-1}$ while the MG-vs-FFT solver seam sits five decades below it;
+Figure~\ref{fig:p2a_dens} compares the final density fields.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/mg2a_swing_traj.png}
+\caption{Swing amplification histories $d_{\cos}/A$ for the three runs (top; the
+curves overlap to the line width, peaks annotated) and the pairwise trajectory
+differences (bottom, log scale): SMR-vs-uniform is the hydro-truncation
+resolution blend; uniform MG-vs-FFT is the solver seam, floored by the
+history-file print precision.}
+\label{fig:p2a_traj}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/mg2a_swing_dens.png}
+\caption{Final ($t = 8 = 2\,t_{\rm swing}$) density deviation $(\rho - \rho_0)
+\times 10^4$ at the $z$ mid-plane for the three swing runs: uniform FFT, uniform
+multigrid, and the level-1 interior-ring SMR run (block outlines drawn; the heavier
+lines mark the refinement-level boundary). The two uniform panels are
+indistinguishable ($\le 2\times10^{-7}$ everywhere); the SMR panel carries the same
+trailing wave with the amplitude difference of \S\ref{sec:p2a_swing}.}
+\label{fig:p2a_dens}
+\end{figure}
+
+\subsection{The stopping rule on refined meshes (practical note)}
+\label{sec:p2a_stopping}
+The first full-length SMR swing run stopped at $t = 5.5$: \code{threshold=0.0}
+(stagnation-exit mode) reached the driver's 40-V-cycle cap --- \emph{while still
+converging healthily} (defect $2.9\times10^{-12}$) --- and the cap gracefully ends
+the run via \code{nlim}. The mechanism: near the swing peak the solution is
+dominated by the wound-up $k_x \simeq 0$, $k_y = 1$ mode, whose coarse-grid
+correction must pass through the sheared $x_1$ wrap where the $y$-remap acts on
+8-cell rows; the warm-started contraction degrades to ${\sim}0.55$/cycle (static
+solves on the same mesh: $0.19$), so the defect ratio never exceeds the $0.9$
+stagnation trigger within 40 cycles. This is a stopping-rule interaction, not a
+solver failure --- and it is exactly why Tomida \& Stone run production refined-mesh
+gravity as FMG with a \emph{fixed} iteration count. The SMR inputs therefore default
+to \code{threshold=-1}, \code{niteration=10}; on the uniform twin, fixed-10 and
+stagnation mode agree to $10^{-11}$, and the full-length SMR run completes with no
+MG warnings.
+
+\subsection{Summary}
+\begin{center}
+\small
+\begin{tabular}{@{}llc@{}}
+\toprule
+Check & Metric & Result \\
+\midrule
+Binary potential (octet control) & region-wise order $32^3{\to}64^3$ & $3.7$--$3.95$ \\
+Binary potential vs.\ T\&S Fig.~7(d) & $\epsilon_{\rm rms}$ at $h{=}1/64$ root & $7.5\times10^{-5}$ vs.\ ${\sim}1.3\times10^{-4}$ \\
+SMR shear instants ($t_0 = 0$) & $\Phi$ vs.\ periodic twin & bit-identical \\
+SMR analytic shwave & $L_2$ order ($\mathrm{qomt}{=}0$ / $0.37$) & $3.94$ / $3.96$--$3.97$ \\
+SMR contraction (static) & per-cycle, periodic = sheared & $0.18$ \\
+Multi-rank 1/2/4 & printed digits / f32 snapshots & identical / 1 ulp \\
+Swing: uniform twins & peak, vs.\ Phase-1 & $-3.511418$, exact \\
+Swing: ring SMR & peak shift, direction & $+2.05\%$, toward theory \\
+Swing: gravity-off control & hydro-only shift (must dominate) & $+2.78\%$ \\
+Swing: phase lock & $\max|d_{\sin}|/A$, all runs & ${\sim}10^{-13}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Next: Phase 2b} --- sheared octet ghosts, so refined blocks may sit
+\emph{on} the shear boundary (boundary annuli): a host-side gather--remap--scatter
+over per-level octet planes, which should also retire the deferred host-root shear
+fill; then Phase 2c (AMR: rebuild of shear planes and offset tables after remesh).
 
 \end{document}
