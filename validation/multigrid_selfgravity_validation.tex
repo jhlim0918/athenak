@@ -81,7 +81,14 @@ refinement levels; the generic-phase $L_2$ equals the interior-ring value to
 four digits (the meshes differ by a half-box shift); contraction and floors
 match the periodic twins; and the annuli swing run matches its uniform twin to
 hydro truncation (again dominated by the gravity-off control) at machine-level
-phase lock. The companion document
+phase lock. Phase 2c (\S\ref{sec:phase2c}) admits \emph{adaptive} refinement:
+the shear planes, offsets, and octet flags rebuild after every remesh inside the
+existing \code{PrepareForAMR} path. A prescribed moving ring sweeping through
+the swing (392 MeshBlocks created, 280 destroyed) matches the uniform run to
+hydro regridding truncation with the gravity-off control dominating; the
+fixed-ring limit recovers machine-level phase lock and matches the static-SMR
+run to the float32 floor; and a 2-rank AMR run reproduces serial to every
+printed digit. The companion document
 \code{fft\_selfgravity\_validation.pdf} covers the FFT solver used as the
 machine-precision oracle throughout this program; a Julia notebook
 (\code{multigrid\_validation\_tests.ipynb}) reproduces every test here.
@@ -1150,7 +1157,11 @@ ranks print identical doubles and their float32 snapshots agree to one ulp
 \label{sec:p2a_swing}
 Input \code{tests/swing\_selfgrav\_smr.athinput}: the \S\ref{sec:p1_tests} swing
 configuration ($128^2{\times}16$, $4\pi G = 1.9$, two swing times) with a level-1
-ring over the middle half in $x_1$; the uniform twin is the single override
+ring nominally over the middle half in $x_1$ --- in fact over the middle
+\emph{six} of eight block columns: the region edges ($\pm\pi/2$ as a decimal
+literal) sit $3\times10^{-15}$ inside the neighboring columns and pull them in,
+a wholesome warning about \code{<refined\_region>} edges at non-representable
+coordinates; the uniform twin is the single override
 \code{mesh\_refinement/refinement=none}, the oracle twin additionally
 \code{gravity/solver=fft}.
 \begin{center}
@@ -1168,7 +1179,7 @@ ring SMR, multigrid & $-3.583481$ & $7.804$ & $1.3\times10^{-13}$ \\
 The uniform twins reproduce the Phase-1 A/B exactly (the $16^3$-block relayout and
 \code{nghost=4} change nothing). The SMR peak differs from the uniform one by
 $2.05\%$ --- \emph{toward} the converged answer (linear theory $3.605$; the
-$256^2$ FFT-track run gave $3.62$), as refining half the domain should move it, at
+$256^2$ FFT-track run gave $3.62$), as refining most of the domain should move it, at
 machine-level phase lock. The decisive attribution is the \textbf{gravity-off
 control} (\code{hydro\_srcterms/self\_gravity=false}, both meshes): the hydro-only
 SMR-vs-uniform deviation is \emph{larger} than the self-gravitating one --- peak
@@ -1333,7 +1344,9 @@ with the new code in place (the octet fill is inert without boundary octets).
 \label{sec:p2b_swing}
 Input \code{tests/swing\_selfgrav\_bndry.athinput}: the \S\ref{sec:p2a_swing} swing
 configuration with the level-1 interior ring replaced by two annuli hugging the
-$x_1$ faces (2 of 8 block columns refined vs.\ the ring's 4). The full-length run
+$x_1$ faces (4 of 8 block columns refined --- two per face, the same
+edge-representation effect as \S\ref{sec:p2a_swing} --- vs.\ the ring's 6). The
+full-length run
 completes with no multigrid warnings:
 \begin{center}
 \small
@@ -1349,8 +1362,8 @@ ring (\S\ref{sec:p2a_swing}) & $-3.583481$ & $+2.05\%$ & $1.3\times10^{-13}$ \\
 \end{center}
 All three peak at the same $t = 7.804$ at machine-level phase lock. The annuli
 shift is again \emph{toward} the converged answer (theory $3.605$), and its size
-scales with the refined volume --- half the ring's columns, roughly half the
-ring's shift. The gravity-off control closes the attribution exactly as in
+scales with the refined volume --- two-thirds of the ring's refined columns,
+about half its shift. The gravity-off control closes the attribution exactly as in
 \S\ref{sec:p2a_swing}: hydro-only annuli-vs-uniform deviates \emph{more} than the
 self-gravitating run (peak $+1.70\%$ vs.\ $+1.10\%$; normalized trajectory
 deviation $6.4\times10^{-2}$ vs.\ $4.3\times10^{-2}$) --- the sheared octet
@@ -1378,9 +1391,115 @@ Swing: phase lock & $\max|d_{\sin}|/A$ & $1.4\times10^{-13}$ \\
 \end{center}
 
 \noindent\textbf{Next: Phase 2c} --- AMR in the shearing box with multigrid
-gravity: rebuild the block shear planes and offset tables (and re-flag the octet
-levels) after every mesh update, the analogue of
-\code{ShearingBox::ReinitAfterMeshUpdate}; plus the still-deferred host-root
-shear fill.
+gravity; delivered in \S\ref{sec:phase2c}.
+
+%=======================================================================
+\section{Phase 2c: adaptive refinement with multigrid gravity in the shearing box}
+\label{sec:phase2c}
+
+\subsection{What the remesh invalidates, and where it gets rebuilt}
+Phases 2a--2b sized every shear structure once, at construction: the per-MG-level
+block boundary planes and their per-block $(y,z)$ offsets, the boundary-level
+factor \code{shear\_reflev\_}, and the per-octet-level face flags
+\code{oct\_shear\_face\_}. Adaptive refinement invalidates all of them --- blocks
+appear, disappear, and migrate between ranks; the octet population changes; in
+principle even the boundary level can change. The fix rides an existing vehicle:
+\code{MultigridDriver::PrepareForAMR} already detects any remesh (via the
+mesh's AMR/load-balance sequence counter) before every solve and rebuilds the
+block arrays and octets. Phase 2c makes \code{AllocateShearPlanes} idempotent
+(planes are \code{realloc}'d, offsets recomputed from the current logical
+locations --- load balancing can reassign blocks without changing this rank's
+block count) and calls it from the same rebuild branch; the octet face flags
+were already recomputed inside \code{InitializeOctets}. The constructor's
+adaptive fatal is removed: the uniform-boundary-level invariant is re-enforced
+after \emph{every} AMR update by the hydro-side
+\code{Mesh::CheckShearingBoxRefinement} (Phase 0c), whose graded-refinement cap
+also keeps $2{:}1$ balancing from ever refining the boundary columns.
+
+\subsection{Dynamic validation: swing with a prescribed moving ring}
+\label{sec:p2c_swing}
+The swing pgen gains the shwave pgen's prescribed moving-ring criterion
+(\code{amr\_moving\_ring}: refine MeshBlocks overlapping
+$[x_c(t)-h_w,\,x_c(t)+h_w]$, $x_c(t) = x_{\rm amp}\sin(\omega_r t)$, derefine all
+others); input \code{tests/swing\_selfgrav\_amr.athinput} sweeps a thin ring
+($x_{\rm amp}=\pi/4$, $h_w=\pi/16$: one to two block columns) through the swing.
+The full-length run creates $392$ and destroys $280$ MeshBlocks --- a remesh
+roughly every fifth cycle, each one exercising the shear-plane/octet rebuild ---
+with no multigrid warnings:
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+ & peak $d_{\cos}/A$ & vs.\ static uniform & norm.\ traj.\ dev. \\
+\midrule
+moving-ring AMR, gravity on  & $-3.510989$ & $-0.01\%$ & $2.9\times10^{-2}$ \\
+moving-ring AMR, gravity off & $+1.7403$ (peak $|d|$)   & $+0.38\%$ & $5.1\times10^{-2}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The thin transient ring adds negligible net resolution, so the gravity-on peak
+lands on the uniform value; the gravity-off control again \emph{dominates} both
+the peak shift and the trajectory deviation --- several hundred remesh events
+add nothing beyond hydro regridding truncation.
+
+One metric changes character under AMR and deserves its attribution: the phase
+lock $\max|d_{\sin}|/A$ is $9.9\times10^{-5}$ (gravity on) --- nine decades
+above the $10^{-13}$ of every static-mesh run. This is \emph{regridding}
+truncation, not a shear or gravity error: each remesh prolongates the wave onto
+newly created fine blocks, and second-order interpolation of a cosine injects a
+sine component at truncation level. The gravity-off control shows the same
+signature at $3.7\times10^{-5}$ --- the ratio matching the amplified wave's
+larger amplitude --- so the sheared multigrid machinery preserves phase exactly
+as well as the hydro does.
+
+\subsection{The fixed-ring limit}
+\label{sec:p2c_fixed}
+With $x_{\rm amp}=0$ and $h_w = \pi/2$ the criterion reproduces the static-SMR
+ring footprint and never remeshes after the initial refinement --- but
+\emph{bit}-identity with the \S\ref{sec:p2a_swing} run is structurally
+impossible: user-criterion AMR starts on the unrefined root mesh and refines
+within the first \code{refinement\_interval} cycles, so the first few steps run
+at the coarse CFL. After that transient the two runs are the same computation:
+the meshes are identical block-for-block, the final density fields agree to
+$4.8\times10^{-7}$ (the float32 snapshot floor is $10^{-7}$; the wave amplitude
+$3.5\times10^{-4}$), the peaks differ by $1.2\times10^{-4}$ relative, and ---
+decisively --- the phase lock returns to $4\times10^{-14}$: with no mid-run
+remesh the machine-level $d_{\sin}$ of the static runs is recovered, closing
+the regridding attribution of \S\ref{sec:p2c_swing} from the other side.
+
+\subsection{Multi-rank}
+The 2-rank moving-ring run reproduces the serial one \emph{to every printed
+digit}: identical MeshBlock-cycle count (identical mesh evolution), identical
+amplification history (maximum trajectory difference exactly zero at history
+precision), identical peak and $d_{\sin}$. The remesh path rebuilds the planes
+and offsets on every rank from replicated mesh metadata, the octet fill is
+replicated host work, and the block-plane Allreduce is exact by construction
+(Phase 1) --- so rank count drops out of the entire AMR + shear + gravity loop.
+This also exercises the hydro-side AMR shear-state rebuild
+(\code{ShearingBox::ReinitAfterMeshUpdate}) under MPI, which Phase 0c had
+written but never tested multi-rank.
+
+\subsection{Summary}
+\begin{center}
+\small
+\begin{tabular}{@{}llc@{}}
+\toprule
+Check & Metric & Result \\
+\midrule
+Moving-ring AMR swing & MBs created/destroyed, MG warnings & $392$/$280$, none \\
+Peak vs.\ static uniform & gravity on & $-0.01\%$ \\
+Gravity-off control & peak shift / traj.\ dev.\ (must dominate) & $+0.38\%$ / $5.1\times10^{-2}$ \\
+Phase $d_{\sin}$ under AMR & regridding truncation (off-control ratio) & amplitude-scaled \\
+Fixed-ring limit vs.\ static SMR & final $\rho$ / peak / $d_{\sin}$ &
+  $5\times10^{-7}$ / $1.2\times10^{-4}$ / $4\times10^{-14}$ \\
+Multi-rank $\mathrm{np}=2$ AMR & history vs.\ serial & identical, all digits \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent\textbf{Next:} the Gammie (2001) gravitoturbulence program (razor-thin
+FFT mode, cooling, $Q$/$\alpha$ diagnostics), with the multigrid solver as the
+refinement-capable production path; the host-root shear fill remains the one
+deferred infrastructure item.
 
 \end{document}

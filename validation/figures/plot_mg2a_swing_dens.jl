@@ -47,7 +47,14 @@ for (p, (nm, ss)) in enumerate(panels)
         p == 3 && lines!(ax, [x0, x1, x1, x0, x0], [y0, y0, y1, y1, y0];
                          color=(:black, lev > 0 ? 0.35 : 0.15), linewidth=0.5)
     end
-    p == 3 && vlines!(ax, [-pi/2, pi/2]; color=(:black, 0.8), linewidth=1.5)
+    if p == 3
+        # level boundary from the data: the <refined_region> edges (pi/2 as a
+        # decimal literal) sit 3e-15 inside the neighboring columns and pull them
+        # in, so the fine region spans 6 of 8 block columns, NOT the nominal pi/2
+        fine = [b for b in ss if b[2] > 0]
+        vlines!(ax, [minimum(b[1][1] for b in fine), maximum(b[1][2] for b in fine)];
+                color=(:black, 0.8), linewidth=1.5)
+    end
 end
 Colorbar(fig[1, 4], hms[1]; label="(ρ − ρ₀) × 10⁴")
 

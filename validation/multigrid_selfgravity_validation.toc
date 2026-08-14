@@ -3,11 +3,11 @@
 \contentsline {subsection}{\numberline {1.2}Phase-0 scope and restrictions}{4}{subsection.1.2}%
 \contentsline {section}{\numberline {2}Numerical method}{4}{section.2}%
 \contentsline {subsection}{\numberline {2.1}Two frames for the shearing box}{4}{subsection.2.1}%
-\contentsline {paragraph}{FARGO frame (\texttt {orbital\_advection = true}, default).}{4}{section*.2}%
+\contentsline {paragraph}{FARGO frame (\texttt {orbital\_advection = true}, default).}{5}{section*.2}%
 \contentsline {paragraph}{Full-velocity frame (\texttt {orbital\_advection = false}).}{5}{section*.3}%
 \contentsline {subsection}{\numberline {2.2}Orbital advection and its refinement problem}{5}{subsection.2.2}%
-\contentsline {subsection}{\numberline {2.3}Refinement policies}{5}{subsection.2.3}%
-\contentsline {paragraph}{Uniform-boundary-level policy (always).}{5}{section*.4}%
+\contentsline {subsection}{\numberline {2.3}Refinement policies}{6}{subsection.2.3}%
+\contentsline {paragraph}{Uniform-boundary-level policy (always).}{6}{section*.4}%
 \contentsline {paragraph}{Annular policy (when FARGO is on).}{6}{section*.5}%
 \contentsline {paragraph}{Buffer-depth safety.}{6}{section*.6}%
 \contentsline {section}{\numberline {3}What was built}{6}{section.3}%
@@ -56,3 +56,9 @@
 \contentsline {subsection}{\numberline {8.3}Static validation}{24}{subsection.8.3}%
 \contentsline {subsection}{\numberline {8.4}Dynamic validation: swing on boundary annuli}{24}{subsection.8.4}%
 \contentsline {subsection}{\numberline {8.5}Summary}{25}{subsection.8.5}%
+\contentsline {section}{\numberline {9}Phase 2c: adaptive refinement with multigrid gravity in the shearing box}{25}{section.9}%
+\contentsline {subsection}{\numberline {9.1}What the remesh invalidates, and where it gets rebuilt}{25}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}Dynamic validation: swing with a prescribed moving ring}{25}{subsection.9.2}%
+\contentsline {subsection}{\numberline {9.3}The fixed-ring limit}{26}{subsection.9.3}%
+\contentsline {subsection}{\numberline {9.4}Multi-rank}{26}{subsection.9.4}%
+\contentsline {subsection}{\numberline {9.5}Summary}{26}{subsection.9.5}%
