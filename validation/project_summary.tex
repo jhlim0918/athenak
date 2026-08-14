@@ -1,0 +1,141 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,urlcolor=blue!60!black]{hyperref}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Self-Gravity with Mesh Refinement in the AthenaK Shearing Box\\
+       \large Program Summary: Phases 0--2c and First Gravitational Collapse}
+\author{\code{athenak-multigrid} tree, branch \code{multigrid}}
+\date{August 14, 2026}
+
+\begin{document}
+\maketitle
+
+\section*{Goal and route}
+Target science: shearing-box simulations of gas + dust with self-gravity and
+AMR zoom-in on gravitationally induced dust clumps (streaming-instability /
+GI-arm interaction, cf.\ Baehr, Zhu \& Yang 2022), and the Gammie (2001)
+gravitoturbulence program. Chosen route: a \textbf{multigrid Poisson solver
+with shear-periodic boundary conditions on refined meshes}, with a
+uniform-grid \textbf{FFT solver as the machine-precision oracle} throughout.
+All work is validated against analytic solutions, the FFT oracle, and the
+published Athena++ results the solver descends from (Tomida \& Stone 2023).
+Full details: \code{multigrid\_selfgravity\_validation.pdf} (27 pp.),
+reproduced end-to-end by \code{multigrid\_validation\_tests.ipynb} (44 code
+cells); the FFT track has its own companion document.
+
+\section*{Phase 0 --- shearing box + mesh refinement infrastructure (hydro)}
+\begin{itemize}\itemsep2pt
+  \item \textbf{Orbital-advection toggle}: a fully consistent non-FARGO mode
+        (measured cost $5.7\times$: CFL against the full shear flow), enabling
+        A/B tests and future patch refinement.
+  \item \textbf{Refinement policies}: interior-$x_1$ / uniform-boundary-level
+        rule (both shear faces share one level), and the \emph{annular} policy
+        under FARGO --- refined regions span complete azimuthal rings, so the
+        per-level $y$-shift only ever involves same-size neighbors.
+  \item \textbf{AMR}: shear-boundary communication state rebuilt after every
+        remesh; a graded-refinement cap keeps 2:1 balancing off the boundary
+        columns; an upstream derefinement-ordering bug (partial ring splits)
+        found and fixed.
+  \item \textbf{Validation}: ring SMR bit-identical to reference runs; 20-orbit
+        epicycle endurance --- amplitude drift $0.008\%$ (ring+FARGO) vs.\
+        $0.064\%$ (uniform); AMR with a prescribed moving ring: 2296 blocks
+        created / 2240 destroyed over 20 orbits, mass conserved exactly,
+        matches the static ring an order of magnitude closer than either
+        matches the uniform grid.
+\end{itemize}
+
+\section*{Phase 1 --- shear-periodic multigrid boundary conditions (uniform)}
+Shear-periodicity enters as a boundary \emph{identification} only: a
+$y$-remapped $x_1$ ghost fill (conservative PPMX remap) applied at every level
+of the multigrid hierarchy through global boundary planes; the 7-point operator
+is untouched. Key results: solves at shear-periodic instants are
+\textbf{bit-identical} to plain-periodic solves; the analytic shearing-wave
+potential is recovered \emph{below} the FFT solver's own error
+($9.5\times10^{-8}$ vs.\ $1.6\times10^{-6}$ at $128^3$); the swing-amplification
+history matches FFT to $2\times10^{-7}$; V-cycle contraction degrades only
+$0.116 \to 0.157$ under a near-worst shear phase. Anchored to Tomida \& Stone
+(2023): their \S4.1 convergence factor ($0.125$), second-order accuracy
+(identical to FFT to all digits), and \S4.3 Jeans-wave results all reproduce.
+
+\section*{Phase 2 --- multigrid gravity on refined shearing-box meshes}
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+phase & configuration & headline validation \\
+\midrule
+2a & static interior rings & guard-only change; ring solves bit-identical to \\
+   & (boundary blocks at root) & periodic twins at $\mathrm{qomt}=0$; $L_2$ 2nd order; \\
+   & & swing peak shifts \emph{toward} theory, gravity-off \\
+   & & control dominates $\Rightarrow$ solver adds no error \\
+2b & boundary annuli (refined & sheared octet ghost fill (host-side, rank- \\
+   & blocks \emph{on} the shear faces) & replicated, no MPI seam); bit-identity at 1 and \\
+   & & 2 levels; contraction unchanged ($0.18$--$0.20$) \\
+2c & AMR & shear planes/offsets/octet flags rebuilt per \\
+   & & remesh; moving-ring swing: several hundred \\
+   & & remeshes, no solver warnings; $\mathrm{np}{=}2$ $\equiv$ serial \\
+   & & to every printed digit \\
+\bottomrule
+\end{tabular}
+\end{center}
+The octet (refinement) machinery inherited with AthenaK \#776 was first
+anchored on the isolated binary-potential test (T\&S \S4.2): region-wise
+second order against the analytic two-sphere solution. Throughout Phase 2 the
+refinement interface --- not the shear --- owns the error budget, and every
+dynamic test carries a gravity-off control proving the gravity solver
+contributes nothing beyond hydro truncation. One practical finding: refined
+meshes should run FMG with a \emph{fixed} V-cycle count (T\&S practice); the
+stagnation-exit stopping rule can hit its iteration cap mid-run on wound-up
+shear modes.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/mg2a_swing_dens.png}
+\caption{The Phase-2a swing test: final density for uniform FFT, uniform
+multigrid, and ring-SMR multigrid --- the two uniform panels agree at the
+float32 quantization floor, and the wave crosses every refinement boundary
+without artifact.}
+\end{figure}
+
+\section*{Into the unstable regime: first collapse (this week)}
+With the machinery validated, the swing test was pushed past the box-scale
+Jeans threshold ($4\pi G > \kappa^2 + k^2c_s^2 = 2$). An empirical ladder
+established what clumping actually requires: transient waves \emph{bounce}
+unless the compressed crest itself becomes Jeans-unstable during the unstable
+window ($\lambda_J(\rho_{\rm crest})$ below the crest width). At
+$4\pi G = 6$, amp $= 0.2$ the crest fragments at $t \approx 4.5$ and collapses
+into a \textbf{bound clump at $\rho = 203\rho_0$} --- beyond the uniform-grid
+Truelove ceiling ($171\rho_0$), motivating the AMR zoom, which follows the
+crest and clump with density-triggered rings (the annular policy answers
+``how do you zoom under FARGO'': rings, completed automatically by the
+flag-sync, not local patches). The multigrid solver ran the entire collapse
+--- a 200:1 density contrast on a shear-periodic adaptive mesh --- with zero
+convergence failures.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.72\textwidth]{figures/clump_ladder.png}
+\caption{The nonlinear ladder: maximum density vs.\ time for the four
+uniform-grid runs, with the Truelove ceiling marked.}
+\end{figure}
+
+\section*{Status and next steps}
+\textbf{Delivered}: FFT solver (validated, 3.5$\times$ faster than multigrid on
+uniform grids); shearing-box refinement infrastructure incl.\ AMR; multigrid
+gravity on uniform, SMR-ring, boundary-annuli, and adaptive meshes, serial and
+MPI; $\sim$30 pages of validation documentation, a 44-cell reproducing
+notebook, and versioned test inputs for every configuration.
+\textbf{Next}: (i) the Gammie (2001) gravitoturbulence program ---
+$\beta$-cooling source term, $Q$ and $\alpha$ diagnostics --- using this stack
+as the production path; (ii) dust coupling (athenak-dust PM particles + IMEX
+drag) toward the SI+GI clumping science; (iii) deferred infrastructure:
+host-root shear fill, MHD face-centered remap with refinement, and (if deep
+zooms demand it) per-ring bookkeeping for patch refinement under FARGO.
+
+\end{document}

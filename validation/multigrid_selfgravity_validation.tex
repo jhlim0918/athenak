@@ -1497,9 +1497,92 @@ Multi-rank $\mathrm{np}=2$ AMR & history vs.\ serial & identical, all digits \\
 \end{tabular}
 \end{center}
 
-\noindent\textbf{Next:} the Gammie (2001) gravitoturbulence program (razor-thin
-FFT mode, cooling, $Q$/$\alpha$ diagnostics), with the multigrid solver as the
-refinement-capable production path; the host-root shear fill remains the one
-deferred infrastructure item.
+\noindent\textbf{Next:} \S\ref{sec:collapse} pushes the machinery into the
+gravitationally unstable regime; the Gammie (2001) gravitoturbulence program
+(cooling, $Q$/$\alpha$ diagnostics) follows.
+
+%=======================================================================
+\section{Into the unstable regime: the swing-run compendium and first collapse}
+\label{sec:collapse}
+
+\subsection{All swing runs at a glance}
+Every swing-amplification run of this program shares the base configuration:
+$128^2{\times}16$ cells ($16^3$ MeshBlocks), $L_x{=}L_y{=}2\pi$, $L_z{=}\pi/4$,
+isothermal $c_s{=}1$, $\Omega{=}1$, $q{=}3/2$ ($\kappa{=}1$), $\rho_0{=}1$,
+single leading wave $(n_{wx},n_{wy}) = (-6,1)$, FARGO on, multigrid gravity with
+FMG + \code{niteration=10} unless noted. The gravest box modes obey
+$\omega^2 = \kappa^2 + c_s^2 - 4\pi G\rho_0 = 2 - 4\pi G$, so $4\pi G = 2$ is
+the box-scale Jeans threshold.
+\begin{center}
+\small
+\begin{tabular}{@{}llccclc@{}}
+\toprule
+run & mesh & $4\pi G$ & amp & $t_{\rm end}$ & outcome & peak \\
+\midrule
+\multicolumn{7}{@{}l}{\emph{validation ladder (linear, stable): \S\ref{sec:p1_tests}, \S\ref{sec:p2a_swing}, \S\ref{sec:p2b_swing}, \S\ref{sec:p2c_swing}}} \\
+P1 uniform (MG $\equiv$ FFT) & uniform & 1.9 & $10^{-4}$ & 8 & swing & $-3.511418$ \\
+P2a ring SMR (+twins, off) & 6/8-col ring & 1.9 & $10^{-4}$ & 8 & swing & $-3.583481$ \\
+P2b annuli (+off) & 4-col annuli & 1.9 & $10^{-4}$ & 8 & swing & $-3.550196$ \\
+P2c AMR ring / fixed (+off, np2) & moving/static & 1.9 & $10^{-4}$ & 8 & swing & $-3.5110$/$-3.5839$ \\
+\midrule
+\multicolumn{7}{@{}l}{\emph{unstable window (linear)}} \\
+window super-swing & uniform & 2.1 & $10^{-4}$ & 8 & swing, $\omega^2{<}0$ in $|k_x|{<}0.32$ & $-4.4569$ \\
+\midrule
+\multicolumn{7}{@{}l}{\emph{nonlinear ladder (max $\rho/\rho_0$ in the peak column)}} \\
+bounce I & uniform & 3.0 & 0.05 & 10 & crest bounces & 1.37 \\
+bounce II & uniform & 3.0 & 0.10 & 16 & crest bounces & 1.73 \\
+marginal miss & uniform & 5.0 & 0.05 & 10 & crest $\lambda_J{\approx}$ width & 2.70 \\
+\textbf{collapse} & uniform & \textbf{6.0} & \textbf{0.20} & 10 & \textbf{bound clump} & \textbf{203} \\
+collapse, AMR zoom & density rings & 6.0 & 0.20 & 10 & \S\ref{sec:collapse_amr} & \S\ref{sec:collapse_amr} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{What it takes to clump}
+The ladder teaches three lessons (Fig.~\ref{fig:clump_ladder}). First,
+$4\pi G > 2$ alone does not clump: the winding wave only \emph{transits} its
+unstable window and bounces, and its quadratic self-coupling deposits only a
+whisper on the non-winding axisymmetric $(k_x,k_y)=(\pm1,0)$ mode (the $k_y=0$
+beat carries $k_x = 2k_x(t)$, which sweeps past the discrete mode instead of
+parking on it) --- the $4\pi G = 3$ runs stay bounded even for 16 time units.
+Second, collapse requires the \emph{crest itself} to become Jeans-unstable
+during the window: the local $\lambda_J = 2\pi c_s/\sqrt{4\pi G\rho}$ must drop
+below the crest width. At $4\pi G = 5$, amp $=0.05$ this misses by
+$\sim$15\% (peak $2.70\rho_0$, re-expands); at $4\pi G = 6$, amp $=0.2$ it
+tips over: fragmentation at $t \approx 4.5$, runaway to $\rho = 203\rho_0$,
+and a bound clump that persists to the end of the run. Third, resolution:
+the uniform-grid Truelove ceiling ($\lambda_J \geq 4\Delta x$) at $4\pi G = 6$
+is $\rho \approx 171\rho_0$ --- the collapsed clump \emph{exceeds} it, so the
+uniform run is marginally under-resolved precisely where it matters.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.75\textwidth]{figures/clump_ladder.png}
+\caption{Maximum density vs.\ time for the nonlinear ladder: two bounces, a
+marginal miss, and the collapse, with the $128^2$ Truelove ceiling marked.}
+\label{fig:clump_ladder}
+\end{figure}
+
+\subsection{Zooming on the clump under FARGO: rings, not patches}
+\label{sec:collapse_amr}
+The clump is local, but with orbital advection on, the Phase-0 annular policy
+requires refinement in complete $x_2$ rings --- so the AMR ``zoom'' refines the
+clump's $x_1$ columns at all $y$: a density criterion
+(\code{min\_max} on \code{hydro\_u\_d}, \code{value\_max=2}) flags the clump's
+blocks and the ring-sync completes the rings automatically. This is cheap here
+(one ring = 16 root blocks $\to$ 128 fine) and is what lets FARGO tolerate the
+clump's azimuthal drift. True local patches are legal only with
+\code{orbital\_advection=false} at the measured $\sim$5.7$\times$ timestep
+cost; per-ring bookkeeping for partially refined rings would be the Phase-3
+alternative if deep zooms demand it.
+Input \code{tests/swing\_selfgrav\_clump\_amr.athinput} runs the collapse with
+one refinement level chasing the crest and clump (level-1 Truelove ceiling
+$4\times$ higher, $\approx 684\rho_0$); the notebook (\S15) compares the final
+density fields and mesh block structure of the uniform and AMR runs.
+At the time of writing the AMR run is mid-collapse (the fine-level timestep
+shrinks as the clump deepens --- the level-1 ceiling lets it): the frames show
+the density rings forming on the crest at $t \approx 4$ and following the
+fragmentation, with no solver warnings. The uniform-vs-AMR final-state figure
+is produced by the notebook cell once the run completes.
 
 \end{document}

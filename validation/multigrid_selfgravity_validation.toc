@@ -1,8 +1,8 @@
 \contentsline {section}{\numberline {1}Plan and scope}{3}{section.1}%
 \contentsline {subsection}{\numberline {1.1}Goal and roadmap}{3}{subsection.1.1}%
 \contentsline {subsection}{\numberline {1.2}Phase-0 scope and restrictions}{4}{subsection.1.2}%
-\contentsline {section}{\numberline {2}Numerical method}{4}{section.2}%
-\contentsline {subsection}{\numberline {2.1}Two frames for the shearing box}{4}{subsection.2.1}%
+\contentsline {section}{\numberline {2}Numerical method}{5}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Two frames for the shearing box}{5}{subsection.2.1}%
 \contentsline {paragraph}{FARGO frame (\texttt {orbital\_advection = true}, default).}{5}{section*.2}%
 \contentsline {paragraph}{Full-velocity frame (\texttt {orbital\_advection = false}).}{5}{section*.3}%
 \contentsline {subsection}{\numberline {2.2}Orbital advection and its refinement problem}{5}{subsection.2.2}%
@@ -62,3 +62,7 @@
 \contentsline {subsection}{\numberline {9.3}The fixed-ring limit}{26}{subsection.9.3}%
 \contentsline {subsection}{\numberline {9.4}Multi-rank}{26}{subsection.9.4}%
 \contentsline {subsection}{\numberline {9.5}Summary}{26}{subsection.9.5}%
+\contentsline {section}{\numberline {10}Into the unstable regime: the swing-run compendium and first collapse}{27}{section.10}%
+\contentsline {subsection}{\numberline {10.1}All swing runs at a glance}{27}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}What it takes to clump}{27}{subsection.10.2}%
+\contentsline {subsection}{\numberline {10.3}Zooming on the clump under FARGO: rings, not patches}{27}{subsection.10.3}%
