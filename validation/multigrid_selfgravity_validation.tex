@@ -1579,10 +1579,26 @@ Input \code{tests/swing\_selfgrav\_clump\_amr.athinput} runs the collapse with
 one refinement level chasing the crest and clump (level-1 Truelove ceiling
 $4\times$ higher, $\approx 684\rho_0$); the notebook (\S15) compares the final
 density fields and mesh block structure of the uniform and AMR runs.
-At the time of writing the AMR run is mid-collapse (the fine-level timestep
-shrinks as the clump deepens --- the level-1 ceiling lets it): the frames show
-the density rings forming on the crest at $t \approx 4$ and following the
-fragmentation, with no solver warnings. The uniform-vs-AMR final-state figure
-is produced by the notebook cell once the run completes.
+The full run creates $1344$ and destroys $1232$ MeshBlocks --- the rings form
+on the crest at $t \approx 4$, follow the fragmentation, and contract to a
+single ring tracking the clump ($176$ blocks at the end, $128$ at level 1) ---
+with zero multigrid warnings through the entire collapse. The density
+comparison carries the resolution lesson (Fig.~\ref{fig:clump_final}): the
+uniform run peaks at $203\rho_0$, \emph{above} its own Truelove ceiling
+($171\rho_0$), while the AMR run peaks at $184\rho_0$ at $t=9.9$ --- comfortably
+inside its level-1 ceiling ($684\rho_0$) --- so the uniform excess is
+under-resolution overshoot and only the AMR number is trustworthy. Both runs
+agree on formation time, location, and bulk structure of the clump.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/clump_final.png}
+\caption{Final ($t=10$) density of the collapse runs, $\log_{10}\rho/\rho_0$
+at the $z$ mid-plane, with the MeshBlock structure drawn (green = level 1):
+uniform $128^2$ vs.\ the density-triggered AMR rings. The level-1 ring has
+contracted onto the clump's $x_1$ columns --- the annular-policy answer to
+zooming under FARGO.}
+\label{fig:clump_final}
+\end{figure}
 
 \end{document}
