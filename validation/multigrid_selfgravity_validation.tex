@@ -1615,8 +1615,24 @@ wavelength of the $k_y{=}2$ second harmonic, which at $4\pi G = 6$ is itself
 Jeans-unstable ($\omega^2 = -1$) and quadratically seeded by the primary. This
 points to real fragmentation that the refined run resolves and the uniform grid
 merges, not a boundary artifact (the $y$ wrap is plain periodic and
-translation-invariant); a $256^2$ uniform run matching the fine-level
-resolution would settle it.
+translation-invariant). The $256^2$ uniform discriminator run \textbf{settles
+it} (Fig.~\ref{fig:clump256}): at matched fine resolution the same two-site
+structure appears --- the dominant knot straddling $y=\pm\pi$ at $x\approx0$
+plus a center-side companion --- confirming the $k_y{=}2$-harmonic
+fragmentation as physical and the $128^2$ single clump as the under-resolved
+outlier. The properly resolved runs also collapse \emph{later} (peak
+$40\rho_0$ at $t{=}10$, still contracting, vs.\ the $128^2$ run's overshot
+$131$): under-resolution both merges fragments and accelerates collapse.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/clump_256_check.png}
+\caption{The two-clump discriminator: final ($t=10$) $\log_{10}\rho$ for
+uniform $128^2$ (one merged clump), the AMR run (two clumps, level-1 outlines),
+and uniform $256^2$ --- which reproduces the AMR run's two-site structure at
+matched resolution.}
+\label{fig:clump256}
+\end{figure}
 
 \begin{figure}[htbp]
 \centering
