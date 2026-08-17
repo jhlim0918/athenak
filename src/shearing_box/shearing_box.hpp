@@ -78,6 +78,9 @@ class ShearingBox {
   TaskStatus ClearSend();
   // function to find target MB offset by shear.  Returns GID and rank
   void FindTargetMB(const int igid, const int jshift, int &gid, int &rank);
+  // globally consistent x2 cell width for integer shift arithmetic (per-block
+  // dx2 roundoff can desynchronize sender/receiver message sizes across ranks)
+  Real ConsistentDx2(const int gid) const;
   // function to find index in x1bndry array of MB with input GID
   int TargetIndex(const int n, const int tgid) {
     for (int m=0; m<nmb_x1bndry(n); ++m) {

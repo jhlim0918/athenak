@@ -146,8 +146,11 @@ TaskStatus ShearingBoxCC::PackAndSendCC(DvceArray5D<Real> &a, ReconstructionMeth
       int gid = x1bndry_mbgid.h_view(n,m);
       int mm = gid - pmy_pack->gids;
       // Find integer and fractional number of grids over which offset extends.
-      // This assumes every grid has same number of cells in x2-direction!
-      int joffset  = static_cast<int>(yshear/(mbsize.h_view(mm).dx2));
+      // Every grid has the same number of cells in x2; use the globally
+      // consistent dx2 so sender and receiver agree on joffset exactly
+      // (per-block dx2 roundoff can flip it near integer crossings and
+      // desynchronize the MPI message sizes -- see ShearingBox::ConsistentDx2)
+      int joffset  = static_cast<int>(yshear/ConsistentDx2(gid));
       int ji = joffset/nx2;
       int jr = joffset - ji*nx2;
 
@@ -307,8 +310,11 @@ TaskStatus ShearingBoxCC::RecvAndUnpackCC(DvceArray5D<Real> &a) {
       int gid = x1bndry_mbgid.h_view(n,m);
       int mm = gid - pmy_pack->gids;
       // Find integer and fractional number of grids over which offset extends.
-      // This assumes every grid has same number of cells in x2-direction!
-      int joffset  = static_cast<int>(yshear/(pmy_pack->pmb->mb_size.h_view(mm).dx2));
+      // Every grid has the same number of cells in x2; use the globally
+      // consistent dx2 so sender and receiver agree on joffset exactly
+      // (per-block dx2 roundoff can flip it near integer crossings and
+      // desynchronize the MPI message sizes -- see ShearingBox::ConsistentDx2)
+      int joffset  = static_cast<int>(yshear/ConsistentDx2(gid));
       int ji = joffset/nx2;
       int jr = joffset - ji*nx2;
 

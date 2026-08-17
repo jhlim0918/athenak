@@ -158,3 +158,26 @@ void ShearingBox::FindTargetMB(const int igid, const int jshift, int &gid,
   rank = pm->rank_eachmb[gid];
   return;
 }
+
+//----------------------------------------------------------------------------------------
+//! \fn Real ShearingBox::ConsistentDx2()
+//! \brief x2 cell width at the refinement level of MeshBlock gid, derived from
+//! GLOBAL mesh quantities only. The per-block mb_size dx2 values carry last-ulp
+//! roundoff that differs from block to block; dividing yshear by them lets the
+//! integer cell shift (joffset) disagree between the sending and receiving
+//! MeshBlocks of the shear-periodic x1 exchange whenever yshear/dx2 sits within
+//! an ulp of an integer, which desynchronizes the joffset-dependent MPI message
+//! sizes across ranks (observed as Cray MPICH "message truncated" aborts at 64
+//! ranks as qomt approached the shear-periodic wrap). Global length divided by
+//! an integer cell count, with the exact power-of-two level factor, is computed
+//! from bitwise-identical inputs everywhere, so every MeshBlock of a level --
+//! and both endpoints of every exchange -- agrees exactly.
+
+Real ShearingBox::ConsistentDx2(const int gid) const {
+  Mesh *pm = pmy_pack->pmesh;
+  const LogicalLocation &lloc = pm->lloc_eachmb[gid];
+  std::int64_t ncx2 = (static_cast<std::int64_t>(pm->nmb_rootx2)
+                       * static_cast<std::int64_t>(pm->mb_indcs.nx2))
+                      << (lloc.level - pm->root_level);
+  return (pm->mesh_size.x2max - pm->mesh_size.x2min) / static_cast<Real>(ncx2);
+}
