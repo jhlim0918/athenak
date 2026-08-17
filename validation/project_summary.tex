@@ -11,7 +11,7 @@
 \title{Self-Gravity with Mesh Refinement in the AthenaK Shearing Box\\
        \large Program Summary: Phases 0--2c and First Gravitational Collapse}
 \author{\code{athenak-multigrid} tree, branch \code{multigrid}}
-\date{August 14, 2026}
+\date{August 17, 2026}
 
 \begin{document}
 \maketitle
@@ -25,7 +25,7 @@ with shear-periodic boundary conditions on refined meshes}, with a
 uniform-grid \textbf{FFT solver as the machine-precision oracle} throughout.
 All work is validated against analytic solutions, the FFT oracle, and the
 published Athena++ results the solver descends from (Tomida \& Stone 2023).
-Full details: \code{multigrid\_selfgravity\_validation.pdf} (27 pp.),
+Full details: \code{multigrid\_selfgravity\_validation.pdf} (32 pp.),
 reproduced end-to-end by \code{multigrid\_validation\_tests.ipynb} (44 code
 cells); the FFT track has its own companion document.
 
@@ -118,11 +118,34 @@ flag-sync, not local patches). The multigrid solver ran the entire collapse
 --- a 200:1 density contrast on a shear-periodic adaptive mesh --- with zero
 convergence failures.
 
+The program is now \textbf{deployed on NAS HECC}: a $256^2$ discriminator run
+at 64 ranks confirmed the two-site fragmentation as physical (the $128^2$
+single clump was an under-resolution artifact), and its $t{=}14$ extension
+followed the winner-takes-all endpoint --- runaway to $2.6\times10^5\rho_0$
+with the companion consumed --- with the solver machine-clean through the
+quarter-million contrast. The deployment also exposed (deterministically, at
+the same timestep in two attempts) a latent \textbf{upstream bug} in the
+shearing-box $x_1$ exchange: sender and receiver computed the integer shear
+shift from their own MeshBlocks' stored cell sizes, whose last-ulp roundoff
+can disagree near integer crossings, desynchronizing MPI message sizes. All
+seven shift computations now derive from bitwise-identical global mesh
+quantities; the fix is validated from serial (bit-identical to prior
+references) to 64 ranks.
+
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.72\textwidth]{figures/clump_ladder.png}
 \caption{The nonlinear ladder: maximum density vs.\ time for the four
 uniform-grid runs, with the Truelove ceiling marked.}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/clump_final3.png}
+\caption{Final states of the collapse runs ($\log_{10}\rho$, MeshBlocks
+drawn, green = level 1): uniform $128^2$ (fragments merged by
+under-resolution), the AMR run resolving both clumps, and the $256^2$ NAS
+run at $t=14$ in the winner-takes-all runaway.}
 \end{figure}
 
 \section*{Status and next steps}

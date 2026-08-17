@@ -1634,7 +1634,30 @@ stopping criterion for uniform-grid studies; the multigrid solver held
 machine-clean through the entire quarter-million density contrast, ending
 exactly on a shear-periodic instant with zero warnings. The production
 lesson stands: chase fragmentation with AMR, and stop (or sink) at the
-Truelove ceiling.
+Truelove ceiling. Figure~\ref{fig:clump_dcos} shows the three runs' winding-wave
+amplitudes $d_{\cos}/A$ --- they share the linear swing and part ways at
+fragmentation ($t \approx 4.5$), where collapse hands energy to other
+harmonics --- and Figure~\ref{fig:clump_final3} their final states with the
+MeshBlock structure.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/clump_dcos.png}
+\caption{Winding-wave amplitude $d_{\cos}/A$ for the three collapse runs. The
+projection tracks only the $k(t)$ wave component, so the departure from the
+common curve is a clock for when fragmentation takes over.}
+\label{fig:clump_dcos}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/clump_final3.png}
+\caption{Final states of the three collapse runs ($\log_{10}\rho$, clipped at
+$10^3$; MeshBlock outlines drawn, green = level 1): uniform $128^2$ and the
+AMR run at $t=10$, and the $256^2$ NAS run at $t=14$, deep in the
+winner-takes-all runaway with the companion's site evacuated.}
+\label{fig:clump_final3}
+\end{figure}
 
 \begin{figure}[htbp]
 \centering
