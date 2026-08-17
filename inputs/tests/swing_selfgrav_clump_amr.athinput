@@ -111,3 +111,7 @@ value_max = 2.0                # rings form on the swing crest, then follow the 
 file_type      = bin
 variable       = hydro_u_d
 dt             = 0.05
+
+<output3>
+file_type      = rst
+dt             = 0.5     # restart dumps (cluster walltime insurance)
