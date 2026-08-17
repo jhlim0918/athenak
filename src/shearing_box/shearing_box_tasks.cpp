@@ -41,7 +41,10 @@ TaskStatus ShearingBox::InitRecv(Real time) {
       int mm = gid - pmy_pack->gids;
       // Find integer and fractional number of grids over which offset extends.
       // This assumes every grid has same number of cells in x2-direction!
-      int joffset  = static_cast<int>(yshear/(pmy_pack->pmb->mb_size.h_view(mm).dx2));
+      // globally consistent dx2: per-block roundoff desynchronizes this recv-side
+      // joffset from the sender's (see ShearingBox::ConsistentDx2) -- this was the
+      // remaining half of the NAS 64-rank truncation crash
+      int joffset  = static_cast<int>(yshear/ConsistentDx2(gid));
       int ji = joffset/nx2;
       int jr = joffset - ji*nx2;
 
@@ -172,7 +175,10 @@ TaskStatus ShearingBox::ClearRecv() {
       int mm = gid - pmy_pack->gids;
       // Find integer and fractional number of grids over which offset extends.
       // This assumes every grid has same number of cells in x2-direction!
-      int joffset  = static_cast<int>(yshear/(pmy_pack->pmb->mb_size.h_view(mm).dx2));
+      // globally consistent dx2: per-block roundoff desynchronizes this recv-side
+      // joffset from the sender's (see ShearingBox::ConsistentDx2) -- this was the
+      // remaining half of the NAS 64-rank truncation crash
+      int joffset  = static_cast<int>(yshear/ConsistentDx2(gid));
       int ji = joffset/nx2;
       int jr = joffset - ji*nx2;
 
@@ -245,7 +251,10 @@ TaskStatus ShearingBox::ClearSend() {
       int mm = gid - pmy_pack->gids;
       // Find integer and fractional number of grids over which offset extends.
       // This assumes every grid has same number of cells in x2-direction!
-      int joffset  = static_cast<int>(yshear/(pmy_pack->pmb->mb_size.h_view(mm).dx2));
+      // globally consistent dx2: per-block roundoff desynchronizes this recv-side
+      // joffset from the sender's (see ShearingBox::ConsistentDx2) -- this was the
+      // remaining half of the NAS 64-rank truncation crash
+      int joffset  = static_cast<int>(yshear/ConsistentDx2(gid));
       int ji = joffset/nx2;
       int jr = joffset - ji*nx2;
 
