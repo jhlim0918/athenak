@@ -1618,7 +1618,13 @@ points to real fragmentation that the refined run resolves and the uniform grid
 merges, not a boundary artifact (the $y$ wrap is plain periodic and
 translation-invariant). The $256^2$ uniform discriminator run \textbf{settles
 it}: at matched fine resolution the same two-site
-structure appears --- the dominant knot straddling $y=\pm\pi$ at $x\approx0$
+structure appears --- and an \textbf{FFT-solver twin} (single-rank; the FFT
+solver's scope) reproduces it \emph{across solvers}: linear-phase
+$d_{\cos}$ agreement at $5\times10^{-8}$, and at $t{=}10$ the same two
+fragments within a third of a cell in position (boundary knot: FFT
+$41.9\rho_0$ at $(-0.01,-2.86)$ vs.\ multigrid $40.4\rho_0$ at
+$(-0.01,-2.88)$; companion $23.7$ vs.\ $23.4$) after five nonlinear
+dynamical times --- --- the dominant knot straddling $y=\pm\pi$ at $x\approx0$
 plus a center-side companion --- confirming the $k_y{=}2$-harmonic
 fragmentation as physical and the $128^2$ single clump as the under-resolved
 outlier. The properly resolved runs also collapse \emph{later} (peak
