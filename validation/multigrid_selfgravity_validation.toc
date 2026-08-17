@@ -66,3 +66,7 @@
 \contentsline {subsection}{\numberline {10.1}All swing runs at a glance}{27}{subsection.10.1}%
 \contentsline {subsection}{\numberline {10.2}What it takes to clump}{27}{subsection.10.2}%
 \contentsline {subsection}{\numberline {10.3}Zooming on the clump under FARGO: rings, not patches}{29}{subsection.10.3}%
+\contentsline {subsection}{\numberline {10.4}Why $d_{\cos } = \delta $: the projection diagnostic}{30}{subsection.10.4}%
+\contentsline {paragraph}{(i) Linear disturbances wind.}{30}{section*.19}%
+\contentsline {paragraph}{(ii) The cosine channel is closed, and $B \equiv 0$.}{31}{section*.20}%
+\contentsline {paragraph}{(iii) The projection is exact, including on the grid.}{31}{section*.21}%

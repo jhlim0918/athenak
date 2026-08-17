@@ -828,7 +828,8 @@ changing only the solver. Peak amplification $-3.511418$ in \textbf{both} runs
 (relative difference $5.7\times10^{-8}$); the full 401-point amplification
 histories differ by at most $2.0\times10^{-7}$ (rms $8.6\times10^{-8}$); phase
 locking (sine projection) holds at $4\times10^{-14}$ (MG) vs.\ $8\times10^{-14}$
-(FFT). At matched settings the two solvers are interchangeable.
+(FFT). (\S\ref{sec:dcos_derivation} derives why the $d_{\cos}$ projection
+equals the wave amplitude exactly and why the sine channel is empty.) At matched settings the two solvers are interchangeable.
 
 \paragraph{Multi-rank (the Allreduce seam).}
 With \code{-D Athena\_ENABLE\_MPI=ON}, the static tests across 1--8 ranks reproduce
@@ -1658,6 +1659,65 @@ AMR run at $t=10$, and the $256^2$ NAS run at $t=14$, deep in the
 winner-takes-all runaway with the companion's site evacuated.}
 \label{fig:clump_final3}
 \end{figure}
+
+\subsection{Why $d_{\cos} = \delta$: the projection diagnostic}
+\label{sec:dcos_derivation}
+The history diagnostic used throughout the swing program,
+\begin{equation}
+d_{\cos}(t) = \frac{2}{V}\int\!\left(\frac{\rho}{\rho_0}-1\right)
+              \cos\!\big(\mathbf{k}(t)\!\cdot\!\mathbf{x}\big)\,dV,
+\qquad \mathbf{k}(t) = \big(k_{x0}+q\Omega k_y t,\;k_y,\;0\big),
+\end{equation}
+equals the wave's density amplitude $\delta(t)$ exactly in the linear regime.
+Three steps:
+
+\paragraph{(i) Linear disturbances wind.}
+Linearizing about $\mathbf{v}_0=-q\Omega x\,\hat{y}$ and passing to sheared
+coordinates $y'=y+q\Omega t\,x$ removes the background's explicit
+$x$-dependence, so plane waves in $(x,y')$ remain plane waves for all time;
+mapped back, $e^{i(k_{x0}x+k_y y')} = e^{i\,\mathbf{k}(t)\cdot\mathbf{x}}$ with
+the winding $k_x(t)$ above. A single shwave is therefore exactly
+$\rho/\rho_0 = 1+\delta(t)\cos\theta + B(t)\sin\theta$,
+$\theta \equiv \mathbf{k}(t)\!\cdot\!\mathbf{x}$.
+
+\paragraph{(ii) The cosine channel is closed, and $B \equiv 0$.}
+Differentiating $\delta\cos\theta$ at fixed $\mathbf{x}$ produces an awkward
+term $-\delta\,(q\Omega k_y x)\sin\theta$ from the winding of $k_x$; the
+background advection $\mathbf{v}_0\!\cdot\!\nabla\rho_1 =
++\,q\Omega k_y x\,\delta\sin\theta$ cancels it \emph{exactly} --- the winding
+wavevector is precisely the choice that lets the background shear advect the
+phase. What survives is the algebraic system quoted in the pgen header,
+\begin{equation}
+\dot\delta = -(k_x w_x + k_y w_y),\quad
+\dot w_x = 2\Omega w_y + k_x C\delta,\quad
+\dot w_y = -(2{-}q)\Omega w_x + k_y C\delta,\quad
+C = c_s^2 + \frac{4\pi G\rho_0}{D},
+\end{equation}
+for the phase assignment $\rho_1\!\propto\!\cos\theta$,
+$(v_x,v_y)\!\propto\!\sin\theta$ ($D$ the discrete Poisson eigenvalue,
+$\to -k^2$ in the continuum). This set is \emph{closed}: cosine density
+couples only to sine velocities and back. The initial data
+($\rho_1 = A\cos\theta$, $\mathbf{v}_1=0$) lies inside it, so the orthogonal
+channel is never excited and $B(t)=0$ identically --- which is why
+$\max|d_{\sin}|/A \sim 10^{-13}$ is such a sharp phase diagnostic: theory
+keeps that channel exactly empty.
+
+\paragraph{(iii) The projection is exact, including on the grid.}
+Inserting the ansatz, $d_{\cos} = (2\delta/V)\!\int\!\cos^2\theta\,dV =
+(\delta/V)\!\int(1+\cos2\theta)\,dV$. The $\cos2\theta$ term dies by the
+$y$-integral alone: $2\theta$ contains $2k_y y$ with $k_y$ an integer box
+mode, so $\int_0^{L_y}\!\cos(\cdot+2k_y y)\,dy = 0$ \emph{regardless of the
+instantaneous, generally non-resonant value of $k_x(t)$} --- the subtle
+point; $y$-periodicity suffices. The same kills
+$\int\cos\theta\sin\theta\,dV$, making $d_{\cos}$ and $d_{\sin}$ independent.
+Hence $d_{\cos} = \delta(t)$, and normalizing by $A$ gives the amplification
+factor. On a uniform grid the $y$-sum is
+$\sum_j e^{4\pi i n_y j/N_y} = 0$ exactly whenever
+$2n_y \not\equiv 0 \pmod{N_y}$, so the projection is exact on the grid too
+--- the phase lock can reach machine precision rather than truncation level.
+Once a run goes nonlinear the field is no longer a single shwave and
+$d_{\cos}$ reverts to the amplitude of the $\mathbf{k}(t)$ Fourier component
+alone (the departure at fragmentation in Fig.~\ref{fig:clump_dcos}).
 
 \begin{figure}[htbp]
 \centering
