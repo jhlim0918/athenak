@@ -1623,6 +1623,18 @@ fragmentation as physical and the $128^2$ single clump as the under-resolved
 outlier. The properly resolved runs also collapse \emph{later} (peak
 $40\rho_0$ at $t{=}10$, still contracting, vs.\ the $128^2$ run's overshot
 $131$): under-resolution both merges fragments and accelerates collapse.
+Extending the $256^2$ run to $t{=}14$ at 64 ranks (the run that exposed and
+then validated the shear-exchange consistency fix) supplies the endpoint:
+the dominant knot undergoes full isothermal runaway to
+$2.6\times10^{5}\rho_0$ --- $375\times$ past its Truelove ceiling, deep into
+the unresolved regime --- while consuming the center companion entirely (its
+site is a $0.4\rho_0$ void at the end). Absent sink particles or a floor,
+that runaway is the physical endpoint of isothermal collapse and the natural
+stopping criterion for uniform-grid studies; the multigrid solver held
+machine-clean through the entire quarter-million density contrast, ending
+exactly on a shear-periodic instant with zero warnings. The production
+lesson stands: chase fragmentation with AMR, and stop (or sink) at the
+Truelove ceiling.
 
 \begin{figure}[htbp]
 \centering
