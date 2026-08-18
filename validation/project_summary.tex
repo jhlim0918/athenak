@@ -132,6 +132,17 @@ seven shift computations now derive from bitwise-identical global mesh
 quantities; the fix is validated from serial (bit-identical to prior
 references) to 64 ranks.
 
+Finally, an \textbf{FFT-solver cross-check} closed the last audit channel:
+a serial FFT twin of the $256^2$ collapse matches the multigrid run to
+$5\times10^{-8}$ through the linear phase and reproduces the \emph{same two
+fragments within a third of a cell} after five nonlinear dynamical times;
+extended to $t{=}14$, both solvers reach the same fate on the same clock
+($\rho{=}100$ crossings within $0.05$), diverging only \emph{beyond} the
+Truelove ceiling (FFT saturates near it; multigrid runs away unresolved) ---
+a solver-based demonstration that past-ceiling densities are resolution
+artifacts. The $y$-boundary fragmentation has now survived four independent
+audits: resolution, mesh topology, rank count, and solver identity.
+
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=0.72\textwidth]{figures/clump_ladder.png}
@@ -148,11 +159,19 @@ under-resolution), the AMR run resolving both clumps, and the $256^2$ NAS
 run at $t=14$ in the winner-takes-all runaway.}
 \end{figure}
 
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{figures/fft_vs_mg_endpoint.png}
+\caption{The solver cross-check at $t=14$: FFT and multigrid agree on fate
+and clock while the collapse is resolved, and part ways only beyond the
+Truelove ceiling (dashed) --- neither number is physical there.}
+\end{figure}
+
 \section*{Status and next steps}
 \textbf{Delivered}: FFT solver (validated, 3.5$\times$ faster than multigrid on
-uniform grids); shearing-box refinement infrastructure incl.\ AMR; multigrid
-gravity on uniform, SMR-ring, boundary-annuli, and adaptive meshes, serial and
-MPI; $\sim$30 pages of validation documentation, a 44-cell reproducing
+uniform grids, and now a full nonlinear cross-check twin); shearing-box
+refinement infrastructure incl.\ AMR; multigrid gravity on uniform, SMR-ring,
+boundary-annuli, and adaptive meshes, serial and MPI; $\sim$30 pages of validation documentation, a 44-cell reproducing
 notebook, and versioned test inputs for every configuration.
 \textbf{Next}: (i) the Gammie (2001) gravitoturbulence program ---
 $\beta$-cooling source term, $Q$ and $\alpha$ diagnostics --- using this stack
