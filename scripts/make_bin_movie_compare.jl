@@ -4,9 +4,12 @@
 # MeshBlock outlines from the file itself: gray = root, green = level 1.
 #
 # Usage: julia scripts/make_bin_movie_compare.jl <run1> <run2> [<run3> ...] [field]
+#                                                [--grid]
 #   <run> is either  <dir>              (its bin/ holds one output family), or
 #                    <dir>:<basename>   (pick one family from a shared bin/ dir,
 #                                        e.g. validation/run:shwave2_nofargo_smr)
+#   --grid lays the panels out in two rows (row-major) instead of one row --
+#   e.g. four runs become a 2x2 grid. Output name gains a _grid suffix.
 # All runs must share the output cadence. Writes
 # <field>_compare_<label1>_vs_<label2>...mp4 into the first run's parent directory.
 
@@ -98,10 +101,10 @@ function outline_segments(run::RunFrames, i)
     return segs
 end
 
-function setup_panel!(fig, col, run::RunFrames, frame_obs, seg_obs, vmin, vmax,
+function setup_panel!(fig, pos, run::RunFrames, frame_obs, seg_obs, vmin, vmax,
                       title_obs)
     fd = run.fd0
-    ax = Axis(fig[1, col], xlabel="x1", ylabel="x2", aspect=DataAspect(),
+    ax = Axis(fig[pos[1], pos[2]], xlabel="x1", ylabel="x2", aspect=DataAspect(),
               title=title_obs, titlesize=12)
     x1edges = range(fd.x1min, fd.x1max, length=fd.Nx1+1)
     x2edges = range(fd.x2min, fd.x2max, length=fd.Nx2+1)
@@ -117,6 +120,8 @@ end
 function main()
     # trailing argument is the field name if it is not an existing run directory
     args = copy(ARGS)
+    grid = "--grid" in args
+    args = filter(!=("--grid"), args)
     field = "dens"
     if length(args) > 2 && !isdir(first(parse_run_spec(last(args))))
         field = pop!(args)
@@ -145,7 +150,11 @@ function main()
                          0.995), 1e-6*abs(mid), 1e-10)
     vmin, vmax = mid - halfw, mid + halfw
 
-    fig = Figure(size=(360 + 390*n, 640))
+    # panel layout: one row, or (--grid) two rows filled row-major
+    ncols = grid ? cld(n, 2) : n
+    nrows = grid ? 2 : 1
+    positions = [(div(i-1, ncols) + 1, mod1(i, ncols)) for i in 1:n]
+    fig = Figure(size=(360 + 390*ncols, 60 + 580*nrows))
     obs = [Observable(r.frames[1]) for r in runs]
     segs = [[Observable(s) for s in outline_segments(r, 1)] for r in runs]
     # per-frame data range in each title: a panel that saturates the shared color
@@ -154,19 +163,19 @@ function main()
     titles = [Observable(panel_header(r, 1)) for r in runs]
     hm = nothing
     for (i, r) in enumerate(runs)
-        h = setup_panel!(fig, i, r, obs[i], segs[i], vmin, vmax, titles[i])
+        h = setup_panel!(fig, positions[i], r, obs[i], segs[i], vmin, vmax, titles[i])
         i == 1 && (hm = h)
     end
-    Colorbar(fig[1, n+1], hm, label=field)
+    Colorbar(fig[1:nrows, ncols+1], hm, label=field)
     suptitle = Observable("")
-    Label(fig[0, 1:n+1], suptitle, fontsize=16, font=:bold)
+    Label(fig[0, 1:ncols+1], suptitle, fontsize=16, font=:bold)
 
     tlabel(t) = omega0 === nothing ? "t = $(round(t, digits=2))" :
         "Ωt = $(round(omega0 * t, digits=2))"
 
     out_path = joinpath(dirname(first(parse_run_spec(args[1]))),
                         "$(field)_compare_" * join([r.label for r in runs], "_vs_") *
-                        ".mp4")
+                        (grid ? "_grid" : "") * ".mp4")
     record(fig, out_path, 1:nframes; framerate=15) do i
         for (k, r) in enumerate(runs)
             obs[k][] = r.frames[i]
