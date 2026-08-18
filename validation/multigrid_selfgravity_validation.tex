@@ -1624,7 +1624,15 @@ $d_{\cos}$ agreement at $5\times10^{-8}$, and at $t{=}10$ the same two
 fragments within a third of a cell in position (boundary knot: FFT
 $41.9\rho_0$ at $(-0.01,-2.86)$ vs.\ multigrid $40.4\rho_0$ at
 $(-0.01,-2.88)$; companion $23.7$ vs.\ $23.4$) after five nonlinear
-dynamical times --- --- the dominant knot straddling $y=\pm\pi$ at $x\approx0$
+dynamical times. Extended to $t{=}14$, the FFT twin also goes
+winner-takes-all at the same boundary site with the companion's site
+evacuated, and its runaway \emph{clock} matches multigrid to $0.05$ time
+units (the $\rho{=}100$ crossings); the two runs then part ways only
+\emph{beyond} the Truelove ceiling --- FFT saturates near it
+($\sim\!600\rho_0$, a grid-scale bounce) while multigrid shoots to
+$2.6\times10^5\rho_0$ --- a clean, solver-based demonstration that
+past-ceiling densities are resolution artifacts in either code
+(Fig.~\ref{fig:fft_endpoint}) --- --- the dominant knot straddling $y=\pm\pi$ at $x\approx0$
 plus a center-side companion --- confirming the $k_y{=}2$-harmonic
 fragmentation as physical and the $128^2$ single clump as the under-resolved
 outlier. The properly resolved runs also collapse \emph{later} (peak
@@ -1664,6 +1672,16 @@ $10^3$; MeshBlock outlines drawn, green = level 1): uniform $128^2$ and the
 AMR run at $t=10$, and the $256^2$ NAS run at $t=14$, deep in the
 winner-takes-all runaway with the companion's site evacuated.}
 \label{fig:clump_final3}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/fft_vs_mg_endpoint.png}
+\caption{$t=14$ endpoints of the $256^2$ collapse under the two solvers:
+same fate (boundary knot wins, companion consumed) and runaway clocks
+agreeing to $0.05$ while resolved; beyond the Truelove ceiling (dashed) the
+solvers diverge qualitatively --- neither number is physical there.}
+\label{fig:fft_endpoint}
 \end{figure}
 
 \subsection{Why $d_{\cos} = \delta$: the projection diagnostic}
