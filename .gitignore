@@ -23,4 +23,7 @@ tst/test_log.txt
 Lorene
 
 # python cache
-__pycache__/validation/bin/
+__pycache__/
+
+# compressed bin archives (Dropbox-only, too large for git)
+validation/bin/
