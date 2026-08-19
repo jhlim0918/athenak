@@ -2,8 +2,12 @@
 #   left  — MeshBlock count vs time for the 20-orbit moving-ring epicycle AMR run,
 #           with the prescribed ring center xc(t) overlaid (rings created/destroyed
 #           as xc sweeps past the vetoed boundary columns);
-#   right — x-KE history of the 128^2 vortical shwave: uniform vs static ring vs
-#           moving-ring AMR, visually indistinguishable (max rel. diff 2.7e-3).
+#   right — radial-velocity-perturbation amplitude of the 128^2 vortical shwave
+#           (uniform vs static ring vs moving-ring AMR, visually indistinguishable)
+#           against the linear-theory amplitude of Johnson & Gammie 2005, ApJ 635,
+#           149, eq. (9): dvx = dvx0 (1+tau0^2)/(1+tau^2), tau = q*Omega*t + kx0/ky.
+#           This run is the JG05 Fig. 1 (left) verification setup: tau0 = -4, so the
+#           swing amplifies dvx by 17x through tau = 0 at t = 8/3.
 # Run from validation/: julia figures/plot_amr_ring.jl
 using CairoMakie
 using Printf
@@ -56,13 +60,29 @@ lines!(ax1r, orb, 7.0 .* sin.(tt), color=(C2, 0.55))
 hlines!(ax1r, [-5, 5], color=(:gray, 0.5), linestyle=:dash)
 xlims!(ax1, 0, 20); xlims!(ax1r, 0, 20)
 
-ax2 = Axis(fig[1, 2], xlabel="t", ylabel="x-kinetic energy",
-           title="vortical shwave, 128², swing through t=2.67")
-lines!(ax2, hu[:, 1], hu[:, 7], color=C1, linewidth=4, label="uniform")
-lines!(ax2, hr[:, 1], hr[:, 7], color=C3, linewidth=2.2, label="static ring (SMR)")
-lines!(ax2, ha[:, 1], ha[:, 7], color=C2, linewidth=1.2, linestyle=:dash,
+# hst 1-KE -> sinusoidal-mode amplitude: KE = rho0*V*dvx^2/4  (rho0 = 1, V = 0.125,
+# cs = 1, so dvx is directly in units of cs)
+V0 = 0.125
+dvx(h) = sqrt.(4.0 .* h[:, 7] ./ V0)
+# linear theory: JG05 eq. (9), dvx = dvx0 (1+tau0^2)/(1+tau^2), tau = q*Omega*t + tau0
+dvx0, q, Ω, τ0 = 1.0e-4, 1.5, 1.0, -4.0
+tth = range(0, maximum(hu[:, 1]); length=400)
+th(t) = dvx0 * (1 + τ0^2) / (1 + (q*Ω*t + τ0)^2)
+
+ax2 = Axis(fig[1, 2], xlabel="Ωt", ylabel="δvₓ / cₛ",
+           title="vortical shwave, 128², swing through Ωt=8/3")
+lines!(ax2, collect(tth), th.(tth), color=:black, linewidth=1.4, linestyle=:dash,
+       label="linear theory (JG05 eq. 9)")
+lines!(ax2, hu[:, 1], dvx(hu), color=C1, linewidth=4, label="uniform")
+lines!(ax2, hr[:, 1], dvx(hr), color=C3, linewidth=2.2, label="static ring (SMR)")
+lines!(ax2, ha[:, 1], dvx(ha), color=C2, linewidth=1.2, linestyle=:dash,
        label="moving ring (AMR)")
 axislegend(ax2, position=:lt)
+
+for (nm, h) in (("uniform", hu), ("ring", hr), ("amr", ha))
+    d = maximum(abs.(dvx(h) .- th.(h[:, 1]))) / (dvx0 * (1 + τ0^2))
+    @printf("%-8s max |dvx - theory| / peak = %.3e\n", nm, d)
+end
 
 save(joinpath(HERE, "mg_amr_ring.png"), fig)
 println("wrote figures/mg_amr_ring.png")

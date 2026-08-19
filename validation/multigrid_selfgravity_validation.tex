@@ -613,7 +613,18 @@ $128^2$ & $-0.29\%$ & $-0.27\%$ & $1.8\times10^{-4}$ & $0.0$ \\
 
 \noindent (errors vs.\ the same-resolution uniform run; curve maxima relative to
 the peak $x$-KE; the $128^2$ runs use CLI overrides \code{mesh/nx1=128
-mesh/nx2=128}). The swing peak lands at $t = 2.70$ in every run (theory: $2.67$).
+mesh/nx2=128}). This test is in fact the code-verification setup of Johnson \&
+Gammie (2005, ApJ 635, 149, their Fig.~1, left): the vortical-shwave amplitude obeys
+their eq.~(9),
+\begin{equation}
+  \delta v_x(t) = \delta v_{x0}\,\frac{1+\tau_0^2}{1+\tau^2},
+  \qquad \tau = q\Omega t + k_{x0}/k_y,
+  \label{eq:jg05}
+\end{equation}
+with $\tau_0 = n_{wx}/n_{wy} = -4$ here, so the swing through $\tau = 0$ at
+$\Omega t = 8/3$ amplifies $\delta v_x$ by $1+\tau_0^2 = 17$. At $128^2$ all three
+runs track Eq.~\eqref{eq:jg05} to better than $0.5\%$ of the peak amplitude
+(uniform $0.39\%$, static ring $0.40\%$, moving-ring AMR $0.44\%$).
 At $64^2$ the moving ring roughly doubles the static-ring truncation --- there the
 ring covers only $\sim1.6$ wavelengths of the $|n_{wx}|=8$ mode and full ring
 destruction repeatedly restricts fine data mid-swing. At $128^2$ the moving-ring
@@ -631,10 +642,12 @@ an order measurement.)
   moving-ring epicycle AMR run, with the prescribed ring center $x_c(t) = 7\sin t$
   (orange, right axis; dashed lines mark the vetoed boundary columns beyond
   $|x_1| = 5$). Rings are destroyed near every turning point and re-created on the
-  way back, 2296 blocks created / 2240 destroyed in total. Right: $x$-KE history of
-  the $128^2$ vortical shwave through the swing --- uniform, static SMR ring, and
-  moving-ring AMR are visually indistinguishable (moving vs.\ static ring:
-  $1.8\times10^{-4}$ of peak).}
+  way back, 2296 blocks created / 2240 destroyed in total. Right: radial-velocity
+  perturbation amplitude $\delta v_x/c_s$ of the $128^2$ vortical shwave through the
+  swing, with the linear-theory amplitude of Eq.~\eqref{eq:jg05} (Johnson \& Gammie
+  2005, eq.~9) overplotted --- uniform, static SMR ring, and moving-ring AMR are
+  visually indistinguishable from each other (moving vs.\ static ring:
+  $1.8\times10^{-4}$ of peak) and track the theory to $<0.5\%$ of the peak.}
   \label{fig:amr}
 \end{figure}
 
