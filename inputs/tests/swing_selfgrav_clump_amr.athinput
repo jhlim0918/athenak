@@ -87,6 +87,11 @@ rho0      = 1.0
 amp       = 0.2
 nwx       = -6          # leading wave (kx0 < 0)
 nwy       = 1
+phase0    = 0.0         # constant phase of the initial wave (translation tests)
+nwx2      = 0           # optional second wave (parity-breaking tests); 0 = off
+nwy2      = 0
+amp2      = 0.0
+phase2    = 0.0
 user_hist = true
 
 <output1>

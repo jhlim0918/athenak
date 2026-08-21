@@ -6,12 +6,25 @@
 //! \file swing.cpp
 //! \brief Swing-amplification test for self-gravity in the shearing box.
 //!
-//! Initializes a single leading shearing wave (kx0 < 0, ky > 0, kz = 0) of small
+//! Initializes a leading shearing wave (kx0 < 0, ky > 0, kz = 0) of small
 //! amplitude with zero velocity fluctuations:
-//!     rho = rho0 [1 + A cos(kx0 x + ky y)],   v' = 0.
+//!     rho = rho0 [1 + A cos(kx0 x + ky y + phase0)
+//!                   + A2 cos(kx2 x + ky2 y + phase2)],   v' = 0.
 //! Background shear winds the wave up, kx(t) = kx0 + q*Omega*ky*t; as it swings through
 //! kx = 0 self-gravity transiently amplifies it (Goldreich & Lynden-Bell 1965;
 //! Julian & Toomre 1966; Toomre 1981).
+//!
+//! Initial-condition options (<problem> block; defaults reproduce the original test
+//! bitwise):
+//!  - default            : single wave, zero phase (phase0 = 0, amp2 = 0);
+//!  - phase0 != 0        : the same wave translated by -phase0/ky in x2; the whole
+//!                         solution (and the history projection, which carries phase0)
+//!                         must translate rigidly — the translation-covariance test;
+//!  - nwx2/nwy2/amp2/phase2 : an optional second leading wave. A non-parallel second
+//!                         mode with generic phase2 leaves no inversion center on the
+//!                         x1 = 0 axis, so the shear preserves no parity and collapse
+//!                         sites are not symmetry-pinned — the parity-breaking test.
+//!                         (IC-only; the history stays projected on the primary.)
 //!
 //! The user history output projects the solution onto the *instantaneous* shearing
 //! wavevector k(t) = (kx(t), ky, 0), giving the linear-theory amplitudes directly:
@@ -56,7 +69,7 @@ void SwingMovingRingRefine(MeshBlockPack *pmbp);
 
 namespace {
 struct SwingTestVariables {
-  Real kx0, ky, qshear, omega0, rho0, inv_vol;
+  Real kx0, ky, phase0, qshear, omega0, rho0, inv_vol;
 };
 SwingTestVariables swing_var;
 
@@ -111,6 +124,20 @@ void ProblemGenerator::SwingAmplification(ParameterInput *pin, const bool restar
 
   swing_var.kx0 = 2.0*M_PI*static_cast<Real>(nwx)/lx;
   swing_var.ky  = 2.0*M_PI*static_cast<Real>(nwy)/ly;
+  // constant phase offset of the initial wave (translation-covariance tests: the
+  // whole solution must shift by -phase0/ky in x2, incl. the history projection)
+  swing_var.phase0 = pin->GetOrAddReal("problem", "phase0", 0.0);
+
+  // optional SECOND leading wave (parity-breaking tests: a non-parallel mode with
+  // generic phase leaves no inversion center on the x=0 axis, so the shear breaks
+  // all parity and no clump site is symmetry-pinned). IC-only; the history
+  // projection stays on the primary. Defaults are bitwise-inert.
+  int nwx2 = pin->GetOrAddInteger("problem", "nwx2", 0);
+  int nwy2 = pin->GetOrAddInteger("problem", "nwy2", 0);
+  Real amp2 = pin->GetOrAddReal("problem", "amp2", 0.0);
+  Real phase2 = pin->GetOrAddReal("problem", "phase2", 0.0);
+  Real kx2 = 2.0*M_PI*static_cast<Real>(nwx2)/lx;
+  Real ky2 = 2.0*M_PI*static_cast<Real>(nwy2)/ly;
   swing_var.qshear = pmbp->phydro->psbox_u->qshear;
   swing_var.omega0 = pmbp->phydro->psbox_u->omega0;
   swing_var.rho0 = rho0;
@@ -149,7 +176,8 @@ void ProblemGenerator::SwingAmplification(ParameterInput *pin, const bool restar
     Real &x2min = size.d_view(m).x2min, &x2max = size.d_view(m).x2max;
     Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
     Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
-    Real den = rho0*(1.0 + amp*cos(sv.kx0*x1v + sv.ky*x2v));
+    Real den = rho0*(1.0 + amp*cos(sv.kx0*x1v + sv.ky*x2v + sv.phase0)
+                         + amp2*cos(kx2*x1v + ky2*x2v + phase2));
     Real vy0 = (orb_adv) ? 0.0 : -(sv.qshear)*(sv.omega0)*x1v;
     u0(m,IDN,k,j,i) = den;
     u0(m,IM1,k,j,i) = 0.0;
@@ -202,7 +230,7 @@ void SwingHistory(HistoryData *pdata, Mesh *pm) {
     Real &x2min = size.d_view(m).x2min, &x2max = size.d_view(m).x2max;
     Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
     Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
-    Real phase = kx*x1v + sv.ky*x2v;
+    Real phase = kx*x1v + sv.ky*x2v + sv.phase0;
     Real cs_ = cos(phase), sn_ = sin(phase);
     Real dd = w0_(m,IDN,k,j,i)/sv.rho0 - 1.0;
 
