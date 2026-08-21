@@ -7,27 +7,34 @@
 # t=9, secondary 1.1e4 at (-2.908, -2.295); runaway is late/shallow enough that
 # the uniform run completed to t=14.
 #
-# AMR design notes (policy-checked before writing):
-# - min_max density criterion, value_max = 10: rings form when the crest first
-#   exceeds 10*rho0 (t ~ 7.6 in the uniform twin). Under FARGO the annular policy
-#   completes full-x2/x3 rings automatically; expect whole column-rings, not
-#   patches (validation PDF sec. 13.3).
-# - num_levels = 3 (root + TWO refinement levels; local Truelove ceiling
-#   683 -> 2.7e3 -> 1.1e4). The dominant knot (root column 3, level-2 column 14)
-#   sits INSIDE the level-1 window [3,12] and level-2 window [7,24] of the graded
-#   cap, but just OUTSIDE the level-3 window [15,48] -- a third refinement level
-#   (num_levels = 4) is legal but would likely never engage at the main knot,
-#   while multiplying ring costs 8x. Uncomment below to try anyway.
-# - The SECONDARY knot (x = -2.91, boundary root column 0) canNOT be refined:
-#   the uniform-boundary-level policy holds the shear-boundary columns at root
-#   and the graded cap protects the buffer columns. Expect it to stay at 256^2
-#   resolution -- vetoed refinement requests there are policy, not errors.
-# - Costs: dt is set globally by the finest level (dt/4 once level-2 rings form);
-#   each refined column-ring = 256 (L1) / 1024 (L2) MeshBlocks. Expect fast
-#   evolution to t ~ 7.5, then ring formation, then the runaway dt-crawl to end
-#   the useful span somewhere past t ~ 9-10 (walltime, not tlim, will decide;
-#   restart dumps every 0.5 for -r extension). Past-ceiling densities remain
-#   unphysical at every level -- positions and morphology are the science.
+# LESSON FROM THE FIRST ATTEMPT (value_max=10, max_nmb_per_rank=160, crashed at
+# t=4.495): the criterion fires on the SWING TRANSIENT, not only on the clumps --
+# the over-compressed crest exceeds 10*rho0 across many x1 columns at t~4.4, and
+# under the annular policy every flagged column becomes a full ring at every level
+# it qualifies for: 10,144 blocks (288 root + 640 L1 + 9216 L2) in the t=4.5
+# snapshot, 11,264 wanted at the fatal remesh (176/rank x 64). The cap guard
+# aborted cleanly; zero multigrid warnings; AMR history bitwise identical to the
+# uniform twin until the first remesh (t=4.37). Hence the two settings below.
+#
+# AMR design notes (checked against mesh_refinement.cpp):
+# - value_max = 50 keeps the rings off the bouncing swing transient and fires on
+#   the genuine collapse (the uniform twin crosses 50 near t~7.8). value_max = 10
+#   is the maximal stress test (near-full level-2 through the swing, then mass
+#   derefinement at the bounce): ask for >= 12 h walltime.
+# - max_nmb_per_rank = 512 is the HARD CEILING for 64 ranks (the whole box at
+#   level 2 = 32768 blocks = 512/rank), so the cap fatal cannot fire. It is a
+#   per-rank limit: serial/low-rank tests of this file need it raised further.
+# - num_levels = 3 (root + 2). Refinement windows under the graded cap: root
+#   blocks may refine in any interior column (never the two shear-boundary
+#   columns); level-1 blocks may refine only with level-1 column index in [3,28]
+#   (|x| < 2.55); level-2 blocks only with level-2 index in [7,56] (|x| < 2.45).
+#   The dominant knot (x = -1.755) is inside all three windows, so num_levels = 4
+#   is viable at the main knot (8x ring cost per level). The secondary knot
+#   (x = -2.91, boundary column 0) can never be refined: policy, not an error.
+# - dt is set globally by the finest level; each refined column-ring = 256 (L1)
+#   / 1024 (L2) MeshBlocks. Expect the runaway dt-crawl to end the useful span
+#   past t ~ 9-10 (walltime, not tlim, decides; restart dumps every 0.5).
+#   Past-ceiling densities remain unphysical at every level.
 #
 # Cluster launch (64 ranks; no CLI overrides needed):
 #   mpiexec -np 64 -ppn 32 $ATH/build-mpi/src/athena \
@@ -117,15 +124,14 @@ user_hist = true
 
 <mesh_refinement>
 refinement = adaptive
-num_levels = 3             # root + 2 refinement levels (see header; 4 = +1 level,
-                           # likely inert at the main knot per the graded cap)
+num_levels = 3             # root + 2 refinement levels (4 viable at the main knot)
 refinement_interval = 5
-max_nmb_per_rank = 160     # 64 ranks: worst case ~6000 blocks (~94/rank) + headroom
+max_nmb_per_rank = 512     # hard ceiling at 64 ranks (whole box at level 2); PER RANK
 
 <amr_criterion1>
 method    = min_max
 variable  = hydro_u_d
-value_max = 10.0           # rings form on the deep-nonlinear crest and clumps
+value_max = 50.0           # clump-chasing; 10.0 = maximal stress test (see header)
 
 <output1>
 file_type      = hst
