@@ -1,0 +1,143 @@
+# AthenaK input: 256^2 two-mode collapse (psi = 2.3) with density-triggered AMR --
+# the deep stress test of the Phase-2 machinery: AMR + FARGO + shear-periodic
+# multigrid gravity at 64 ranks, rings chasing a genuinely nonlinear collapse.
+#
+# Base run: swing_mg_uniform_256_phase2_2.3 (uniform twin of this file with
+# refinement=none). Its census: dominant knot 8.8e4*rho0 at (-1.755, +1.559) by
+# t=9, secondary 1.1e4 at (-2.908, -2.295); runaway is late/shallow enough that
+# the uniform run completed to t=14.
+#
+# AMR design notes (policy-checked before writing):
+# - min_max density criterion, value_max = 10: rings form when the crest first
+#   exceeds 10*rho0 (t ~ 7.6 in the uniform twin). Under FARGO the annular policy
+#   completes full-x2/x3 rings automatically; expect whole column-rings, not
+#   patches (validation PDF sec. 13.3).
+# - num_levels = 3 (root + TWO refinement levels; local Truelove ceiling
+#   683 -> 2.7e3 -> 1.1e4). The dominant knot (root column 3, level-2 column 14)
+#   sits INSIDE the level-1 window [3,12] and level-2 window [7,24] of the graded
+#   cap, but just OUTSIDE the level-3 window [15,48] -- a third refinement level
+#   (num_levels = 4) is legal but would likely never engage at the main knot,
+#   while multiplying ring costs 8x. Uncomment below to try anyway.
+# - The SECONDARY knot (x = -2.91, boundary root column 0) canNOT be refined:
+#   the uniform-boundary-level policy holds the shear-boundary columns at root
+#   and the graded cap protects the buffer columns. Expect it to stay at 256^2
+#   resolution -- vetoed refinement requests there are policy, not errors.
+# - Costs: dt is set globally by the finest level (dt/4 once level-2 rings form);
+#   each refined column-ring = 256 (L1) / 1024 (L2) MeshBlocks. Expect fast
+#   evolution to t ~ 7.5, then ring formation, then the runaway dt-crawl to end
+#   the useful span somewhere past t ~ 9-10 (walltime, not tlim, will decide;
+#   restart dumps every 0.5 for -r extension). Past-ceiling densities remain
+#   unphysical at every level -- positions and morphology are the science.
+#
+# Cluster launch (64 ranks; no CLI overrides needed):
+#   mpiexec -np 64 -ppn 32 $ATH/build-mpi/src/athena \
+#     -i $ATH/inputs/tests/swing_selfgrav_clump_amr256_2m.athinput
+
+<comment>
+problem   = Two-mode swing collapse (psi=2.3) with density-triggered AMR, 256^2
+
+<job>
+basename  = clump_2m_b256amr
+
+<mesh>
+nghost    = 4
+nx1       = 256
+x1min     = -3.14159265358979
+x1max     =  3.14159265358979
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+
+nx2       = 256
+x2min     = -3.14159265358979
+x2max     =  3.14159265358979
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 32
+x3min     = -0.39269908169872
+x3max     =  0.39269908169872
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 14.0
+ndiag      = 100
+
+<hydro>
+eos             = isothermal
+reconstruct     = plm
+rsolver         = hlle
+iso_sound_speed = 1.0
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true   # FARGO on -> annular refinement policy (rings)
+
+<gravity>
+solver    = multigrid
+four_pi_G = 6.0
+vert_bc   = periodic
+fft_remap = ppmx
+threshold = -1             # fixed-count mode (stagnation control can hit the
+niteration = 10            # 40-cycle cap mid-run on refined meshes)
+full_multigrid = true
+fmg_ncycle = 1
+mg_remap  = ppmx
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+amr_moving_ring = false    # density criterion below, not the prescribed ring
+ring_xc0     = 0.0
+ring_xamp    = 0.0
+ring_freq    = 1.0
+ring_hwidth  = 0.19634954084936
+pgen_name = swing
+rho0      = 1.0
+amp       = 0.2
+nwx       = -6             # primary leading wave
+nwy       = 1
+phase0    = 0.0
+nwx2      = -11            # second leading wave: breaks all parity (generic sites)
+nwy2      = 2
+amp2      = 0.1
+phase2    = 2.3
+user_hist = true
+
+<mesh_refinement>
+refinement = adaptive
+num_levels = 3             # root + 2 refinement levels (see header; 4 = +1 level,
+                           # likely inert at the main knot per the graded cap)
+refinement_interval = 5
+max_nmb_per_rank = 160     # 64 ranks: worst case ~6000 blocks (~94/rank) + headroom
+
+<amr_criterion1>
+method    = min_max
+variable  = hydro_u_d
+value_max = 10.0           # rings form on the deep-nonlinear crest and clumps
+
+<output1>
+file_type      = hst
+dt             = 0.02
+data_format    = %14.7e
+user_hist_only = true
+
+<output2>
+file_type      = bin
+variable       = hydro_u_d
+dt             = 0.25
+
+<output3>
+file_type      = rst
+dt             = 0.5       # restart dumps (cluster walltime insurance)
