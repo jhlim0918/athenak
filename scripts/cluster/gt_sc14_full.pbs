@@ -1,0 +1,53 @@
+#!/bin/bash
+# PBS submission template: full-size SC14 gravito-turbulence run (beta = 10),
+# 256 x 256 x 48 ([-32,32]^2 x [-6,6], 4 cells/H), 64 MPI ranks.
+#
+# Site-specific lines (queue, group, model, modules) are placeholders -- edit to
+# match the cluster.  The mesh has 768 MeshBlocks of 16^3, so any rank count that
+# divides the load evenly works well up to ~192 ranks (64 -> 12 blocks/rank).
+#
+# Build (once, login node -- kokkos-fft is fetched by CMake at configure time):
+#   cmake -B build-cluster -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON
+#   cmake --build build-cluster -j
+#
+# Submit from the repository root:  qsub scripts/cluster/gt_sc14_full.pbs
+
+#PBS -N gt_sc14_b10
+#PBS -l select=2:ncpus=32:mpiprocs=32
+#PBS -l walltime=08:00:00
+#PBS -j oe
+##PBS -q <queue>
+##PBS -W group_list=<group>
+
+set -eu
+
+REPO=${PBS_O_WORKDIR:?submit from the repo root}
+cd "$REPO"
+
+ATHENA=$REPO/build-cluster/src/athena
+INPUT=$REPO/inputs/shearing_box/gravito_turb_sc14.athinput
+RUN=$REPO/runs/gt_sc14_b10
+NRANKS=64
+
+mkdir -p "$RUN"
+cp "$INPUT" "$RUN/input_frozen.athinput"
+{
+  echo "branch: $(git branch --show-current)"
+  echo "commit: $(git rev-parse HEAD)"
+  echo "date:   $(date)"
+  echo "job:    ${PBS_JOBID:-interactive}, $NRANKS ranks"
+  echo "cmd:    athena -i input_frozen.athinput (full-size SC14 beta=10)"
+  git diff --stat | tail -1 | sed 's/^/uncommitted: /'
+} > "$RUN/provenance.txt"
+
+# module purge && module load <compiler> <mpi>   # site-specific
+
+# -t leaves ~10 min of walltime headroom for the final restart dump
+mpiexec -np $NRANKS "$ATHENA" \
+  -i "$RUN/input_frozen.athinput" -d "$RUN" -t 07:50:00 \
+  > "$RUN/run.log" 2>&1
+
+# If the job hit the walltime before tlim = 300, resubmit continuing from the
+# last restart dump (parameters are embedded in the rst; overrides still apply):
+#   mpiexec -np $NRANKS "$ATHENA" -r "$RUN"/rst/GravitoTurb.<last>.rst \
+#     -d "$RUN" -t 07:50:00 >> "$RUN/run.log" 2>&1

@@ -36,3 +36,6 @@ validation/*.toc
 validation/*.fls
 validation/*.fdb_latexmk
 validation/*.synctex.gz
+
+# per-run output directories (frozen input + provenance + data; not versioned)
+runs/
