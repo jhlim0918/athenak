@@ -1,0 +1,92 @@
+# AthenaK input file: multigrid self-gravity static-solve test with slab-open
+# (vacuum) x3 boundaries AND shear-periodic x1 (Phase 3).  Profile = sheet at a
+# generic shear phase (time0 = 0.37): the density is a single rolled-frame mode on
+# one z-layer plus a uniform background.  At a sheared instant the roll/unroll remap
+# limits the "# FFT-POISSON SHEET ERROR" to the remap interpolation order (NOT
+# machine precision as in the unsheared twin mg_poisson_slab.athinput); at time0=0
+# it returns to ~1e-12.  compare_fft=true cross-checks against the independent FFT
+# KO09 open solver on the same density.
+
+<comment>
+problem   = Multigrid Poisson, slab-open x3 + shear-periodic x1 (sheet test)
+
+<job>
+basename  = MGPoissonSlabShear
+
+<mesh>
+nghost    = 3         # Number of ghost cells
+nx1       = 64        # Number of cells in X1-direction
+x1min     = -0.5      # minimum value of X1
+x1max     = 0.5       # maximum value of X1
+ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
+ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
+
+nx2       = 64        # Number of cells in X2-direction
+x2min     = -0.5      # minimum value of X2
+x2max     = 0.5       # maximum value of X2
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 64        # Number of cells in X3-direction
+x3min     = -0.5      # minimum value of X3
+x3max     = 0.5       # maximum value of X3
+ix3_bc    = outflow   # Inner-X3 boundary condition flag
+ox3_bc    = outflow   # Outer-X3 boundary condition flag
+
+<meshblock>
+nx1       = 16        # cubic MeshBlocks (multigrid requirement)
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integrator
+cfl_number = 0.2      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = 0        # cycle limit (pgen-only test; no evolution)
+tlim       = 1.0      # time limit
+ndiag      = 1        # cycles between diagnostic output
+
+<hydro>
+eos         = isothermal  # EOS type
+reconstruct = plm         # spatial reconstruction method
+rsolver     = llf         # Riemann-solver to be used
+iso_sound_speed = 1.0
+
+<shearing_box>
+qshear    = 1.5       # shear rate parameter q
+omega0    = 1.0       # rotation frequency
+
+<gravity>
+solver    = multigrid # fft | multigrid
+four_pi_G = 1.0
+mg_bc     = slab      # slab-open (vacuum) x3 boundaries
+vert_bc   = open      # used by the FFT solver when compare_fft=true
+fft_remap = ppmx      # dc | plm | ppmx (FFT-solver y-remap order)
+mg_remap  = ppmx      # dc | plm | ppmx (MG shear ghost + slab plane remap order)
+threshold = 0.0       # 0.0 = automatic convergence control (stagnation exit)
+niteration = 20       # used when threshold = -1 (fixed V-cycle count)
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+pgen_name = fft_poisson   # problem generator name
+profile   = sheet         # uniform rho0 + one rolled-frame mode on layer sheet_k
+rho0      = 1.0
+amp       = 0.5
+time0     = 0.37          # generic shear phase (qomt != 0)
+n1        = 2
+n2        = 1
+n3        = 1
+sheet_k   = 32            # z-layer index of the mode (default nz/2)
+slab_h    = 0.05          # scale height for profile=slab
+blob_amp  = 1.0           # blob amplitude for profile=modes
+compare_fft = true
+
+<output1>
+file_type = bin
+variable  = grav_phi
+dt        = 1.0

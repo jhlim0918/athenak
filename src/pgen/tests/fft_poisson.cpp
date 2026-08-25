@@ -38,6 +38,9 @@
 #include "mhd/mhd.hpp"
 #include "gravity/gravity.hpp"
 #include "gravity/mg_gravity.hpp"
+#if FFT_ENABLED
+#include "gravity/fft_gravity.hpp"
+#endif
 #include "pgen/pgen.hpp"
 
 //----------------------------------------------------------------------------------------
@@ -72,6 +75,11 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
   std::string profile = pin->GetOrAddString("problem", "profile", "modes");
   bool slab = (profile == "slab");
   bool shwave = (profile == "shwave");
+  // sheet: single horizontal Fourier mode (n1,n2) on ONE z-layer (sheet_k).  With
+  // open/slab vertical BCs the exact solution of the DISCRETE Poisson equation on an
+  // infinite vacuum stack is C*mu^|k-sheet_k| * (same mode), with no gauge freedom
+  // for kperp != 0 -- an absolute (constant included) test of the mg_bc=slab planes.
+  bool sheet = (profile == "sheet");
   // sin3: the Tomida & Stone (2023) sec. 4.1 triple-sine wave with an analytic
   // potential; enables the per-iteration convergence study (<problem> conv_niter)
   bool sin3 = (profile == "sin3");
@@ -112,6 +120,11 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
   auto &size = pmbp->pmb->mb_size;
   auto u0 = use_mhd ? pmbp->pmhd->u0 : pmbp->phydro->u0;
 
+  int nz_mesh = pmy_mesh_->mesh_indcs.nx3;
+  Real dz_mesh = lz/static_cast<Real>(nz_mesh);
+  int sheet_k = pin->GetOrAddInteger("problem", "sheet_k", nz_mesh/2);
+  Real dom_zmin = msize.x3min;
+
   // shear phase at the solve time (same formula as FFTGravitySolver::ComputeQomt)
   Real qomt = 0.0;
   if (pin->DoesBlockExist("shearing_box")) {
@@ -143,6 +156,11 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       // single rolled-frame mode, slanted into the current frame by the shear phase
       Real arg = 2.0*M_PI*(wn1*x/lx + wn2*(y + qomt*x)/ly + wn3*z/lz);
       rho = rho0*(1.0 + amp*cos(arg));
+    } else if (sheet) {
+      // uniform background + single rolled-frame horizontal mode on one z-layer
+      int kg = static_cast<int>((z - dom_zmin)/dz_mesh);
+      Real arg = 2.0*M_PI*(wn1*x/lx + wn2*(y + qomt*x)/ly);
+      rho = rho0 + ((kg == sheet_k) ? amp*cos(arg) : 0.0);
     } else {
       Real r2 = SQR(x - xc) + SQR(y - yc) + SQR(z - zc);
       rho = rho0*(1.0
@@ -322,7 +340,10 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
   }
 
   // ---- residual diagnostics -----------------------------------------------------------
-  bool open_z = (pin->GetOrAddString("gravity", "vert_bc", "periodic") == "open");
+  // mg_bc=slab (multigrid) and vert_bc=open (fft) are the same physical configuration
+  bool mg_slab = (pin->GetOrAddString("gravity", "mg_bc", "none") == "slab");
+  bool open_z = (pin->GetOrAddString("gravity", "vert_bc", "periodic") == "open")
+                || mg_slab;
   bool shear = pin->DoesBlockExist("shearing_box");
 
   int ni = ie - is + 1, nj = je - js + 1, nk = ke - ks + 1;
@@ -545,6 +566,70 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
     }
   }
 
+  // ---- analytic sheet comparison (profile = sheet, open/slab vertical BC) -------------
+  // The discrete infinite-vacuum solution is known in closed form:
+  //   phi = phi_bg(kg) + C * mu^|kg - sheet_k| * cos(arg)
+  // with C = 4piG*amp*(-dz^2/sqrt(alpha^2-4)) for the sheet mode and, for the uniform
+  // background (kperp = 0, symmetric slab gauge G(dn) = dz^2*|dn|/2),
+  //   phi_bg(kg) = 4piG*rho0*(dz^2/2)*[kg(kg+1)/2 + (nz-1-kg)(nz-kg)/2].
+  // NO mean subtraction: both sectors are gauge-fixed by the slab boundary planes, so
+  // this tests the mg_bc=slab infrastructure absolutely (constant included).
+  if (sheet && open_z) {
+    Real dx1m = lx/static_cast<Real>(pmy_mesh_->mesh_indcs.nx1);
+    Real dx2m = ly/static_cast<Real>(pmy_mesh_->mesh_indcs.nx2);
+    Real sfac = qomt*lx/ly;
+    Real kxdx = (wn1 + sfac*wn2)*2.0*M_PI/pmy_mesh_->mesh_indcs.nx1;
+    Real kydy = static_cast<Real>(wn2)*2.0*M_PI/pmy_mesh_->mesh_indcs.nx2;
+    Real lam = (2.0*std::cos(kxdx) - 2.0)/SQR(dx1m)
+             + (2.0*std::cos(kydy) - 2.0)/SQR(dx2m);
+    Real alpha = 2.0 - lam*SQR(dz_mesh);
+    Real ssr = std::sqrt(alpha*alpha - 4.0);
+    Real mu = 2.0/(alpha + ssr);
+    Real camp = -four_pi_G*amp*SQR(dz_mesh)/ssr;
+    Real bgfac = 0.5*four_pi_G*rho0*SQR(dz_mesh);
+    Real lx_c = lx, ly_c = ly, qomt_c = qomt, dzm_c = dz_mesh, dzmin_c = dom_zmin;
+    int n1_c = wn1, n2_c = wn2, k0_c = sheet_k, nz_c = nz_mesh;
+
+    Real dmax = 0.0, dsq = 0.0;
+    Kokkos::parallel_reduce("fftp_sheet_err",
+        Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+    KOKKOS_LAMBDA(int idx, Real &lmax, Real &lsq) {
+      int i = is + (idx % ni);
+      int j = js + ((idx/ni) % nj);
+      int k = ks + ((idx/(ni*nj)) % nk);
+      int m = idx/(ni*nj*nk);
+      Real &x1min = size.d_view(m).x1min, &x1max = size.d_view(m).x1max;
+      Real &x2min = size.d_view(m).x2min, &x2max = size.d_view(m).x2max;
+      Real &x3min = size.d_view(m).x3min, &x3max = size.d_view(m).x3max;
+      Real x = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+      Real y = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+      Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+      // real-valued root-layer coordinate: on the root grid cell centers sample
+      // integer kgr exactly; on refined cells this evaluates the root-grid closed
+      // form at the fine centers (correct to the interface discretization order,
+      // rather than the O(slope*dz) error of integer-layer sampling)
+      Real kgr = (z - dzmin_c)/dzm_c - 0.5;
+      Real adk = fabs(kgr - static_cast<Real>(k0_c));
+      Real arg = 2.0*M_PI*(n1_c*x/lx_c + n2_c*(y + qomt_c*x)/ly_c);
+      Real ana = camp*pow(mu, adk)*cos(arg)
+               + bgfac*(0.5*kgr*(kgr+1.0)
+                        + 0.5*(static_cast<Real>(nz_c)-1.0-kgr)
+                             *(static_cast<Real>(nz_c)-kgr));
+      Real diff = phi(m,0,k,j,i) - ana;
+      lmax = fmax(lmax, fabs(diff));
+      lsq += SQR(diff);
+    }, Kokkos::Max<Real>(dmax), Kokkos::Sum<Real>(dsq));
+#if MPI_PARALLEL_ENABLED
+    MPI_Allreduce(MPI_IN_PLACE, &dmax, 1, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &dsq, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    if (global_variable::my_rank == 0) {
+      std::cout << "# FFT-POISSON SHEET ERROR: max_rel= " << dmax/std::abs(camp)
+                << " l2_rel= " << std::sqrt(dsq/ncells_tot)/std::abs(camp)
+                << std::endl;
+    }
+  }
+
   // ---- analytic slab comparison (profile = slab, vert_bc = open) -----------------------
   if (slab && open_z) {
     // compare phi(z) along one column to four_pi_G*rho0*H^2*ln(cosh((z-zc)/H)),
@@ -577,4 +662,58 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       std::cout << "# FFT-POISSON SLAB ERROR: max_rel= " << err_max/ana_amp << std::endl;
     }
   }
+
+  // ---- MG vs FFT cross-check (<problem> compare_fft = true) ---------------------------
+  // With solver=multigrid, additionally run the independent FFT solver on the same
+  // density (vert_bc selects its vertical BC; use "open" to cross-check mg_bc=slab
+  // against the Koyama & Ostriker two-solve method) and report the mean-subtracted
+  // difference.  The methods differ at the level of the KO09 continuum-kperp
+  // screening weights and (when sheared) the roll remap, so the difference is small
+  // but not machine zero.
+#if FFT_ENABLED
+  if (pin->GetOrAddBoolean("problem", "compare_fft", false) &&
+      pmbp->pgrav->pmgd != nullptr) {
+    DvceArray5D<Real> phi_mg("cmp_phimg", phi.extent(0), phi.extent(1),
+                             phi.extent(2), phi.extent(3), phi.extent(4));
+    Kokkos::deep_copy(phi_mg, phi);
+    auto *pfft_cmp = new gravity::FFTGravitySolver(pmbp, pin);
+    pfft_cmp->Solve(nullptr, 1);
+    delete pfft_cmp;
+
+    Real s1 = 0.0, s2 = 0.0;
+    Kokkos::parallel_reduce("fftp_cmp_means",
+        Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+    KOKKOS_LAMBDA(int idx, Real &l1, Real &l2s) {
+      int i = is + (idx % ni);
+      int j = js + ((idx/ni) % nj);
+      int k = ks + ((idx/(ni*nj)) % nk);
+      int m = idx/(ni*nj*nk);
+      l1 += phi_mg(m,0,k,j,i);
+      l2s += phi(m,0,k,j,i);
+    }, Kokkos::Sum<Real>(s1), Kokkos::Sum<Real>(s2));
+    Real m1 = s1/ncells_tot, m2 = s2/ncells_tot;
+
+    Real dmax = 0.0, dsq = 0.0, refsq = 0.0;
+    Kokkos::parallel_reduce("fftp_cmp_err",
+        Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+    KOKKOS_LAMBDA(int idx, Real &lmax, Real &lsq, Real &lref) {
+      int i = is + (idx % ni);
+      int j = js + ((idx/ni) % nj);
+      int k = ks + ((idx/(ni*nj)) % nk);
+      int m = idx/(ni*nj*nk);
+      Real diff = (phi_mg(m,0,k,j,i) - m1) - (phi(m,0,k,j,i) - m2);
+      lmax = fmax(lmax, fabs(diff));
+      lsq += SQR(diff);
+      lref += SQR(phi(m,0,k,j,i) - m2);
+    }, Kokkos::Max<Real>(dmax), Kokkos::Sum<Real>(dsq), Kokkos::Sum<Real>(refsq));
+
+    Real ref_rms = std::sqrt(refsq/ncells_tot);
+    if (global_variable::my_rank == 0) {
+      std::cout << "# MG-VS-FFT DIFF: max= " << dmax/ref_rms
+                << " l2= " << std::sqrt(dsq/ncells_tot)/ref_rms
+                << " (relative to rms of the FFT solution)" << std::endl;
+    }
+    Kokkos::deep_copy(phi, phi_mg);
+  }
+#endif
 }

@@ -1,0 +1,114 @@
+# AthenaK input file: multigrid self-gravity static-solve test with slab-open
+# (vacuum) x3 boundaries on a statically refined mesh (Phase 3).  A level-1 slab
+# spanning the middle half of z (full x-y extent) is refined; the x3-boundary block
+# rows stay at root level, as the slab BC requires.  Profile = sheet with the mode
+# layer inside the refined region.
+#
+# Validation metrics: the closed-form discrete solution used by "# FFT-POISSON SHEET
+# ERROR" is exact for the UNIFORM root-grid operator, so on the refined mesh the
+# reported error is the refinement-interface discretization difference.  Measured
+# behavior (validated 2026-08; see validation notes):
+# - pure mode sector (override problem/rho0=0.0): 2nd-order convergence of the
+#   relative error (1.64e-2 / 4.57e-3 / 1.20e-3 at 32/64/128^3);
+# - with the uniform background (rho0=1), the error is DOMINATED by a constant,
+#   horizontally uniform offset of exactly (3/4)*4piG*rho0*h_f^2 filling the refined
+#   region -- the O(h^2), zero-force dipole signature of the Tomida & Stone
+#   conservative level interface in the unscreened kperp=0 sector.  Since the metric
+#   normalizes by the sheet amplitude camp ~ O(dz), max_rel then scales as O(dz)
+#   (1.84e-1 / 8.7e-2 / 4.2e-2) even though the absolute offset is 2nd order.
+# - l2_rel can exceed max_rel on refined meshes (the normalization uses the root
+#   cell count); compare max_rel across resolutions instead.
+# The residual norms (max_rel_all etc.) use a naive per-block Laplacian; with the
+# flux-conserving interface ghosts they remain at machine precision here.
+# NOTE: SMR requires nghost even (4) and the multigrid solver cubic MeshBlocks.
+
+<comment>
+problem   = Multigrid Poisson, slab-open x3 on an SMR mesh (sheet test)
+
+<job>
+basename  = MGPoissonSlabSMR
+
+<mesh>
+nghost    = 4         # Number of ghost cells (SMR requires even)
+nx1       = 64        # Number of cells in X1-direction
+x1min     = -0.5      # minimum value of X1
+x1max     = 0.5       # maximum value of X1
+ix1_bc    = periodic  # Inner-X1 boundary condition flag
+ox1_bc    = periodic  # Outer-X1 boundary condition flag
+
+nx2       = 64        # Number of cells in X2-direction
+x2min     = -0.5      # minimum value of X2
+x2max     = 0.5       # maximum value of X2
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 64        # Number of cells in X3-direction
+x3min     = -0.5      # minimum value of X3
+x3max     = 0.5       # maximum value of X3
+ix3_bc    = outflow   # Inner-X3 boundary condition flag
+ox3_bc    = outflow   # Outer-X3 boundary condition flag
+
+<meshblock>
+nx1       = 16        # cubic MeshBlocks (multigrid requirement)
+nx2       = 16
+nx3       = 16
+
+<mesh_refinement>
+refinement = static
+max_nmb_per_rank = 512
+
+<refined_region1>
+level = 1
+x1min = -0.5
+x1max = 0.5
+x2min = -0.5
+x2max = 0.5
+x3min = -0.25
+x3max = 0.25
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integrator
+cfl_number = 0.2      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = 0        # cycle limit (pgen-only test; no evolution)
+tlim       = 1.0      # time limit
+ndiag      = 1        # cycles between diagnostic output
+
+<hydro>
+eos         = isothermal  # EOS type
+reconstruct = plm         # spatial reconstruction method
+rsolver     = llf         # Riemann-solver to be used
+iso_sound_speed = 1.0
+
+<gravity>
+solver    = multigrid # fft | multigrid
+four_pi_G = 1.0
+mg_bc     = slab      # slab-open (vacuum) x3 boundaries
+vert_bc   = open      # (unused here; kept for input parity with the uniform twin)
+threshold = 0.0       # 0.0 = automatic convergence control (stagnation exit)
+niteration = 20       # used when threshold = -1 (fixed V-cycle count)
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+pgen_name = fft_poisson   # problem generator name
+profile   = sheet         # uniform rho0 + one horizontal mode on layer sheet_k
+rho0      = 1.0
+amp       = 0.5
+time0     = 0.0
+n1        = 2
+n2        = 1
+n3        = 1
+sheet_k   = 32            # z-layer index of the mode (inside the refined slab)
+slab_h    = 0.05          # scale height for profile=slab
+blob_amp  = 1.0           # blob amplitude for profile=modes
+compare_fft = false
+
+<output1>
+file_type = bin
+variable  = grav_phi
+dt        = 1.0
