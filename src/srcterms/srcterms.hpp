@@ -33,6 +33,8 @@ class SourceTerms {
   bool const_accel;
   bool ism_cooling;
   bool rel_cooling;
+  bool beta_cooling;
+  bool thermal_cooling;
   bool rad_beam;
   bool self_gravity;
 
@@ -50,6 +52,17 @@ class SourceTerms {
   Real crate_rel;
   Real cpower_rel;
 
+  // data for constant-beta cooling (Gammie 2001): rho*L = U/t_cool, t_cool = beta/Omega
+  Real bcool_beta;      // beta = Omega*t_cool
+  Real bcool_omega0;    // orbital frequency Omega
+
+  // data for optically thin thermal cooling (Shi & Chiang 2014 eq. 8):
+  // rho*L = U/t_cool with t_cool = b*(rho/P)^3 (constant opacity kappa)
+  Real tcool_b;         // proportionality constant b
+
+  // timestep safety factor for cooling source terms: dt <= cool_eps*t_cool
+  Real cool_eps;
+
   // data for radiation beam source
   Real dii_dt;            // injection rate
   Real pos1, pos2, pos3;  // position of source
@@ -66,6 +79,10 @@ class SourceTerms {
                   const Real bdt, DvceArray5D<Real> &u0);
   void RelCooling(const DvceArray5D<Real> &w0, const EOS_Data &eos,
                   const Real bdt, DvceArray5D<Real> &u0);
+  void BetaCooling(const DvceArray5D<Real> &w0, const EOS_Data &eos,
+                   const Real bdt, DvceArray5D<Real> &u0);
+  void ThermalCooling(const DvceArray5D<Real> &w0, const EOS_Data &eos,
+                      const Real bdt, DvceArray5D<Real> &u0);
   void SelfGravity(const DvceArray5D<Real> &w0, const EOS_Data &eos,
                    const Real bdt, DvceArray5D<Real> &u0);
   void BeamSource(DvceArray5D<Real> &i0, const Real bdt);

@@ -107,5 +107,34 @@ void SourceTerms::NewTimeStep(const DvceArray5D<Real> &w0, const EOS_Data &eos_d
     }, Kokkos::Min<Real>(dtnew));
   }
 
+  // constant-beta cooling: t_cool = beta/Omega is constant, dt <= cool_eps*t_cool
+  if (beta_cooling) {
+    dtnew = fmin(dtnew, cool_eps*bcool_beta/bcool_omega0);
+  }
+
+  // optically thin thermal cooling: dt <= cool_eps*min(t_cool), t_cool = b*(rho/P)^3
+  // (reduce into a local so the Min reducer does not clobber limits set above)
+  if (thermal_cooling) {
+    Real gm1 = eos_data.gamma - 1.0;
+    Real b_cool = tcool_b;
+    Real eps = cool_eps;
+    Real dt_tcool = static_cast<Real>(std::numeric_limits<float>::max());
+    Kokkos::parallel_reduce("srcterms_tcool_newdt",
+                            Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+    KOKKOS_LAMBDA(const int &idx, Real &min_dt) {
+      int m = (idx)/nkji;
+      int k = (idx - m*nkji)/nji;
+      int j = (idx - m*nkji - k*nji)/nx1;
+      int i = (idx - m*nkji - k*nji - j*nx1) + is;
+      k += ks;
+      j += js;
+
+      Real pod = gm1*w0(m,IEN,k,j,i)/w0(m,IDN,k,j,i);
+      Real tcool = b_cool/(FLT_MIN + pod*pod*pod);
+      min_dt = fmin(eps*tcool, min_dt);
+    }, Kokkos::Min<Real>(dt_tcool));
+    dtnew = fmin(dtnew, dt_tcool);
+  }
+
   return;
 }

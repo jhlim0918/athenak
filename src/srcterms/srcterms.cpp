@@ -40,6 +40,8 @@ SourceTerms::SourceTerms(std::string block, MeshBlockPack *pp, ParameterInput *p
   const_accel = pin->GetOrAddBoolean(block, "const_accel", false);
   ism_cooling = pin->GetOrAddBoolean(block, "ism_cooling", false);
   rel_cooling = pin->GetOrAddBoolean(block, "rel_cooling", false);
+  beta_cooling = pin->GetOrAddBoolean(block, "beta_cooling", false);
+  thermal_cooling = pin->GetOrAddBoolean(block, "thermal_cooling", false);
   rad_beam = pin->GetOrAddBoolean(block, "rad_beam", false);
   self_gravity = pin->GetOrAddBoolean(block, "self_gravity", false);
 
@@ -63,6 +65,27 @@ SourceTerms::SourceTerms(std::string block, MeshBlockPack *pp, ParameterInput *p
   if (rel_cooling) {
     crate_rel = pin->GetReal(block, "crate_rel");
     cpower_rel = pin->GetOrAddReal(block, "cpower_rel", 1.);
+  }
+
+  // (3b) constant-beta cooling: rho*L = U*Omega/beta (Gammie 2001; SC14 eq. 7).
+  // Omega defaults to the shearing box orbital frequency when that block exists.
+  if (beta_cooling) {
+    bcool_beta = pin->GetReal(block, "bcool_beta");
+    if (pin->DoesBlockExist("shearing_box")) {
+      bcool_omega0 = pin->GetOrAddReal(block, "bcool_omega0",
+                                       pin->GetReal("shearing_box", "omega0"));
+    } else {
+      bcool_omega0 = pin->GetReal(block, "bcool_omega0");
+    }
+  }
+
+  // (3c) optically thin thermal cooling: rho*L = U/t_cool, t_cool = b*(rho/P)^3
+  // (SC14 eq. 8, constant kappa)
+  if (thermal_cooling) {
+    tcool_b = pin->GetReal(block, "tcool_b");
+  }
+  if (beta_cooling || thermal_cooling) {
+    cool_eps = pin->GetOrAddReal(block, "cool_eps", 0.02);
   }
 
   // (4) radiation beam source (radiation)
@@ -96,6 +119,8 @@ void SourceTerms::ApplySrcTerms(const DvceArray5D<Real> &w0, const EOS_Data &eos
   if (const_accel) ConstantAccel(w0, eos_data,  bdt, u0);
   if (ism_cooling) ISMCooling(w0, eos_data, bdt, u0);
   if (rel_cooling) RelCooling(w0, eos_data, bdt, u0);
+  if (beta_cooling) BetaCooling(w0, eos_data, bdt, u0);
+  if (thermal_cooling) ThermalCooling(w0, eos_data, bdt, u0);
   if (self_gravity) SelfGravity(w0, eos_data, bdt, u0);
   return;
 }
@@ -198,6 +223,60 @@ void SourceTerms::RelCooling(const DvceArray5D<Real> &w0, const EOS_Data &eos_da
     u0(m,IM1,k,j,i) -= bdt*w0(m,IDN,k,j,i)*ux*pow((temp*cooling_rate), cooling_power);
     u0(m,IM2,k,j,i) -= bdt*w0(m,IDN,k,j,i)*uy*pow((temp*cooling_rate), cooling_power);
     u0(m,IM3,k,j,i) -= bdt*w0(m,IDN,k,j,i)*uz*pow((temp*cooling_rate), cooling_power);
+  });
+
+  return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SourceTerms::BetaCooling()
+//! \brief Constant-beta cooling (Gammie 2001; Shi & Chiang 2014 eq. 7): the internal
+//! energy density U is drained on the constant cooling time t_cool = beta/Omega,
+//! i.e. dU/dt = -U*Omega/beta everywhere.
+//! NOTE source terms must be computed using primitive (w0) and NOT conserved (u0) vars
+
+void SourceTerms::BetaCooling(const DvceArray5D<Real> &w0, const EOS_Data &eos_data,
+                              const Real bdt, DvceArray5D<Real> &u0) {
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nmb1 = pmy_pack->nmb_thispack - 1;
+  Real oob = bcool_omega0/bcool_beta;
+
+  par_for("beta_cool", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+  KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+    // w0(IEN) is the internal energy density
+    u0(m,IEN,k,j,i) -= bdt*oob*w0(m,IEN,k,j,i);
+  });
+
+  return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SourceTerms::ThermalCooling()
+//! \brief Optically thin thermal cooling with constant opacity (Shi & Chiang 2014
+//! eq. 8): dU/dt = -U/t_cool with per-cell t_cool = b*(rho/P)^3, equivalently
+//! rho*L = P^4/(b*(gamma-1)*rho^3).
+//! NOTE source terms must be computed using primitive (w0) and NOT conserved (u0) vars
+
+void SourceTerms::ThermalCooling(const DvceArray5D<Real> &w0, const EOS_Data &eos_data,
+                                 const Real bdt, DvceArray5D<Real> &u0) {
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nmb1 = pmy_pack->nmb_thispack - 1;
+  Real gm1 = eos_data.gamma - 1.0;
+  Real ib = 1.0/tcool_b;
+
+  par_for("thermal_cool", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+  KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+    Real &den = w0(m,IDN,k,j,i);
+    Real prs = gm1*w0(m,IEN,k,j,i);
+    Real pod = prs/den;
+    // U/t_cool = U*(P/rho)^3/b
+    u0(m,IEN,k,j,i) -= bdt*w0(m,IEN,k,j,i)*pod*pod*pod*ib;
   });
 
   return;
