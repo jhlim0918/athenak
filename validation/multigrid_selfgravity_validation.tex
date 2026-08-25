@@ -12,11 +12,14 @@
         columns=fullflexible, keepspaces=true}
 
 \newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\file}[1]{\texttt{#1}}
+\newcommand{\Om}{\Omega}
 
 \title{Multigrid Self-Gravity in the AthenaK Shearing Box:\\
        I.\ Mesh-Refinement Infrastructure (Phase 0),\\
        Shear-Periodic Boundary Conditions (Phase 1),\\
-       and Gravity on Refined Meshes (Phases 2a--2b)}
+       Gravity on Refined Meshes (Phase 2),\\
+       and the Stratified Box with Open-$z$ Boundaries (Phase 3)}
 \author{\code{athenak-multigrid} tree, branch \code{multigrid}}
 \date{August 14, 2026}
 
@@ -132,10 +135,18 @@ The phases of the multigrid track:
         the per-cycle contraction factor degrades only from $0.116$ to $0.157$.
   \item \textbf{Phase 2:} multigrid gravity on refined shearing-box meshes (SMR
         first, then AMR), compared against high-resolution uniform FFT references.
-  \item \textbf{Phase 3--5:} merge with the \code{athenak-dust} particle-mesh dust
+  \item \textbf{Phase 3 (this document, \S\ref{sec:phase3}, done):} stratification
+        with open-$z$ boundaries --- vertical tidal gravity, slab-open (vacuum)
+        multigrid boundary conditions, cooling, and the Shi \& Chiang (2014)
+        gravito-turbulence configuration. The original plan had the FFT solver
+        donating open-$z$ Dirichlet values; the implementation instead evaluates
+        the \emph{discrete vacuum Green's function} directly (exact for the
+        multigrid stencil, refinement-compatible, multi-rank), with the FFT
+        solver retained as the independent open-boundary oracle.
+  \item \textbf{Phases 4--5:} merge with the \code{athenak-dust} particle-mesh dust
         module (dust density in the Poisson source, gravitational force on particles,
-        pressure-gradient source term for the streaming instability), stratification
-        with open-$z$ boundaries, and the science runs.
+        pressure-gradient source term for the streaming instability), and the
+        science runs.
 \end{enumerate}
 
 \subsection{Phase-0 scope and restrictions}
@@ -1758,6 +1769,163 @@ Once a run goes nonlinear the field is no longer a single shwave and
 $d_{\cos}$ reverts to the amplitude of the $\mathbf{k}(t)$ Fourier component
 alone (the departure at fragmentation in Fig.~\ref{fig:clump_dcos}).
 
+%=========================================================================================
+\section{Phase 3: the stratified box --- slab-open multigrid boundaries and the
+Shi \& Chiang configuration}
+\label{sec:phase3}
 
+Phases 0--2 lived in fully (shear-)periodic boxes: mean subtraction was mandatory
+and the mass sector of the potential was projected out by construction. Phase 3
+adds vertical stratification --- the configuration of Shi \& Chiang (2014, ApJ 789,
+34; SC14): a 3D shearing box with linearized vertical tidal gravity
+$-\rho\Om^2 z$, self-gravity with \emph{open (vacuum)} vertical boundaries,
+$\beta$-cooling, and outflow-type hydro boundaries in $z$. Implementation details
+live in the companion document (\file{multigrid\_shear\_implementation.pdf},
+Phase~3 section); this section records the method in brief and the test results.
+
+\subsection{Method in brief}
+
+For each horizontal Fourier mode of the rolled frame the 7-point stencil has, in
+vacuum, the exact decaying solution $\mu^{|\Delta n|}$ in $z$, with
+$\mu = 2/(\alpha+\sqrt{\alpha^2-4})$, $\alpha = 2-\lambda_\perp\Delta x_3^2$, and
+$\lambda_\perp$ the discrete horizontal eigenvalue at the shear-shifted radial
+wavenumber. Summing the corresponding infinite-vacuum discrete Green's function
+($G = -\Delta x_3^2\mu^{|\Delta n|}/\sqrt{\alpha^2-4}$ for $k_\perp\neq 0$;
+$G = +\Delta x_3^2|\Delta n|/2$, the discrete isolated-slab potential, for the
+mass sector) against the density gives exact Dirichlet \emph{face-value planes}
+on both $x_3$ faces, applied multipole-style
+($u_{\rm ghost} = 2\Phi_{\rm face} - u_{\rm interior}$) at every multigrid level
+through a restricted plane pyramid with shear-remapped ghost rings. The converged
+interior solution is then exactly the restriction of the infinite-vacuum discrete
+solution --- no boundary truncation error, and no free constant. Enabled by
+\code{<gravity> mg\_bc = slab}; requires an FFT build (kokkos-fft) and root-level
+MeshBlocks on the $x_3$ faces (enforced, and honored automatically by the AMR
+criterion veto).
+
+\subsection{Static tests: the sheet as absolute arbiter}
+
+A new \code{profile = sheet} in the \code{fft\_poisson} pgen places a uniform
+background $\rho_0$ plus one horizontal mode on a single $z$-layer; the discrete
+infinite-vacuum solution is closed-form in \emph{both} sectors ($\mu$-decay for
+the mode, the discrete parabola for the background), so the comparison is made
+\textbf{without mean subtraction} --- constant included, no gauge freedom. On
+$64^3$ with $16^3$ MeshBlocks (\file{tests/mg\_poisson\_slab.athinput} and the
+\code{\_shear} variant):
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{5.6cm}@{}}
+\toprule
+Configuration & max relative error & interpretation \\
+\midrule
+periodic $x_1$, $q\Om t_s{=}0$ & $1.2\times10^{-12}$ & solver tolerance: planes,
+pyramid, block/root BC application all exact \\
+MG vs FFT-KO09, same density & $3.0\times10^{-13}$ & independent open-boundary
+methods agree \\
+shear-periodic, $t_0{=}0$ & $1.2\times10^{-12}$ & identical to the periodic twin \\
+shear-periodic, $t_0{=}0.37$ & $6.6\times10^{-6}$ & PPMX roll/unroll remap order \\
+\quad MG vs FFT at $t_0{=}0.37$ & $8.8\times10^{-8}$ & both roll; different
+pipeline points \\
+4 MPI ranks, all three configs & bit-identical & the zero-fill + Allreduce gather \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The $\mathrm{sech}^2$-slab physics test (analytic
+$4\pi G\rho_0H^2\ln\cosh(z/H)$ potential) converges at second order:
+$5.8\times10^{-3}$ / $1.5\times10^{-3}$ / $3.7\times10^{-4}$ at $32/64/128^3$,
+with MG-slab and FFT-open agreeing to every printed digit at $n=64$.
+
+\subsection{Refined meshes, and what the mass sector revealed}
+
+With a level-1 slab spanning the middle half of $z$
+(\file{tests/mg\_poisson\_slab\_smr.athinput}), the screened mode sector converges
+at second order ($1.64\times10^{-2}$ / $4.57\times10^{-3}$ / $1.20\times10^{-3}$
+relative at $32/64/128^3$). The unscreened $k_\perp = 0$ sector --- physical for
+the first time in this program --- exposes a property of the Tomida \& Stone
+conservative level interface that no periodic test could see: a \emph{constant,
+horizontally uniform, force-free} potential offset of exactly
+$\tfrac34(4\pi G\rho_0)h_f^2$ filling the enclosed refined region. The interface
+flux error is continuous across the boundary (zero monopole --- the
+``conservative'' in the formulation), so the residual truncation is a surface
+\emph{dipole}, whose far field is a constant jump: $O(h^2)$, second-order
+convergent, and dynamically inert. Diagnosing it cost a detour worth recording:
+the sheet metric originally evaluated its reference at integer root-layer
+indices, adding an $O(\partial_z\Phi\,\Delta z)$ \emph{reference} error on fine
+cells that masqueraded as a first-order solver error; the metric now samples the
+closed form at the true fine-cell centers.
+
+\subsection{Hydro-side pieces, and why the vertical boundary must be a diode}
+
+Phase 3a closed two hydro gaps: the vertical tidal force's \emph{energy work
+term} $-\rho\Om^2 z\,v_z$ (missing from all four shearing-box source branches;
+invisible in isothermal runs), and the SC14 cooling laws
+(\code{beta\_cooling}: $\dot U = -U\Om/\beta$; \code{thermal\_cooling}:
+$t_{\rm cool} = b(\rho/P)^3$, verified to drain at the mass-weighted rate implied
+by the $(\rho/P)^3$ law).
+
+The hydrostatic-hold test (SC14 initial state, no cooling, no perturbations)
+exposed a boundary trap: with plain \code{outflow} $z$-boundaries the halo
+density grew two orders of magnitude in $10\,\Om^{-1}$ and the accreting fountain
+destroyed the disk by $t\sim8$ --- ghost-copy outflow happily feeds \emph{inflow}
+at whatever velocity gravity establishes. With \code{diode} boundaries the same
+test holds: midplane profile unchanged over $10\,\Om^{-1}$, disk-body velocities
+$\lesssim 2\%$ of $c_s(0)$, mass constant to $0.25\%$ (floor injection in the
+halo). All Phase-3 inputs use \code{diode}.
+
+\subsection{Dynamic validation: the evolution twin and adaptive refinement}
+
+\paragraph{Evolution twin.} The same small $\beta{=}10$ box evolved to
+$t = 5\,\Om^{-1}$ through both gravity solvers: after removing the constant gauge
+offset between the two open-boundary conventions, the potentials agree to
+$8\times10^{-5}$ rms and density/thermal energy to $10^{-3}$, while the tiny
+random-seeded perturbation velocities decorrelate chaotically --- the expected
+separation of two correct solvers differing at roundoff-method level, with the
+gravity demonstrably not driving it.
+
+\paragraph{AMR.} A $16H$-wide $\beta{=}10$ box with a $\rho > 2\rho_0$ criterion
+(\file{shearing\_box/gravito\_turb\_amr\_test.athinput}) refined onto the cooling
+collapse clumps at $t\sim15$ ($\rho_{\max} = 38$ at $t{=}20$, 64 fine blocks),
+tracked them, and derefined as they sheared apart (32 fine blocks by $t{=}25$) ---
+multiple remeshes in both directions, slab planes rebuilt each time, zero guard
+trips, fine blocks confined to $|z| \le 2H$ throughout by the automatic slab-$z$
+policy. One policy interaction is worth remembering: a box with only two $x_1$
+MeshBlock columns cannot refine \emph{anywhere} (both columns sit on the protected
+shear faces); the test provides four.
+
+\subsection{Toward SC14: calibration and the half-box run}
+
+The \code{gravito\_turb} pgen integrates SC14's self-gravitating vertical
+hydrostatic balance; with their published constants ($c_s(0) = 2.12625$,
+$4\pi G = 4.25231$, $\gamma = 5/3$) the computed half-thickness
+$\int_0^{z_{\max}}\!\rho\,dz/\rho_0 = 1.0005$ --- an independent confirmation of
+their $Q_0 = 1$, $H = 1$ calibration. A half-width production run
+($[-16,16]^2\times[-6,6]H$ at their 4 cells/$H$, $\beta = 10$, 4 MPI ranks)
+reproduces the SC14 phenomenology: cooling contraction, violent collapse and
+vertical rebound with $\sim\!5\%$ mass loss, relaxation into sustained
+gravito-turbulence. Mid-run averages over $t = 80$--$116$ (their averaging window
+is $t = 200$--$300$, still accumulating): $\alpha = 0.065$ approaching their
+$0.058$, $\delta v/c_s = 0.77$ vs $0.82$, $Q = 1.16$ still climbing toward
+$1.33$ with the thermal energy not yet in balance. The stress composition is
+currently Reynolds-heavy relative to their 2:1 gravitational:Reynolds split ---
+the one number to re-examine in the final average and in the full-width
+($64H$) cluster run, since narrow gravito-turbulent boxes are known to overdrive
+coherent shear waves. Final numbers will be appended when the run completes.
+
+\subsection{Summary}
+
+\begin{itemize}\itemsep2pt
+\item The slab-open multigrid boundary reproduces the infinite-vacuum discrete
+      solution to solver tolerance ($10^{-12}$, absolute comparison), matches the
+      independent FFT-KO09 method to $3\times10^{-13}$ statically and
+      $8\times10^{-5}$ through nonlinear evolution, and is bit-identical across
+      MPI decompositions.
+\item Shear, SMR, and dynamic AMR all compose with it; the only interface cost is
+      a constant, force-free $O(h^2)$ offset in enclosed refined regions.
+\item The stratified hydro side is complete (energy work term, cooling, diode
+      boundaries) and the SC14 initial state holds hydrostatically.
+\item The SC14 $\beta = 10$ reproduction is running; transient phenomenology and
+      mid-run averages already track the paper.
+\end{itemize}
 
 \end{document}

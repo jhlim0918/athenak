@@ -1070,6 +1070,256 @@ solver (Phases 1--2).}
 \end{figure}
 
 %=========================================================================================
+\section{Phase 3: the stratified box --- vertical gravity, slab-open multigrid
+boundaries, and cooling}
+\label{sec:phase3}
+
+Phases 0--2 built refinement and multigrid self-gravity for the \emph{unstratified}
+shearing box: gravity was solved on a fully (shear-)periodic domain, which is why mean
+subtraction (the Jeans swindle) was mandatory and why every boundary of the Poisson
+problem was an identification rather than a physical edge. Phase 3 adds the third
+dimension of the physical problem: vertical stratification. The target application is
+the gravito-turbulent disk of Shi \& Chiang (2014, ApJ 789, 34; hereafter SC14) ---
+a 3D, stratified, self-gravitating, cooling shearing box --- which requires four new
+ingredients: (i) the work term of the vertical tidal force in the energy equation,
+(ii) an \emph{open (vacuum) vertical boundary condition} for the multigrid Poisson
+solver on a horizontally (shear-)periodic box, (iii) optically thin cooling source
+terms, and (iv) a problem generator with SC14's self-gravitating hydrostatic initial
+state and diagnostics.
+
+\subsection{Phase 3a: hydro-side stratification terms}
+\label{sec:phase3a}
+
+\paragraph{The missing energy work term.} The momentum-side vertical tidal force
+$-\rho\Om^2 z\,\hat z$ already existed behind \code{<shearing\_box>
+stratified\,=\,true}, but the corresponding work term in the energy equation ---
+$-\rho\Om^2 z\,v_z$, cf.\ SC14 eq.~(3) --- was absent in all four source-term
+branches (hydro/MHD $\times$ FARGO/non-FARGO). For isothermal runs (the only
+stratified configurations exercised upstream) this is invisible; for an ideal-gas
+stratified box it is a first-order energy error. All four branches now apply
+\begin{equation}
+  \Delta E = -\,\Delta t\,\rho\,\Om^2 z\, v_z ,
+\end{equation}
+consistent with the existing convention of building source terms from primitives.
+
+\paragraph{Cooling.} Two SC14 prescriptions were added to \code{SourceTerms}
+(\file{srcterms/srcterms.cpp}), both operating on the internal energy density $U$:
+\begin{align}
+  \code{beta\_cooling}&: & \dot U &= -\,U\,\Om/\beta ,
+    & \beta &= \code{bcool\_beta} \;(=\Om t_{\rm cool}), \\
+  \code{thermal\_cooling}&: & \dot U &= -\,U/t_{\rm cool}, &
+    t_{\rm cool} &= b\,(\rho/P)^3 \quad (\code{tcool\_b}),
+\end{align}
+the second being SC14's optically thin constant-opacity law (their eq.~8).
+$\Om$ defaults to \code{<shearing\_box>~omega0}. \fn{SourceTerms::NewTimeStep} caps
+the step at $\code{cool\_eps}\,t_{\rm cool}$ (default $0.02$, SC14's choice); for
+\code{beta\_cooling} the cap is a constant and never binds in practice.
+
+\paragraph{Vertical hydro boundaries: diode, not outflow.} SC14 describe their
+vertical boundaries as ``outflow.'' With AthenaK's plain \code{outflow} BC (ghost =
+copy of the last active cell) the stratified box is \emph{unstable to an inflow
+runaway}: once gravity establishes an inward velocity at the $z$ faces, the copied
+ghost state feeds mass at that velocity indefinitely. In the hydrostatic-hold test
+below, the halo density grew by two orders of magnitude in $10\,\Om^{-1}$ and the
+accreting fountain destroyed the disk. The \code{diode} BC (outflow that zeroes
+inbound normal velocity in the ghosts) removes the reservoir; the reference inputs
+use it on both $z$ faces.
+
+\subsection{Phase 3b: slab-open vertical boundaries for the multigrid solver}
+\label{sec:phase3b}
+
+\paragraph{Problem statement.} The Poisson problem of the stratified box is
+(shear-)periodic in $x_1$, periodic in $x_2$, and \emph{open} in $x_3$: the correct
+exterior solution is vacuum decay, mode by horizontal mode. The FFT solver already
+provides this configuration via the Koyama \& Ostriker (2009) two-solve method
+(\code{vert\_bc\,=\,open}), but only on uniform single-rank grids; making the
+\emph{multigrid} solver support it is what buys refinement compatibility.
+
+\paragraph{Method: exact Dirichlet face planes from the discrete vacuum Green's
+function.} For each horizontal Fourier mode of the rolled (strictly periodic) frame,
+with discrete horizontal eigenvalue
+\begin{equation}
+  \lambda_\perp = \frac{2\cos(k_x'\Delta x_1)-2}{\Delta x_1^2}
+                + \frac{2\cos(k_y \Delta x_2)-2}{\Delta x_2^2} \le 0 ,
+  \qquad k_x' = k_x + q\Om t_s \tfrac{L_x}{L_y}k_y ,
+\end{equation}
+the 7-point stencil reduces in $z$ to a three-term recurrence whose decaying solution
+is $\mu^{|\Delta n|}$ with
+\begin{equation}
+  \alpha = 2 - \lambda_\perp \Delta x_3^2 \;(\ge 2), \qquad
+  \mu = \frac{2}{\alpha + \sqrt{\alpha^2-4}} \in (0,1] .
+\end{equation}
+The infinite-vacuum discrete Green's function is
+\begin{equation}
+  G(\Delta n) = -\,\frac{\Delta x_3^2\,\mu^{|\Delta n|}}{\sqrt{\alpha^2-4}},
+  \qquad\text{and for } k_\perp = 0:\quad
+  G(\Delta n) = +\,\frac{\Delta x_3^2\,|\Delta n|}{2},
+\end{equation}
+the latter being the discrete isolated-slab potential $2\pi G\Sigma|z|$ in the
+symmetric gauge. Each \fn{Solve()} computes the \emph{face-value} planes
+\begin{equation}
+  \hat\Phi_{\rm face}(k_\perp)
+  = \sum_{n'} \hat S(k_\perp, n')\,
+    \tfrac12\!\left[G(n_{\rm last}-n') + G(n_{\rm ghost}-n')\right],
+  \qquad \hat S = \widehat{4\pi G\rho},
+\end{equation}
+on both $x_3$ faces and imposes them multipole-style at every multigrid level:
+\begin{equation}
+  u_{\rm ghost} = 2\,\Phi_{\rm face} - u_{\rm interior} .
+\end{equation}
+Because the face value is the mean of the infinite-domain solution at the last active
+and first ghost centers, the converged interior solution is \emph{exactly} the
+restriction of the infinite-vacuum discrete solution --- there is no additional
+boundary-truncation error, and (for $k_\perp \ne 0$, and for the mass sector in the
+symmetric gauge) no free constant. The FAS fixed point is unaffected by the
+coarse-level plane restrictions: at convergence the coarse FAS right-hand side and
+smoother see the same imposed ghosts, so the coarse correction vanishes identically.
+
+\paragraph{Pipeline.} \fn{MultigridDriver::ComputeSlabPlanes}
+(\file{multigrid/multigrid\_slab.cpp}), once per solve:
+\begin{enumerate}\itemsep2pt
+\item gather $4\pi G\rho$ at root resolution --- refined blocks are conservatively
+      averaged into the root sampling ($2^{3\ell}$-cell means via atomics); each rank
+      fills only its blocks and one \code{MPI\_Allreduce(SUM)} reconstructs the
+      global array on every rank (the Phase-1 zero-fill idiom, so every rank then
+      computes identical planes with no further communication);
+\item roll into the periodic frame with the conservative remap kernels
+      ($+q\Om t_s x$ per column, in place --- each team stages its full column in
+      scratch);
+\item per-mode $\mu$ and face weight; then slice-by-slice 2D FFTs (kokkos-fft,
+      reusable plans) accumulating both face spectra with $\mu^{n}$ read in
+      ascending order (the outer face reads slices reversed, so no small-$\mu$
+      division);
+\item inverse-transform both planes, unroll, and write into the interior of pyramid
+      level~0;
+\item build the \emph{plane pyramid}: one plane pair per global multigrid level
+      (pyramid index $p$ = block level shift, then $p = n_{\rm mblevel} - 1 +
+      \ell_{\rm root}$), each carrying \code{ngh}-deep ghost rings --- periodic wrap
+      in $x_2$, shear-remapped wrap in $x_1$ --- restricted by $2\times2$ face
+      averages.
+\end{enumerate}
+
+\paragraph{Corner consistency.} The $x_1$ shear fill wraps its $z$-edge corners
+periodically, which is wrong for a slab face; the fix is ordering, not surgery. In
+both the block-level \fn{PhysicalBoundary} task and \fn{MGRootBoundary}, the $x_3$
+pass runs \emph{last} over the full slab including $x_1/x_2$ ghost columns, reading
+the plane's ghost rings --- so the slab extrapolation overwrites the wrapped corners
+with values consistent with the neighboring interior ghosts.
+
+\paragraph{Interaction with refinement.} The plane pyramid indexes block levels by
+their shift relative to the \emph{root} resolution, which requires every block
+touching an $x_3$ face to be at root level (\fn{CheckSlabBlockLevels}, re-enforced
+after every AMR remesh in \fn{PrepareForAMR}); consequently no $x_3$-boundary octets
+exist, and a defensive fatal guards \fn{ApplyPhysicalBoundariesOctet}. Physically
+this is no restriction for the target problems: refinement chases midplane structure,
+and the middle $z$-row of $16^3$ blocks in the SC14 geometry spans exactly
+$|z| < 2H$.
+
+\paragraph{Mean subtraction and gauge.} With a physical $x_3$ boundary the domain is
+no longer fully periodic, so the existing \code{wrap\_all} logic disables mean-source
+subtraction automatically; the Dirichlet planes fix the constant. The mass sector is
+now \emph{physical} (no Jeans swindle) --- the horizontally averaged potential is the
+discrete slab potential, a sector no periodic-box test could ever probe.
+
+\subsection{Phase 3 validation}
+\label{sec:phase3val}
+
+\paragraph{Sheet test (new \code{profile\,=\,sheet} in the \code{fft\_poisson}
+pgen).} A uniform background $\rho_0$ plus one horizontal mode on a single $z$-layer
+has a \emph{closed-form} infinite-vacuum discrete solution ($\mu$-decay for the mode,
+the discrete parabola for the background), compared \emph{without mean subtraction}:
+an absolute test of the boundary machinery, constant included. Measured
+(\file{tests/mg\_poisson\_slab.athinput}, $64^3$, $16^3$ blocks):
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Configuration & max rel.\ error & notes \\
+\midrule
+uniform, $q\Om t_s = 0$ & $1.2\times10^{-12}$ & solver tolerance; BCs exact \\
+uniform, MG vs FFT-KO09 & $3.0\times10^{-13}$ & independent-method agreement \\
+sheared ($t_0 = 0.37$), MG & $6.6\times10^{-6}$ & PPMX roll/unroll remap order \\
+sheared, MG vs FFT & $8.8\times10^{-8}$ & both roll, different pipeline points \\
+4 MPI ranks (all three) & bit-identical & to the serial digits above \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Physics test.} The horizontally uniform $\mathrm{sech}^2$ slab against the
+analytic $4\pi G\rho_0 H^2\ln\cosh(z/H)$ potential converges at second order
+($5.8\times10^{-3}$ / $1.5\times10^{-3}$ / $3.7\times10^{-4}$ at $32/64/128^3$), and
+the $n = 64$ MG-slab and FFT-open results agree to every printed digit.
+
+\paragraph{Refined meshes (\file{tests/mg\_poisson\_slab\_smr.athinput}).} With a
+level-1 slab spanning the middle half of $z$: the screened mode sector converges at
+second order ($1.6\times10^{-2}$ / $4.6\times10^{-3}$ / $1.2\times10^{-3}$ relative).
+The unscreened $k_\perp = 0$ sector exhibits a \emph{constant, horizontally uniform}
+offset of exactly $\tfrac34\,(4\pi G\rho_0)\,h_f^2$ filling the refined region ---
+the $O(h^2)$ dipole signature of the Tomida \& Stone conservative level interface
+(zero monopole: the flux error is continuous across the interface, so no fake mass;
+the dipole layer produces a potential jump). Being constant it exerts \emph{zero
+force}. Diagnosing this cost a detour: the sheet metric initially sampled its
+reference at integer root-layer indices, which on fine cells adds an
+$O(\partial_z\Phi\,\Delta z)$ \emph{reference} error that masqueraded as a
+first-order solver error; the metric now evaluates the closed form at the true fine
+cell centers.
+
+\paragraph{Evolution twin (MG-slab vs FFT-KO09).} The same small $\beta = 10$
+gravito-turbulence box evolved through both gravity solvers to $t = 5\,\Om^{-1}$:
+after removing the constant gauge offset between the two open-boundary conventions
+($\simeq 2\pi G\Sigma$-scale, $25.6$ here), the potentials agree to
+\textbf{$8\times10^{-5}$ rms} and density/thermal energy to $10^{-3}$, while the
+small random-seeded perturbation velocities decorrelate chaotically (relative
+difference $0.3 \to 0.9$) --- the signature of two correct solvers separated only
+by roundoff-level method differences, with gravity demonstrably \emph{not} the
+driver of the separation.
+
+\paragraph{Adaptive refinement under slab gravity
+(\file{shearing\_box/gravito\_turb\_amr\_test.athinput}).} A $16H$-wide $\beta = 10$
+box with a density criterion (refine at $\rho > 2\rho_0$) run through the cooling
+collapse: refinement fired on the collapse clumps at $t \sim 15$ ($\rho_{\max} = 38$
+at $t = 20$), tracked them, and derefined as they sheared apart --- multiple remesh
+events in both directions with the slab planes rebuilt each time, zero guard trips,
+and fine blocks confined to the middle $z$-row ($|z| \le 2H$) throughout by the
+automatic slab-$z$ refinement policy. (A first attempt exposed a policy interaction
+worth knowing: a box with only two $x_1$ MeshBlock columns cannot refine
+\emph{anywhere}, because both columns sit on the shear-periodic faces that the
+Phase-2 policy protects; the test input therefore provides four columns.)
+
+\paragraph{Hydrostatic hold.} The SC14 initial state (Q3c below) run without cooling
+or perturbations holds for $10\,\Om^{-1}$: midplane density unchanged, disk-body
+velocities $\lesssim 2\%$ of $c_s(0)$ (the settling of the non-equilibrium
+$10^{-4}$ halo splashing on the disk surface), total mass constant to $0.25\%$
+(density-floor injection in the halo). With plain \code{outflow} instead of
+\code{diode} the inflow runaway destroys the disk by $t \sim 8\,\Om^{-1}$ ---
+the origin of the diode default.
+
+\subsection{Phase 3c: the SC14 problem generator}
+\label{sec:phase3c}
+
+\fn{ProblemGenerator::GravitoTurb} (\file{pgen/fluids/gravito\_turb.cpp},
+\code{pgen\_name\,=\,gravito\_turb}) integrates the vertical hydrostatic balance
+(SC14 eq.~9)
+\begin{equation}
+  \frac{1}{\rho}\frac{dP}{dz} = -\,\Om^2 z - 4\pi G \int_0^z \rho\,dz',
+  \qquad P = K\rho^\gamma,\quad K = c_s(0)^2/(\gamma\rho_0^{\gamma-1}),
+\end{equation}
+by midpoint rule on a $2^{15}$-point table, floors the profile at \code{dfloor\_ic}
+($10^{-4}$), and interpolates to cell centers. With SC14's published constants
+($c_s(0) = 2.12625$, $4\pi G = 4.25231$, $\gamma = 5/3$, $\rho_0 = \Om = 1$) the
+computed half-thickness $\int_0^{z_{\max}}\rho\,dz/\rho_0 = 1.0005$, confirming their
+$Q_0 = 1$, $H = 1$ calibration independently. Cell-wise random velocity
+perturbations (up to \code{pert\_amp}$\,c_s(0)$ for $|z| <$ \code{pert\_zmax}) use a
+splitmix64 hash of \emph{global} cell indices: decomposition- and rank-independent.
+The user history emits the volume integrals behind SC14's diagnostics --- mass,
+$\int\rho c_s$, the density- and volume-weighted stresses $g_xg_y/4\pi G$ and
+$\rho v_x\delta v_y$, $\int\rho P$, $\int\rho c_s^2$, $\int\rho\,\delta v^2$, thermal
+energy --- from which $Q$ (eq.~16), $\alpha$ (eq.~19), $\alpha'$ (eq.~20) and rms
+$\delta v$ are formed in post-processing. A short small-box run reproduces SC14's
+transient phenomenology: cooling contraction ($Q: 0.9 \to 0.6$), gravitational
+instability onset, rebound toward $Q \sim 1$ with $\delta v \sim c_s$.
+
+%=========================================================================================
 \section{Rank-consistent integer shifts}
 \label{sec:consistentdx2}
 
@@ -1136,12 +1386,27 @@ Block & Parameter & Default & Meaning \\
 \midrule
 \code{<gravity>} & \code{solver} & --- & \code{multigrid} or \code{fft} \\
                  & \code{four\_pi\_G} & --- & $4\pi G$ \\
+                 & \code{mg\_bc} & \code{none} & \code{slab}: open (vacuum) $x_3$
+                   boundaries (Phase 3b); also \code{zerofixed}, \code{zerograd},
+                   \code{multipole} \\
                  & \code{mg\_remap} & \code{plm} & Remap order for the shear ghost
-                   fill: \code{dc}, \code{plm}, \code{ppmx} \\
-                 & \code{mg\_nghost} & 1 & Must be 1 with shear \\
-                 & \code{root\_on\_host} & \code{false} & Must be false with shear \\
+                   fill and the slab plane roll/rings \\
+                 & \code{mg\_nghost} & 1 & Must be 1 with shear or slab \\
+                 & \code{root\_on\_host} & \code{false} & Must be false with shear
+                   or slab \\
                  & \code{threshold} & --- & $<0$ selects fixed-iteration mode \\
                  & \code{niteration} & --- & Cycle count in fixed mode \\
+                 & \code{vert\_bc} & \code{periodic} & FFT solver only:
+                   \code{open} = KO09 two-solve vacuum $x_3$ \\
+\midrule
+\code{<hydro\_srcterms>} & \code{beta\_cooling} & \code{false} &
+                   $\dot U = -U\Om/\beta$ (Phase 3a) \\
+                 & \code{bcool\_beta} & --- & $\beta = \Om t_{\rm cool}$ \\
+                 & \code{thermal\_cooling} & \code{false} &
+                   $t_{\rm cool} = b(\rho/P)^3$ (SC14 eq.~8) \\
+                 & \code{tcool\_b} & --- & $b$ \\
+                 & \code{cool\_eps} & 0.02 & Timestep cap
+                   $\Delta t \le \epsilon\,t_{\rm cool}$ \\
 \midrule
 \code{<problem>} & \code{amr\_moving\_ring} & \code{false} & Enroll the prescribed
                    moving-ring criterion \\
@@ -1188,6 +1453,14 @@ boundary faces (I1) \\
 \file{tests/swing\_selfgrav\_amr.athinput} & Swing, moving ring, AMR (2c) \\
 \file{tests/ts41\_sin3.athinput}, \file{tests/ts43\_jeans.athinput} &
 Tomida \& Stone (2023) \S4 consistency \\
+\midrule
+\multicolumn{2}{@{}l}{\textbf{Phase 3 --- stratified (slab-open $x_3$)}}\\
+\file{tests/mg\_poisson\_slab.athinput} & Sheet test, uniform, periodic $x_1$ \\
+\file{tests/mg\_poisson\_slab\_shear.athinput} & Sheet test, sheared, FFT
+cross-check \\
+\file{tests/mg\_poisson\_slab\_smr.athinput} & Sheet test, level-1 midplane slab \\
+\file{shearing\_box/gravito\_turb\_sc14.athinput} & SC14 $\beta = 10$ production
+setup \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1240,6 +1513,15 @@ one ghost \\
 \fn{MGGravityDriver} & Unrecognized \code{mg\_remap} & Typo protection \\
 \fn{MGGravityDriver} & $x_1$-face blocks span more than one level & Plane sizing
 (\code{shear\_reflev\_}) and octet face tiling \\
+\fn{MGGravityDriver} & \code{mg\_bc\,=\,slab} on a non-3D mesh, or without
+(shear-)periodic $x_1$ / periodic $x_2$, or on only one $x_3$ face & Slab planes
+assume a horizontally wrapped box with both $x_3$ faces open \\
+\fn{MGGravityDriver} & \code{mg\_bc\,=\,slab} without an FFT build & Plane
+computation needs kokkos-fft \\
+\fn{MultigridDriver::Check\-SlabBlockLevels} & $x_3$-face block above root level &
+Plane pyramid indexing; re-checked after every AMR remesh \\
+\fn{MultigridDriver::Apply\-PhysicalBoundariesOctet} & Octet on a slab $x_3$
+boundary & Unreachable under the invariant above; defensive \\
 \bottomrule
 \end{longtable}
 \end{center}
@@ -1285,6 +1567,29 @@ one ghost \\
       RK stage. This is a pre-existing convention retained deliberately so the
       multigrid and FFT solvers remain directly comparable; revisiting it means
       revisiting both solvers and their validation together.
+
+\item \textbf{Slab boundaries require root-level $x_3$-face blocks.} The plane
+      pyramid could in principle start at a uniformly refined boundary level (as the
+      shear planes do, \S\ref{sec:phase2b}), but no target problem needs it; the
+      guard keeps the mapping simple.
+
+\item \textbf{The full-density Allreduce.} \fn{ComputeSlabPlanes} reduces the whole
+      root-resolution density array ($\sim$25\,MB at SC14's standard resolution) once
+      per solve, in exchange for bit-identical planes on every rank. A
+      partial-spectrum reduction (per-rank slice FFTs, reduce only the two face
+      spectra) would cut this to $\sim$1\,MB if profiling ever demands it.
+
+\item \textbf{The $k_\perp = 0$ interface offset.} On refined meshes the conservative
+      level interface leaves a constant $O(h^2)$ potential offset inside enclosed
+      refined regions (\S\ref{sec:phase3val}). It is force-free and converges at
+      second order, but it means refined-region potentials should be compared
+      gradient-wise, not value-wise.
+
+\item \textbf{Density-floor mass injection.} With \code{diode} vertical boundaries
+      and \code{dfloor} $= 10^{-4}$, the box gains mass at the floor rate
+      ($\sim$0.1\%/$10\,\Om^{-1}$ in the hold test). SC14 ran the same floors; the
+      effect is negligible against their $\sim$10\% transient mass loss, but exact
+      mass budgets should account for it.
 \end{enumerate}
 
 \end{document}
