@@ -57,6 +57,10 @@ void ShearingBoxCC::SourceTermsCC(const DvceArray5D<Real> &w0, const EOS_Data &e
           int nx3 = indcs.nx3;
           Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
           u0(m,IM3,k,j,i) -= coef3*den*x3v;
+          if (eos_data.is_ideal) {
+            // work done by the vertical tidal force -rho*Omega^2*z*vz
+            u0(m,IEN,k,j,i) -= coef3*den*x3v*w0(m,IVZ,k,j,i);
+          }
         }
         if (eos_data.is_ideal) {
           // For more accuracy, better to use flux values
@@ -86,6 +90,10 @@ void ShearingBoxCC::SourceTermsCC(const DvceArray5D<Real> &w0, const EOS_Data &e
           int nx3 = indcs.nx3;
           Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
           u0(m,IM3,k,j,i) -= coef3*den*x3v;
+          if (eos_data.is_ideal) {
+            // work done by the vertical tidal force -rho*Omega^2*z*vz
+            u0(m,IEN,k,j,i) -= coef3*den*x3v*w0(m,IVZ,k,j,i);
+          }
         }
         if (eos_data.is_ideal) {
           // only the tidal force does work (Coriolis force is perpendicular to v)
@@ -177,6 +185,10 @@ void ShearingBoxCC::SourceTermsCC(
           int nx3 = indcs.nx3;
           Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
           u0(m,IM3,k,j,i) -= coef3*den*x3v;
+          if (eos_data.is_ideal) {
+            // work done by the vertical tidal force -rho*Omega^2*z*vz
+            u0(m,IEN,k,j,i) -= coef3*den*x3v*w0(m,IVZ,k,j,i);
+          }
         }
         if (eos_data.is_ideal) {
           // For more accuracy, better to use flux values
@@ -205,6 +217,10 @@ void ShearingBoxCC::SourceTermsCC(
           int nx3 = indcs.nx3;
           Real x3v = CellCenterX(k-ks, nx3, x3min, x3max);
           u0(m,IM3,k,j,i) -= coef3*den*x3v;
+          if (eos_data.is_ideal) {
+            // work done by the vertical tidal force -rho*Omega^2*z*vz
+            u0(m,IEN,k,j,i) -= coef3*den*x3v*w0(m,IVZ,k,j,i);
+          }
         }
         if (eos_data.is_ideal) {
           // only the tidal force does work; magnetic stresses are handled by the
