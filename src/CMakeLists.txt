@@ -89,6 +89,7 @@ add_executable(
         multigrid/multigrid_bvals.cpp
         multigrid/multigrid_driver.cpp
         multigrid/multigrid_shear.cpp
+        multigrid/multigrid_slab.cpp
         multigrid/multigrid_tasks.cpp
 
         mhd/mhd.cpp
@@ -145,6 +146,7 @@ add_executable(
         pgen/tests/be_collapse.cpp
         pgen/tests/fft_poisson.cpp
         pgen/tests/swing.cpp
+        pgen/fluids/gravito_turb.cpp
 
         pgen/unit_tests/eos_compose.cpp
         pgen/unit_tests/gauss_legendre.cpp

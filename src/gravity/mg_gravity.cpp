@@ -65,7 +65,8 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
     exit(EXIT_FAILURE);
   }
   // Override MG boundary conditions if specified in input file.
-  // Options: "zerofixed" (Dirichlet zero), "zerograd" (Neumann zero), "multipole".
+  // Options: "zerofixed" (Dirichlet zero), "zerograd" (Neumann zero), "multipole",
+  // "slab" (open/vacuum x3 of a horizontally (shear-)periodic box, Phase 3).
   std::string mg_bc_str = pin->GetOrAddString("gravity", "mg_bc", "none");
   if (mg_bc_str != "none") {
     BoundaryFlag mg_bc;
@@ -75,6 +76,8 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
       mg_bc = BoundaryFlag::mg_zerograd;
     } else if (mg_bc_str == "multipole") {
       mg_bc = BoundaryFlag::mg_multipole;
+    } else if (mg_bc_str == "slab") {
+      mg_bc = BoundaryFlag::mg_slab;
     } else {
       std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
                 << "Unknown mg_bc type: " << mg_bc_str << std::endl;
@@ -86,6 +89,38 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
         mg_mesh_bcs_[f] = mg_bc;
       }
     }
+  }
+
+  // Slab-open (vacuum) x3 boundaries: valid only on both x3 faces of a 3D box that
+  // is (shear-)periodic in x1 and periodic in x2 (see multigrid_slab.cpp).
+  mg_slab_enabled_ = (mg_mesh_bcs_[BoundaryFace::inner_x3] == BoundaryFlag::mg_slab ||
+                      mg_mesh_bcs_[BoundaryFace::outer_x3] == BoundaryFlag::mg_slab);
+  if (mg_slab_enabled_) {
+    auto ok_x1 = [](BoundaryFlag f) {
+      return (f == BoundaryFlag::periodic || f == BoundaryFlag::shear_periodic);
+    };
+    if (mg_mesh_bcs_[BoundaryFace::inner_x3] != BoundaryFlag::mg_slab ||
+        mg_mesh_bcs_[BoundaryFace::outer_x3] != BoundaryFlag::mg_slab ||
+        !ok_x1(mg_mesh_bcs_[BoundaryFace::inner_x1]) ||
+        !ok_x1(mg_mesh_bcs_[BoundaryFace::outer_x1]) ||
+        mg_mesh_bcs_[BoundaryFace::inner_x2] != BoundaryFlag::periodic ||
+        mg_mesh_bcs_[BoundaryFace::outer_x2] != BoundaryFlag::periodic) {
+      std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+                << "<gravity> mg_bc = slab requires non-periodic x3 on BOTH faces, "
+                << "(shear-)periodic x1, and periodic x2 boundaries." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    if (!pmy_mesh_->three_d) {
+      std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+                << "<gravity> mg_bc = slab requires a 3D mesh." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+#if !FFT_ENABLED
+    std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
+              << "<gravity> mg_bc = slab requires a build with "
+              << "-D Athena_ENABLE_FFT=ON (kokkos-fft)." << std::endl;
+    std::exit(EXIT_FAILURE);
+#endif
   }
   // Shear-periodic x1 boundaries (Phase 1: uniform grid, single rank).
   // mesh.cpp guarantees that shear_periodic appears on both x1 faces or neither,
@@ -143,17 +178,19 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
     }
     if (pmy_mesh_->mesh_bcs[BoundaryFace::inner_x2] != BoundaryFlag::periodic ||
         pmy_mesh_->mesh_bcs[BoundaryFace::outer_x2] != BoundaryFlag::periodic ||
-        pmy_mesh_->mesh_bcs[BoundaryFace::inner_x3] != BoundaryFlag::periodic ||
-        pmy_mesh_->mesh_bcs[BoundaryFace::outer_x3] != BoundaryFlag::periodic) {
+        (!mg_slab_enabled_ &&
+         (pmy_mesh_->mesh_bcs[BoundaryFace::inner_x3] != BoundaryFlag::periodic ||
+          pmy_mesh_->mesh_bcs[BoundaryFace::outer_x3] != BoundaryFlag::periodic))) {
       std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
                 << "Multigrid gravity with shear-periodic x1 requires periodic "
-                << "x2 and x3 boundaries." << std::endl;
+                << "x2 and periodic (or mg_bc = slab) x3 boundaries." << std::endl;
       std::exit(EXIT_FAILURE);
     }
-    if (mg_bc_str != "none") {
+    if (mg_bc_str != "none" && mg_bc_str != "slab") {
       std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
-                << "<gravity> mg_bc cannot be combined with shear-periodic x1 "
-                << "boundaries." << std::endl;
+                << "<gravity> mg_bc = '" << mg_bc_str << "' cannot be combined with "
+                << "shear-periodic x1 boundaries (only 'slab' is supported)."
+                << std::endl;
       std::exit(EXIT_FAILURE);
     }
   }
@@ -212,16 +249,16 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
   // Allocate the root multigrid
   int nghost = pin->GetOrAddInteger("gravity", "mg_nghost", 1);
   bool root_on_host = pin->GetOrAddBoolean("gravity", "root_on_host", false);
-  if (mg_shear_enabled_ && root_on_host) {
+  if ((mg_shear_enabled_ || mg_slab_enabled_) && root_on_host) {
     std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
-              << "<gravity> root_on_host is not yet supported with shear-periodic "
-              << "boundaries (the root shear fill runs on device)." << std::endl;
+              << "<gravity> root_on_host is not supported with shear-periodic or "
+              << "slab boundaries (their root fills run on device)." << std::endl;
     std::exit(EXIT_FAILURE);
   }
-  if (mg_shear_enabled_ && nghost > 1) {
+  if ((mg_shear_enabled_ || mg_slab_enabled_) && nghost > 1) {
     std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
-              << "<gravity> mg_nghost > 1 is untested with shear-periodic "
-              << "boundaries (Phase 1)." << std::endl;
+              << "<gravity> mg_nghost > 1 is untested with shear-periodic or slab "
+              << "boundaries." << std::endl;
     std::exit(EXIT_FAILURE);
   }
   mgroot_ = new MGGravity(this, nullptr, nghost, root_on_host);
@@ -234,6 +271,10 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
   mglevels_->pbval->InitializeBuffers((nvar_));
   mglevels_->pbval->RemapIndicesForMG();
   mglevels_->pbval->ComputePerLevelIndices();
+  if (mg_slab_enabled_) {
+    CheckSlabBlockLevels();
+    AllocateSlabPlanes();
+  }
 }
 
 
@@ -302,6 +343,13 @@ void MGGravityDriver::Solve(Driver *pdriver, int stage, Real dt) {
   // negative sign so that -∇²φ = -4πGρ, i.e. ∇²φ = +4πGρ.
   auto &u0 = (pmy_pack_->pmhd != nullptr) ? pmy_pack_->pmhd->u0
                                             : pmy_pack_->phydro->u0;
+
+  // Slab-open x3: recompute the Dirichlet face planes from the current density,
+  // rolled by the same frozen shear phase as the x1 ghost fills (mg_qomt_)
+  if (mg_slab_enabled_) {
+    ComputeSlabPlanes(u0, four_pi_G_, mg_qomt_);
+  }
+
   mglevels_->LoadSource(u0, IDN, indcs_.ng, -four_pi_G_);
 
   // Apply source mask (zero source outside mask_radius_)

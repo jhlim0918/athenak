@@ -179,6 +179,17 @@ TaskStatus MultigridDriver::PhysicalBoundary(Driver *pdrive, int stage) {
   int nx2 = pmg->indcs_.nx2 >> shift;
   int nx3 = pmg->indcs_.nx3 >> shift;
 
+  // Slab-open x3: Dirichlet face-value plane at this level's resolution (pyramid
+  // index = block level shift; x3-boundary blocks are at root level by invariant).
+  // The plane carries ngh-deep ghost rings, so the full-slab loops below (which
+  // include the x1/x2 ghost corners) index it directly with the block-local j/i.
+  DvceArray3D<Real> d_splane;
+  DvceArray2D<int> d_slloc;
+  if (mg_slab_enabled_) {
+    d_splane = slab_planes_[shift];
+    d_slloc = slab_lloc_;
+  }
+
   Kokkos::parallel_for("MGPhysicalBoundary",
     Kokkos::RangePolicy<DevExeSpace>(0, nmb),
     KOKKOS_LAMBDA(const int m) {
@@ -323,6 +334,16 @@ TaskStatus MultigridDriver::PhysicalBoundary(Driver *pdrive, int stage) {
                   u(m,v,ngh-1-n,j,i) = 2.0*phis - u(m,v,ngh+n,j,i);
               }
             }
+          } else if (bc_ix3 == BoundaryFlag::mg_slab) {
+            int gj0 = d_slloc(m,1)*ncells;
+            int gi0 = d_slloc(m,0)*ncells;
+            for (int j = 0; j < ncells + 2*ngh; ++j) {
+              for (int i = 0; i < ncells + 2*ngh; ++i) {
+                Real phis = d_splane(0, gj0 + j, gi0 + i);
+                for (int n = 0; n < ngh; ++n)
+                  u(m,v,ngh-1-n,j,i) = 2.0*phis - u(m,v,ngh+n,j,i);
+              }
+            }
           } else {
             for (int j = 0; j < ncells + 2*ngh; ++j) {
               for (int i = 0; i < ncells + 2*ngh; ++i) {
@@ -348,6 +369,16 @@ TaskStatus MultigridDriver::PhysicalBoundary(Driver *pdrive, int stage) {
               for (int i = ngh; i < ngh + ncells; ++i) {
                 Real xv = mb_size.d_view(m).x1min + (i-ngh+0.5)*dx1_l - d_xo;
                 Real phis = EvalMultipolePhi(xv, yv, zf, d_mpc.data(), d_order);
+                for (int n = 0; n < ngh; ++n)
+                  u(m,v,ngh+ncells+n,j,i) = 2.0*phis - u(m,v,ngh+ncells-1-n,j,i);
+              }
+            }
+          } else if (bc_ox3 == BoundaryFlag::mg_slab) {
+            int gj0 = d_slloc(m,1)*ncells;
+            int gi0 = d_slloc(m,0)*ncells;
+            for (int j = 0; j < ncells + 2*ngh; ++j) {
+              for (int i = 0; i < ncells + 2*ngh; ++i) {
+                Real phis = d_splane(1, gj0 + j, gi0 + i);
                 for (int n = 0; n < ngh; ++n)
                   u(m,v,ngh+ncells+n,j,i) = 2.0*phis - u(m,v,ngh+ncells-1-n,j,i);
               }

@@ -113,6 +113,7 @@ MultigridDriver::MultigridDriver(MeshBlockPack *pmbp, int invar):
 //! destructor
 
 MultigridDriver::~MultigridDriver() {
+  FreeSlabPlanes();
   delete [] ranklist_;
   delete [] nslist_;
   delete [] nblist_;
@@ -244,6 +245,12 @@ void MultigridDriver::PrepareForAMR() {
     // by Mesh::CheckShearingBoxRefinement.
     if (mg_shear_enabled_) {
       mglevels_->AllocateShearPlanes();
+    }
+    // Phase 3: slab-open x3 -- re-enforce the root-level invariant for x3-boundary
+    // blocks and rebuild the per-block offset tables after any remesh
+    if (mg_slab_enabled_) {
+      CheckSlabBlockLevels();
+      AllocateSlabPlanes();
     }
   }
   needinit_ = false;
@@ -1771,6 +1778,21 @@ void MultigridDriver::ApplyPhysicalBoundariesOctet(MGOctet &oct, bool fcbuf) {
   const LogicalLocation &loc = oct.loc;
   int lev = loc.level - locrootlevel_;
   int ngh = mgroot_->ngh_;
+
+  // Slab-open x3 forbids refined regions touching the x3 faces
+  // (CheckSlabBlockLevels); a boundary octet reaching here is a logic error.
+  if (mg_slab_enabled_) {
+    int maxlx3_s = nrbx3_ << lev;
+    if ((loc.lx3 == 0 &&
+         mg_mesh_bcs_[BoundaryFace::inner_x3] == BoundaryFlag::mg_slab) ||
+        (loc.lx3 == maxlx3_s-1 &&
+         mg_mesh_bcs_[BoundaryFace::outer_x3] == BoundaryFlag::mg_slab)) {
+      std::cout << "### FATAL ERROR in MultigridDriver::ApplyPhysicalBoundariesOctet"
+                << std::endl << "Refined octet on a slab-open x3 boundary; refinement "
+                << "must stay away from the x3 faces." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+  }
   int l = ngh, r = ngh + 1;
   if (fcbuf) r = ngh;  // coarse buffer has only ngh cells
 
@@ -1957,7 +1979,14 @@ void MultigridDriver::MGRootBoundary() {
           }
         }
       });
-    // x3 boundaries (x1,x2 ghost cells already filled)
+    // x3 boundaries (x1,x2 ghost cells already filled).  For slab-open x3 the
+    // Dirichlet face plane at this root level (with its shear/periodic ghost rings)
+    // supplies the face values, so this pass also overwrites the x1/x2 ghost-corner
+    // rows consistently with the slab extrapolation.
+    DvceArray3D<Real> d_rsplane;
+    if (mg_slab_enabled_) {
+      d_rsplane = slab_planes_[mglevels_->GetNumberOfLevels() - 1 + ll];
+    }
     Kokkos::parallel_for("MGRootBnd_x3",
       Kokkos::RangePolicy<DevExeSpace>(0, nvar * ny * nx),
       KOKKOS_LAMBDA(const int idx) {
@@ -1968,6 +1997,8 @@ void MultigridDriver::MGRootBoundary() {
         for (int n = 0; n < ngh; ++n) {
           if (bc_ix3 == BoundaryFlag::periodic) {
             u(0, v, n, j, i) = u(0, v, nz - 2*ngh + n, j, i);
+          } else if (bc_ix3 == BoundaryFlag::mg_slab) {
+            u(0, v, ngh - 1 - n, j, i) = 2.0*d_rsplane(0,j,i) - u(0, v, ngh + n, j, i);
           } else if (bc_ix3 == BoundaryFlag::mg_zerofixed) {
             u(0, v, ngh - 1 - n, j, i) = -u(0, v, ngh + n, j, i);
           } else if (bc_ix3 == BoundaryFlag::mg_zerograd) {
@@ -1975,6 +2006,9 @@ void MultigridDriver::MGRootBoundary() {
           }
           if (bc_ox3 == BoundaryFlag::periodic) {
             u(0, v, nz - ngh + n, j, i) = u(0, v, ngh + n, j, i);
+          } else if (bc_ox3 == BoundaryFlag::mg_slab) {
+            u(0, v, nz - ngh + n, j, i) = 2.0*d_rsplane(1,j,i)
+                                          - u(0, v, nz - ngh - 1 - n, j, i);
           } else if (bc_ox3 == BoundaryFlag::mg_zerofixed) {
             u(0, v, nz - ngh + n, j, i) = -u(0, v, nz - ngh - 1 - n, j, i);
           } else if (bc_ox3 == BoundaryFlag::mg_zerograd) {

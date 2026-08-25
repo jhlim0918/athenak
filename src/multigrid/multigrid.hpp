@@ -511,6 +511,30 @@ class MultigridDriver {
   Real mg_qomt_;  // q*Omega*(time since last shear-periodic instant); frozen per Solve()
   ReconstructionMethod mg_remap_order_;
 
+  // Slab-open (vacuum) x3 boundary conditions (Phase 3: stratified shearing box).
+  // Dirichlet face-value planes Phi(x,y) on both x3 faces, recomputed every Solve()
+  // from the density via horizontal FFTs + the discrete vacuum Green's function of
+  // the 7-point stencil (see multigrid_slab.cpp).  slab_planes_[p] holds both faces
+  // at pyramid level p (global horizontal resolution mesh_nx >> p, ngh_-deep ghost
+  // rings: periodic wrap in x2, shear-remapped wrap in x1); the pyramid spans all
+  // block levels (p = block level shift) and root levels (p = nmblevel_-1 + root ll).
+  bool mg_slab_enabled_ = false;
+  int slab_nplanes_ = 0;                 // pyramid depth = nmblevel_ + nrootlevel_ - 1
+  DvceArray3D<Real> *slab_planes_ = nullptr;   // [p](2, ny_p+2*ngh, nx_p+2*ngh)
+  DvceArray2D<int> slab_lloc_;           // per-block root-level (lx1,lx2); -1 if unused
+  DvceArray2D<int> slab_goffs_;          // per-block (gox,goy,goz,lev) for the gather
+  DvceArray3D<Real> slab_dens_;          // (nz,ny,nx) root-resolution 4piG*rho gather
+  DvceArray2D<Kokkos::complex<Real>> slab_zin_, slab_zout_;  // (ny,nx) FFT slice bufs
+  DvceArray3D<Kokkos::complex<Real>> slab_zplanes_;  // (2,ny,nx) face spectra accum
+  DvceArray2D<Real> slab_mu_, slab_wt_;  // (ny,nx) per-mode decay factor and weight
+  DvceArray3D<Real> slab_rplanes_;       // (2,ny,nx) real face planes (rolled frame)
+  struct MGSlabFFTPlans;                 // KokkosFFT plans; defined in multigrid_slab.cpp
+  MGSlabFFTPlans *slab_plans_ = nullptr;
+  void AllocateSlabPlanes();             // pyramid + offset tables; PrepareForAMR-safe
+  void CheckSlabBlockLevels();           // fatal unless x3-boundary blocks at root level
+  void ComputeSlabPlanes(const DvceArray5D<Real> &u0, Real four_pi_G, Real qomt);
+  void FreeSlabPlanes();                 // release plans + pyramid (dtor)
+
   // Source masking (zero source outside mask_radius_)
   Real mask_radius_;
   Real mask_origin_[3];
