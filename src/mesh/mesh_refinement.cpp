@@ -54,6 +54,8 @@ MeshRefinement::MeshRefinement(Mesh *pm, ParameterInput *pin) :
   refinement_interval(5),
   prolong_prims(false),
   shearing_box_(pin->DoesBlockExist("shearing_box")),
+  slab_z_(pin->DoesBlockExist("gravity") &&
+      pin->GetOrAddString("gravity", "mg_bc", "none") == "slab"),
   sbox_ring_policy_(pin->DoesBlockExist("shearing_box") &&
       pin->GetOrAddBoolean("shearing_box", "orbital_advection", true)),
   refine_flag("rflag",pm->nmb_total),
@@ -310,6 +312,28 @@ void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
       } else if (lev >= (blev+1)) {               // graded cap on interior MBs
         std::int32_t gap = (1 << ((lev-blev)+1));
         if ((lx1 < (gap-1)) || (lx1 > (nmbx1-gap))) {
+          refine_flag.h_view(m+mbs) = 0;
+        }
+      }
+    }
+  }
+  // Multigrid slab-open x3 boundaries: never refine a MeshBlock touching the x3
+  // faces (they must stay at root level for the slab plane indexing; see
+  // MultigridDriver::CheckSlabBlockLevels), and apply the same graded cap as the
+  // shear-periodic x1 policy above so 2:1 balancing can never propagate refinement
+  // into the boundary rows.
+  if (slab_z_) {
+    for (int m=0; m<nmb; ++m) {
+      if (refine_flag.h_view(m+mbs) <= 0) continue;
+      int lev = pmy_mesh->lloc_eachmb[m+mbs].level;
+      int s = lev - pmy_mesh->root_level;
+      std::int32_t lx3 = pmy_mesh->lloc_eachmb[m+mbs].lx3;
+      std::int32_t nmbx3 = (pmy_mesh->nmb_rootx3 << s);
+      if (lx3 == 0 || lx3 == (nmbx3-1)) {         // MB on x3 face: never refine
+        refine_flag.h_view(m+mbs) = 0;
+      } else if (s >= 1) {                        // graded cap on interior MBs
+        std::int32_t gap = (1 << (s+1));
+        if ((lx3 < (gap-1)) || (lx3 > (nmbx3-gap))) {
           refine_flag.h_view(m+mbs) = 0;
         }
       }
