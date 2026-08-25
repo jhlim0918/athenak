@@ -961,6 +961,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     FFTPoisson(pin, is_restart);
   } else if (pgen_fun_name.compare("swing") == 0) {
     SwingAmplification(pin, is_restart);
+  } else if (pgen_fun_name.compare("gravito_turb") == 0) {
+    GravitoTurb(pin, is_restart);
 
   // pre-defined unit tests
   } else if (pgen_fun_name.compare("eos_compose") == 0) {
