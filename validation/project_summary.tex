@@ -9,9 +9,10 @@
 \newcommand{\code}[1]{\texttt{#1}}
 
 \title{Self-Gravity with Mesh Refinement in the AthenaK Shearing Box\\
-       \large Program Summary: Phases 0--2c and First Gravitational Collapse}
+       \large Program Summary: Phases 0--3 --- Collapse, and the Stratified
+       Gravito-Turbulent Box}
 \author{\code{athenak-multigrid} tree, branch \code{multigrid}}
-\date{August 17, 2026}
+\date{August 25, 2026}
 
 \begin{document}
 \maketitle
@@ -168,17 +169,85 @@ is resolved, and part ways only beyond the Truelove ceiling (dashed) ---
 neither number is physical there.}
 \end{figure}
 
+\section*{Phase 3 --- the stratified box: slab-open gravity, cooling, and
+gravito-turbulence (this week)}
+The third dimension of the physical problem. Three deliverables:
+
+\textbf{(i) Open (vacuum) vertical boundaries for the multigrid solver}
+(\code{mg\_bc = slab}): each solve builds exact Dirichlet face planes from the
+\emph{discrete} infinite-vacuum Green's function of the 7-point stencil
+($\mu$-decay per horizontal mode at the shear-shifted $k_x'$; the discrete slab
+potential for the now-physical mass sector), applied at every multigrid level.
+The converged interior equals the infinite-domain discrete solution
+\emph{exactly}: a new closed-form ``sheet'' arbiter validates this absolutely
+(no mean subtraction) at $1.2\times10^{-12}$, against the independent FFT-KO09
+method at $3\times10^{-13}$, bit-identically across MPI ranks, and at
+$8\times10^{-5}$ through five dynamical times of \emph{nonlinear evolution}.
+Shear, SMR, and dynamic AMR all compose with it; the only refinement cost is a
+constant \emph{force-free} $O(h^2)$ offset in enclosed refined regions --- the
+dipole signature of the conservative level interface, invisible to every
+periodic-box test that came before.
+
+\textbf{(ii) Stratified-box physics}: the vertical tidal force's missing energy
+work term (a latent upstream gap, invisible to isothermal runs), SC14's two
+cooling laws with timestep guards, and a boundary lesson --- plain
+\code{outflow} $z$-boundaries feed a gravity-driven \emph{inflow runaway}
+(halo mass up $100\times$, disk destroyed by $t\sim8\,\Omega^{-1}$); the
+\code{diode} boundary makes the SC14 initial state hold hydrostatically to
+$2\%$ of $c_s$. AMR refinement is automatically vetoed on the $x_3$ faces, and
+a clump-triggered AMR run tracked collapse clumps through refine/derefine
+cycles with the slab planes rebuilt at every remesh.
+
+\textbf{(iii) The Shi \& Chiang (2014) reproduction}: a \code{gravito\_turb}
+pgen integrating their self-gravitating vertical equilibrium (their published
+constants reproduce the $Q_0{=}1$, $H{=}1$ calibration to $5\times10^{-4}$ ---
+an independent audit of the paper), with their $Q$, $\alpha$ (eq.~19),
+$\alpha'$ (eq.~20) diagnostics as history outputs. The half-width production
+run ($[-16,16]^2{\times}[-6,6]H$ at their resolution, $\beta = 10$, 4 MPI
+ranks, $6.8$\,h on a laptop) reproduces their Figure~2 end to end
+(Fig.~\ref{fig:sc14}): cooling collapse, vertical rebound, then
+$250\,\Omega^{-1}$ of self-regulated gravito-turbulence with, over their
+averaging window, $\langle c_s\rangle_\rho = 2.187$ (theirs: $2.18$), rms
+$\delta v = 1.68\,H\Omega$ ($1.79$), $M/M_0 = 0.92$ ($\sim0.9$), and
+$\alpha_{\rm grav} = 0.034$ ($0.039$). The residual gaps ($Q = 1.11$ vs
+$1.33$; a burst-inflated Reynolds channel) all carry the signature of a single
+box-scale swing mode recharging quasi-periodically --- the half-width-box
+effect --- which the \textbf{full-width $64H$ run now queued on NAS} will
+resolve; the $\beta$-scan (their Table 1, via their ``morphing'' restart
+chain) is packaged alongside it (\code{scripts/cluster/}).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{figures/sc14_half_hist.png}
+\caption{The SC14 $\beta = 10$ half-box run in their Figure-2 form (thick:
+$12\,\Omega^{-1}$ boxcar; dotted: SC14's tc=10 values; dashed: their eq.-21
+energy-balance line): stresses, $\delta v/c_s$ and mass, Toomre $Q$.}
+\label{fig:sc14}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/sc14_half_vol_cut.png}
+\caption{$\log_{10}\rho$ at $\Omega t = 300$, cutaway volume rendering in the
+style of SC14's Fig.~2: gravito-turbulent midplane wakes under the halo they
+force --- the configuration (stratified, open-$z$, refinable) that no FFT
+solver can host.}
+\end{figure}
+
 \section*{Status and next steps}
-\textbf{Delivered}: FFT solver (validated, 3.5$\times$ faster than multigrid on
-uniform grids, and now a full nonlinear cross-check twin); shearing-box
-refinement infrastructure incl.\ AMR; multigrid gravity on uniform, SMR-ring,
-boundary-annuli, and adaptive meshes, serial and MPI; $\sim$30 pages of validation documentation, a 44-cell reproducing
-notebook, and versioned test inputs for every configuration.
-\textbf{Next}: (i) the Gammie (2001) gravitoturbulence program ---
-$\beta$-cooling source term, $Q$ and $\alpha$ diagnostics --- using this stack
-as the production path; (ii) dust coupling (athenak-dust PM particles + IMEX
-drag) toward the SI+GI clumping science; (iii) deferred infrastructure:
-host-root shear fill, MHD face-centered remap with refinement, and (if deep
-zooms demand it) per-ring bookkeeping for patch refinement under FARGO.
+\textbf{Delivered}: FFT solver (validated, incl.\ open-$z$, and a full
+nonlinear cross-check twin); shearing-box refinement infrastructure incl.\
+AMR; multigrid gravity on uniform, SMR-ring, boundary-annuli, and adaptive
+meshes, serial and MPI, now with slab-open vertical boundaries for stratified
+disks; cooling; the SC14 configuration, analysis tooling, and cluster kit;
+$\sim$40 pages of validation documentation, the reproducing notebook, and
+versioned test inputs for every configuration.
+\textbf{Next}: (i) the full-size SC14 runs on NAS ($\beta$-scan, resolution
+doubling, and AMR zoom-in on gravito-turbulent clumps --- the configuration no
+FFT code can run); (ii) dust coupling (athenak-dust PM particles + IMEX drag)
+toward the SI+GI clumping science (Phases 4--5); (iii) deferred
+infrastructure: host-root shear fill, MHD face-centered remap with refinement,
+and (if deep zooms demand it) per-ring bookkeeping for patch refinement under
+FARGO.
 
 \end{document}

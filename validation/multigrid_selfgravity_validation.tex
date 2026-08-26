@@ -1899,18 +1899,64 @@ The \code{gravito\_turb} pgen integrates SC14's self-gravitating vertical
 hydrostatic balance; with their published constants ($c_s(0) = 2.12625$,
 $4\pi G = 4.25231$, $\gamma = 5/3$) the computed half-thickness
 $\int_0^{z_{\max}}\!\rho\,dz/\rho_0 = 1.0005$ --- an independent confirmation of
-their $Q_0 = 1$, $H = 1$ calibration. A half-width production run
-($[-16,16]^2\times[-6,6]H$ at their 4 cells/$H$, $\beta = 10$, 4 MPI ranks)
-reproduces the SC14 phenomenology: cooling contraction, violent collapse and
-vertical rebound with $\sim\!5\%$ mass loss, relaxation into sustained
-gravito-turbulence. Mid-run averages over $t = 80$--$116$ (their averaging window
-is $t = 200$--$300$, still accumulating): $\alpha = 0.065$ approaching their
-$0.058$, $\delta v/c_s = 0.77$ vs $0.82$, $Q = 1.16$ still climbing toward
-$1.33$ with the thermal energy not yet in balance. The stress composition is
-currently Reynolds-heavy relative to their 2:1 gravitational:Reynolds split ---
-the one number to re-examine in the final average and in the full-width
-($64H$) cluster run, since narrow gravito-turbulent boxes are known to overdrive
-coherent shear waves. Final numbers will be appended when the run completes.
+their $Q_0 = 1$, $H = 1$ calibration. The half-width production run
+($[-16,16]^2\times[-6,6]H$, $128\times128\times48$ at their 4 cells/$H$,
+$\beta = 10$, 4 MPI ranks, $6.8$\,h wall on a laptop) reproduces their Figure~2
+end to end (Fig.~\ref{fig:sc14_hist}): violent cooling collapse peaking at
+$t \approx 20$--$25$, vertical rebound with the mass loss they describe, then
+$250\,\Om^{-1}$ of self-regulated gravito-turbulence. Averages over their
+window ($t = 200$--$300$) against their tc=10 values:
+\begin{center}
+\small
+\begin{tabular}{@{}lccl@{}}
+\toprule
+ & half box ($32H$) & SC14 ($64H$) & \\
+\midrule
+$\langle c_s\rangle_\rho$ [$H\Om$] & $2.187$ & $2.18$ & exact \\
+rms $\delta v$ [$H\Om$] & $1.68$ & $1.79$ & $-6\%$ \\
+$M/M_0$ at $t{=}300$ & $0.92$ & $\sim0.9$ & matches \\
+$\alpha_{\rm grav}$ & $0.034\pm0.017$ & $0.039$ & $-12\%$ \\
+$\alpha_{\rm Reyn}$ & $0.034\pm0.123$ & $0.019$ & burst-dominated \\
+$\alpha$ (total, eq.~19) & $0.069$ & $0.058$ & \\
+$\alpha'$ (eq.~20) & $0.024\pm0.031$ & $0.042$ & low; bursty \\
+$Q$ & $1.11\pm0.08$ & $1.33$ & $-16\%$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The thermodynamics and mass budget land on the paper; the discrepancies share
+one signature: the half-width box supports a \emph{single} dominant box-scale
+swing mode that recharges quasi-periodically (period $\sim35$--$40\,\Om^{-1}$,
+visible in every panel of Fig.~\ref{fig:sc14_hist}), inflating the Reynolds
+channel in bursts (hence its enormous variance), depressing the mean $Q$
+between bursts, and breaking the strict heating--cooling balance behind their
+eq.~21. Notably $\alpha_{\rm grav}$ --- the channel the new gravity machinery
+computes --- is the \emph{steadiest} diagnostic and sits $12\%$ from the paper.
+SC14's own width test only ever \emph{doubled} the box (changes
+$\lesssim10\%$); halving it is evidently the harsher direction. The full-width
+$64H$ run, queued on NAS at the time of writing, is the definitive comparison.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{figures/sc14_half_hist.png}
+\caption{The half-box $\beta = 10$ run in SC14's Figure-2 form (thin: raw
+history; thick: $12\,\Om^{-1}$ boxcar as in the paper; dotted gray: their
+tc=10 values; dashed: the eq.-21 energy-balance line). Top: stresses
+(gravitational, Reynolds, total, $\alpha'$); middle: $\delta v/c_s$ and
+$M/M_0$; bottom: Toomre $Q$. The quasi-periodic box-scale bursts are the
+half-width signature discussed in the text.}
+\label{fig:sc14_hist}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{figures/sc14_half_vol_cut.png}
+\caption{Volume rendering of $\log_{10}\rho$ at $\Om t = 300$ (cutaway in the
+style of SC14's Fig.~2 right panel): the gravito-turbulent midplane with
+trailing wakes exposed at $z = 0$, under the $10^{-3}$--$10^{-4}$ halo whose
+striations are forced from below --- the paper's central phenomenon, gas at
+altitude driven by midplane self-gravity.}
+\label{fig:sc14_vol}
+\end{figure}
 
 \subsection{Summary}
 
@@ -1924,8 +1970,12 @@ coherent shear waves. Final numbers will be appended when the run completes.
       a constant, force-free $O(h^2)$ offset in enclosed refined regions.
 \item The stratified hydro side is complete (energy work term, cooling, diode
       boundaries) and the SC14 initial state holds hydrostatically.
-\item The SC14 $\beta = 10$ reproduction is running; transient phenomenology and
-      mid-run averages already track the paper.
+\item The SC14 $\beta = 10$ half-box reproduction is complete: thermodynamics,
+      velocity dispersion, and mass budget land on the paper
+      ($\langle c_s\rangle_\rho$ exact, $\delta v$ $-6\%$, $M/M_0$ matches);
+      $\alpha_{\rm grav}$ within $12\%$; the residual discrepancies carry a
+      coherent half-width-box signature (quasi-periodic box-scale bursts) that
+      the queued full-width NAS run will resolve.
 \end{itemize}
 
 \end{document}
