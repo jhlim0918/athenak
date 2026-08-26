@@ -37,5 +37,7 @@ validation/*.fls
 validation/*.fdb_latexmk
 validation/*.synctex.gz
 
-# per-run output directories (frozen input + provenance + data; not versioned)
+# per-run output directories (frozen input + provenance + data; not versioned).
+# The pattern is unanchored, so it covers validation/runs/ (local analysis mirrors)
+# and a top-level runs/ (the cluster scripts' layout) alike.
 runs/
