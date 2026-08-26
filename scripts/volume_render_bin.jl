@@ -8,7 +8,8 @@
 #   field defaults to "dens"; out.png defaults to <file>_<field>_vol.png.
 # Optional env: VMIN/VMAX override the log10 color range (defaults -4 .. max);
 #   CUTAWAY=1 removes the upper quadrant nearest the camera (x > 0, y < 0, z > 0),
-#   SC14 Fig.-2 style, exposing the midplane (adds a _cut suffix to the default name).
+#   SC14 Fig.-2 style, exposing the midplane (adds a _cut suffix to the default name);
+#   PX (default 2) is the px-per-unit supersampling for slide/print quality.
 
 using GLMakie
 include(joinpath(@__DIR__, "athenak_bin.jl"))
@@ -44,12 +45,14 @@ function main()
     tlabel = isnan(omega0) ? "t = $(round(fd.time, digits=1))" :
         "Ωt = $(round(omega0*fd.time, digits=1))"
 
+    px = parse(Float64, get(ENV, "PX", "2"))
     GLMakie.activate!()
-    fig = Figure(size=(1300, 950), backgroundcolor=:white)
+    fig = Figure(size=(1300, 950), backgroundcolor=:white, fontsize=22)
     ax = Axis3(fig[1, 1];
         aspect=(1.0, ly/lx, lz/lx),
         xlabel="x / H", ylabel="y / H", zlabel="z / H",
-        title="log₁₀ $(field),  $(tlabel)",
+        xlabelsize=26, ylabelsize=26, zlabelsize=26,
+        title=tlabel, titlesize=30,
         azimuth=1.2π, elevation=0.18π,
         protrusions=(60, 60, 30, 30))
     xs = range(fd.x1min, fd.x1max, length=fd.Nx1)
@@ -72,8 +75,9 @@ function main()
     else
         plt = subvol!(1:fd.Nx1, 1:fd.Nx2, 1:fd.Nx3)
     end
-    Colorbar(fig[1, 2], plt, label="log₁₀ $(field)", height=Relative(0.6))
-    save(out_path, fig)
+    Colorbar(fig[1, 2], plt, label="log₁₀ $(field)", height=Relative(0.6),
+             labelsize=26)
+    save(out_path, fig; px_per_unit=px)
     println("wrote $out_path")
 end
 
