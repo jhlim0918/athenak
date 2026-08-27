@@ -2,9 +2,15 @@
 # SC14 beta-scan "morphing" chain (their sec. 2.3): each constant-beta run is
 # initialized from the FINAL restart dump of an earlier run so the disk adjusts
 # from an already gravito-turbulent state instead of re-suffering the cold
-# collapse.  SC14 chain:  10 -> 20 -> 40 -> 80 -> 120,  and  10 -> {4, 5, 8}.
-# Durations follow their Table 1 (standard resolution): the averaging window is
-# the trailing 100-200/Omega of each run.
+# collapse.  SC14 chain:  10 -> 20 -> 40 -> 80 -> 120,  and  10 -> {3, 4, 5, 8}.
+# Durations follow their Table 1; the averaging window is the trailing
+# 100-200/Omega of each run.
+#
+# RESOLUTION: restarts cannot cross resolutions, so a hi-res chain needs its own
+# anchor.  Set HIRES=1 to work in the ".hi" family (512x512x96): runs are named
+# gt_sc14_b<beta>hi and every stage sources gt_sc14_b10hi, which you must first
+# run from scratch with inputs/shearing_box/gravito_turb_sc14_hi.athinput.
+# The low-beta stages are mutually INDEPENDENT -- submit 5, 4, 3 concurrently.
 #
 # Usage (repo root, after runs/gt_sc14_b10 has finished via gt_sc14_full.pbs):
 #   scripts/cluster/gt_sc14_beta_chain.sh print          # show the commands only
@@ -23,26 +29,32 @@ ATHENA=${ATHENA:-$REPO/build-cluster/src/athena}
 NRANKS=${NRANKS:-64}
 MPIEXEC=${MPIEXEC:-mpiexec -np $NRANKS}
 
-# default source of each stage (SC14 morphing order)
+HIRES=${HIRES:-0}
+sfx=""; [ "$HIRES" = "1" ] && sfx="hi"
+
+# default source of each stage (SC14 morphing order; in the hi-res family every
+# low-beta stage morphs directly from the 10.hi anchor)
 chain_source() {
+  if [ "$HIRES" = "1" ]; then echo "gt_sc14_b10hi"; return; fi
   case "$1" in
-    4|5|8|20) echo gt_sc14_b10 ;;
-    40)       echo gt_sc14_b20 ;;
-    80)       echo gt_sc14_b40 ;;
-    120)      echo gt_sc14_b80 ;;
-    *)        echo gt_sc14_b10 ;;
+    3|4|5|8|20) echo gt_sc14_b10 ;;
+    40)         echo gt_sc14_b20 ;;
+    80)         echo gt_sc14_b40 ;;
+    120)        echo gt_sc14_b80 ;;
+    *)          echo gt_sc14_b10 ;;
   esac
 }
 
-# SC14 Table 1 durations (standard resolution), Omega^-1
+# SC14 Table 1 durations, Omega^-1 (tc=3 fragments: short run, no steady state)
 chain_duration() {
   case "$1" in
-    4|5|8) echo 200 ;;
-    20)    echo 150 ;;
-    40)    echo 300 ;;
-    80)    echo 400 ;;
-    120)   echo 500 ;;
-    *)     echo 300 ;;
+    3)       echo 20 ;;
+    4|5|8)   echo 200 ;;
+    20)      echo 150 ;;
+    40)      echo 300 ;;
+    80)      echo 400 ;;
+    120)     echo 500 ;;
+    *)       echo 300 ;;
   esac
 }
 
@@ -69,7 +81,7 @@ stage() {  # stage <beta> <duration> [source_run]
   [ -n "$rst" ] || { echo "no rst found in runs/$src" >&2; exit 1; }
   t0=$(rst_time "$rst")
   tlim=$(python3 -c "print($t0 + $dur)")
-  run=$REPO/runs/gt_sc14_b$beta
+  run=$REPO/runs/gt_sc14_b${beta}${sfx}
   mkdir -p "$run"
   {
     echo "restarted from: $rst (t = $t0)"
@@ -83,8 +95,11 @@ stage() {  # stage <beta> <duration> [source_run]
 
 case "${1:-print}" in
   print)
-    echo "SC14 morphing chain (run each stage after its source finishes):"
-    for b in 20 40 80 120 4 5 8; do
+    echo "SC14 morphing chain (run each stage after its source finishes;"
+    echo "HIRES=$HIRES -> family suffix '${sfx:-<standard>}'):"
+    seq_list="20 40 80 120 3 4 5 8"
+    [ "$HIRES" = "1" ] && seq_list="3 4 5"
+    for b in $seq_list; do
       printf "  %s run %-3s %-3s   # from runs/%s\n" \
         "$0" "$b" "$(chain_duration $b)" "$(chain_source $b)"
     done
@@ -94,7 +109,7 @@ case "${1:-print}" in
     dur=${3:-$(chain_duration "$beta")}
     cmd=$(stage "$beta" "$dur" "${4:-}" | tail -1)
     echo "+ $cmd"
-    eval "$cmd" > "$REPO/runs/gt_sc14_b$beta/run.log" 2>&1
+    eval "$cmd" > "$REPO/runs/gt_sc14_b${beta}${sfx}/run.log" 2>&1
     ;;
   *)
     echo "usage: $0 print | run <beta> [duration] [source_run]" >&2
