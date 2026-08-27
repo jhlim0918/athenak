@@ -41,6 +41,18 @@ function main()
     isempty(hst_files) && error("no *.user.hst in $run_dir")
     d = readdlm(hst_files[1], comments=true, comment_char='#')
 
+    # restart seams rewind time and append; keep the LAST occurrence of every
+    # epoch (reverse scan keeping rows strictly older than everything kept so far)
+    keep = falses(size(d, 1))
+    tmin = Inf
+    for i in size(d, 1):-1:1
+        if d[i, 1] < tmin
+            keep[i] = true
+            tmin = d[i, 1]
+        end
+    end
+    d = d[keep, :]
+
     t       = d[:, 1]
     mass    = d[:, 3]
     rho_cs  = d[:, 4]
@@ -56,7 +68,7 @@ function main()
     a_grav = @. rho_wg/rho_prs
     a_rey  = @. rho_wr/rho_prs
     a_tot  = a_grav .+ a_rey
-    a_pr   = @. (2.0/(3.0*gamma_))*(wgrv + wrey)/rho_cs2
+    a_pr   = @. (2.0/3.0)*(wgrv + wrey)/rho_cs2   # rho_cs2 = gamma*int P
     dv_cs  = @. sqrt(rho_dv2/mass)/(rho_cs/mass)
     a21    = 4.0/(9.0*gamma_*(gamma_ - 1.0))/beta_
 

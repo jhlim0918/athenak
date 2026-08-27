@@ -21,7 +21,8 @@
 #   mass, rho_cs, rho_wgrv, rho_wrey, rho_prs, wgrv, wrey, rho_cs2, rho_dv2, eint
 #   Q      = (rho_cs/mass)*omega0/(pi*G*mass/(Lx*Ly))
 #   alpha  = (rho_wgrv + rho_wrey)/rho_prs          (SC14 eq. 19)
-#   alpha' = (2/(3*gamma))*(wgrv + wrey)/rho_cs2    (SC14 eq. 20)
+#   alpha' = (2/3)*(wgrv + wrey)/rho_cs2            (SC14 eq. 20;
+#            rho_cs2 = gamma*int P absorbs eq. 20's 1/gamma)
 #   rms dv = sqrt(rho_dv2/mass)
 
 <comment>

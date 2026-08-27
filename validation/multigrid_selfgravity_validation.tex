@@ -1893,69 +1893,106 @@ policy. One policy interaction is worth remembering: a box with only two $x_1$
 MeshBlock columns cannot refine \emph{anywhere} (both columns sit on the protected
 shear faces); the test provides four.
 
-\subsection{Toward SC14: calibration and the half-box run}
+\subsection{The SC14 reproduction: calibration, the full-width run, and the
+box-width lesson}
 
 The \code{gravito\_turb} pgen integrates SC14's self-gravitating vertical
 hydrostatic balance; with their published constants ($c_s(0) = 2.12625$,
 $4\pi G = 4.25231$, $\gamma = 5/3$) the computed half-thickness
 $\int_0^{z_{\max}}\!\rho\,dz/\rho_0 = 1.0005$ --- an independent confirmation of
-their $Q_0 = 1$, $H = 1$ calibration. The half-width production run
-($[-16,16]^2\times[-6,6]H$, $128\times128\times48$ at their 4 cells/$H$,
-$\beta = 10$, 4 MPI ranks, $6.8$\,h wall on a laptop) reproduces their Figure~2
-end to end (Fig.~\ref{fig:sc14_hist}): violent cooling collapse peaking at
-$t \approx 20$--$25$, vertical rebound with the mass loss they describe, then
-$250\,\Om^{-1}$ of self-regulated gravito-turbulence. Averages over their
-window ($t = 200$--$300$) against their tc=10 values:
+their $Q_0 = 1$, $H = 1$ calibration.
+
+Two production runs of the standard $\beta = 10$ configuration were carried to
+$t = 300\,\Om^{-1}$: the \textbf{full-width} SC14 box
+($[-32,32]^2\times[-6,6]H$, $256\times256\times48$, 64 ranks on NAS Athena,
+restart-continued across two jobs) and a \textbf{half-width} twin
+($[-16,16]^2$, $128^2\times48$, 4 laptop ranks, $6.8$\,h). Both reproduce
+SC14's Figure-2 phenomenology end to end (Fig.~\ref{fig:sc14_hist}): violent
+cooling collapse peaking at $t\approx20$--$25$, vertical rebound with mass
+loss, then $250\,\Om^{-1}$ of self-regulated gravito-turbulence. Averages over
+their window ($t = 200$--$300$):
 \begin{center}
 \small
-\begin{tabular}{@{}lccl@{}}
+\begin{tabular}{@{}lccc l@{}}
 \toprule
- & half box ($32H$) & SC14 ($64H$) & \\
+ & full box ($64H$) & half box ($32H$) & SC14 tc=10 & full vs SC14\\
 \midrule
-$\langle c_s\rangle_\rho$ [$H\Om$] & $2.187$ & $2.18$ & exact \\
-rms $\delta v$ [$H\Om$] & $1.68$ & $1.79$ & $-6\%$ \\
-$M/M_0$ at $t{=}300$ & $0.92$ & $\sim0.9$ & matches \\
-$\alpha_{\rm grav}$ & $0.034\pm0.017$ & $0.039$ & $-12\%$ \\
-$\alpha_{\rm Reyn}$ & $0.034\pm0.123$ & $0.019$ & burst-dominated \\
-$\alpha$ (total, eq.~19) & $0.069$ & $0.058$ & \\
-$\alpha'$ (eq.~20) & $0.024\pm0.031$ & $0.042$ & low; bursty \\
-$Q$ & $1.11\pm0.08$ & $1.33$ & $-16\%$ \\
+$Q$ & $1.29\pm0.06$ & $1.11\pm0.08$ & $1.33$ & $-3\%$ \\
+$\alpha_{\rm grav}$ & $0.0379\pm0.010$ & $0.034\pm0.017$ & $0.0387$
+  & $\mathbf{-2\%}$ \\
+$\alpha_{\rm Reyn}$ & $0.0139\pm0.043$ & $0.044\pm0.113$ & $0.0188$
+  & $-26\%$\footnotemark \\
+$\alpha$ (total, eq.~19) & $0.052\pm0.040$ & $0.080$ & $0.0576$ & $-10\%$ \\
+$\alpha'$ (eq.~20) & $0.0382\pm0.016$ & $0.040\pm0.052$ & $0.0424$
+  & $-10\%$; eq.~21 gives $0.0400$ \\
+rms $\delta v$ [$H\Om$] & $1.71\pm0.17$ & $1.68$ & $1.79$ & $-4\%$ \\
+$\langle c_s\rangle_\rho$ [$H\Om$] & $2.31\pm0.11$ & $2.19$ & $2.18$ & $+6\%$ \\
+$M/M_0$ at $t{=}300$ & $0.83$ & $0.92$ & $0.8$--$0.9$ & consistent \\
 \bottomrule
 \end{tabular}
 \end{center}
-The thermodynamics and mass budget land on the paper; the discrepancies share
-one signature: the half-width box supports a \emph{single} dominant box-scale
-swing mode that recharges quasi-periodically (period $\sim35$--$40\,\Om^{-1}$,
-visible in every panel of Fig.~\ref{fig:sc14_hist}), inflating the Reynolds
-channel in bursts (hence its enormous variance), depressing the mean $Q$
-between bursts, and breaking the strict heating--cooling balance behind their
-eq.~21. Notably $\alpha_{\rm grav}$ --- the channel the new gravity machinery
-computes --- is the \emph{steadiest} diagnostic and sits $12\%$ from the paper.
-SC14's own width test only ever \emph{doubled} the box (changes
-$\lesssim10\%$); halving it is evidently the harsher direction. The full-width
-$64H$ run, queued on NAS at the time of writing, is the definitive comparison.
+\footnotetext{The most fluctuation- and resolution-sensitive channel: SC14's
+own resolution doubling moves it $0.0188\to0.0170$, and its instantaneous
+value alternates in sign.}
+
+\noindent The full-width box lands on the paper across the board, with
+$\alpha_{\rm grav}$ --- the channel the new gravity machinery computes --- the
+most accurate and steadiest number, and $\alpha'$ within $5\%$ of the eq.-21
+energy-balance prediction (a nontrivial audit: it requires the imposed cooling
+to be balanced by stress heating with the correct normalization). One
+post-processing trap is worth recording: eq.~20's prefactor is
+$|d\ln\Om/d\ln R|^{-1} = 2/3$ against $\int\rho c_s^2$; carrying the paper's
+equivalent $2/(3\gamma)$-against-$\int P$ form while dividing by
+$\int\rho c_s^2$ double-counts $\gamma$ and produced a phantom factor-$1.67$
+``discrepancy'' in $\alpha'$ until caught.
+
+The half-box column is the box-width lesson: a $32H$ box supports a
+\emph{single} dominant box-scale swing mode that recharges quasi-periodically
+(period $\sim35$--$40\,\Om^{-1}$), inflating the Reynolds channel in bursts
+(variance $\times2.6$ the full box's), depressing the mean $Q$, and blurring
+the heating--cooling balance. SC14's own width test only ever \emph{doubled}
+the box (changes $\lesssim10\%$); halving it is evidently the harsher
+direction --- worth knowing before shrinking boxes to save cycles in the
+Phase-4/5 science runs.
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.95\textwidth]{figures/sc14_half_hist.png}
-\caption{The half-box $\beta = 10$ run in SC14's Figure-2 form (thin: raw
-history; thick: $12\,\Om^{-1}$ boxcar as in the paper; dotted gray: their
-tc=10 values; dashed: the eq.-21 energy-balance line). Top: stresses
+\includegraphics[width=0.95\textwidth]{figures/sc14_b10_hist.png}
+\caption{The full-width ($64H$) $\beta = 10$ run in SC14's Figure-2 form
+(thin: raw history; thick: $12\,\Om^{-1}$ boxcar as in the paper; dotted gray:
+their tc=10 values; dashed: the eq.-21 energy-balance line). Top: stresses
 (gravitational, Reynolds, total, $\alpha'$); middle: $\delta v/c_s$ and
-$M/M_0$; bottom: Toomre $Q$. The quasi-periodic box-scale bursts are the
-half-width signature discussed in the text.}
+$M/M_0$; bottom: Toomre $Q$.}
 \label{fig:sc14_hist}
 \end{figure}
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.9\textwidth]{figures/sc14_half_vol_cut.png}
-\caption{Volume rendering of $\log_{10}\rho$ at $\Om t = 300$ (cutaway in the
-style of SC14's Fig.~2 right panel): the gravito-turbulent midplane with
-trailing wakes exposed at $z = 0$, under the $10^{-3}$--$10^{-4}$ halo whose
-striations are forced from below --- the paper's central phenomenon, gas at
-altitude driven by midplane self-gravity.}
+\includegraphics[width=0.95\textwidth]{figures/sc14_half_hist.png}
+\caption{The half-width ($32H$) twin: same diagnostics. The quasi-periodic
+box-scale bursts --- absent at $64H$ --- are the half-width signature
+discussed in the text.}
+\label{fig:sc14_hist_half}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.9\textwidth]{figures/sc14_b10_vol_cut_t300.png}
+\caption{Volume rendering of $\log_{10}\rho$ in the full-width box at
+$\Om t = 300$ (cutaway in the style of SC14's Fig.~2 right panel): the
+gravito-turbulent midplane with trailing wakes exposed at $z = 0$, under the
+$10^{-3}$--$10^{-4}$ halo whose striations are forced from below --- the
+paper's central phenomenon, gas at altitude driven by midplane self-gravity.}
 \label{fig:sc14_vol}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/sc14_b10_colden_t300.png}
+\caption{Vertically integrated surface density $\log_{10}\Sigma/\Sigma_0$ of
+the full-width box at $\Om t = 300$: the trailing gravito-turbulent wake
+field, with $\Sigma$ contrasts of $\sim\times5$.}
+\label{fig:sc14_colden}
 \end{figure}
 
 \subsection{Summary}
@@ -1970,12 +2007,12 @@ altitude driven by midplane self-gravity.}
       a constant, force-free $O(h^2)$ offset in enclosed refined regions.
 \item The stratified hydro side is complete (energy work term, cooling, diode
       boundaries) and the SC14 initial state holds hydrostatically.
-\item The SC14 $\beta = 10$ half-box reproduction is complete: thermodynamics,
-      velocity dispersion, and mass budget land on the paper
-      ($\langle c_s\rangle_\rho$ exact, $\delta v$ $-6\%$, $M/M_0$ matches);
-      $\alpha_{\rm grav}$ within $12\%$; the residual discrepancies carry a
-      coherent half-width-box signature (quasi-periodic box-scale bursts) that
-      the queued full-width NAS run will resolve.
+\item The SC14 $\beta = 10$ reproduction is complete at full size
+      ($256\times256\times48$ on 64 NAS ranks): over their averaging window,
+      $\alpha_{\rm grav}$ within $2\%$, $Q$ within $3\%$, $\delta v$ within
+      $4\%$, $\alpha'$ within $5\%$ of the eq.-21 energy balance --- and the
+      half-width twin isolates a clean box-width lesson (quasi-periodic
+      box-scale bursts) for future economy runs.
 \end{itemize}
 
 \end{document}

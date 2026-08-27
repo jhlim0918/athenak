@@ -32,7 +32,8 @@
 //!   3: rho_wrey   int rho*(rho*vx*dvy) dV   /  alpha = (h2+h3)/h4  (SC14 eq. 19)
 //!   4: rho_prs    int rho*P dV
 //!   5: wgrv       int gx*gy/4piG dV         \  volume-weighted stresses:
-//!   6: wrey       int rho*vx*dvy dV         /  alpha' = (2/3gamma)(h5+h6)/h7 (eq. 20)
+//!   6: wrey       int rho*vx*dvy dV         /  alpha' = (2/3)(h5+h6)/h7 (eq. 20;
+//!                                              h7 = gamma*int P absorbs the 1/gamma)
 //!   7: rho_cs2    int rho*cs^2 dV
 //!   8: rho_dv2    int rho*dv^2 dV           (-> rms dv = sqrt(h8/h0), dv includes
 //!                                              vx, dvy, vz;  SC14 eq. 18)

@@ -202,24 +202,25 @@ cycles with the slab planes rebuilt at every remesh.
 pgen integrating their self-gravitating vertical equilibrium (their published
 constants reproduce the $Q_0{=}1$, $H{=}1$ calibration to $5\times10^{-4}$ ---
 an independent audit of the paper), with their $Q$, $\alpha$ (eq.~19),
-$\alpha'$ (eq.~20) diagnostics as history outputs. The half-width production
-run ($[-16,16]^2{\times}[-6,6]H$ at their resolution, $\beta = 10$, 4 MPI
-ranks, $6.8$\,h on a laptop) reproduces their Figure~2 end to end
-(Fig.~\ref{fig:sc14}): cooling collapse, vertical rebound, then
-$250\,\Omega^{-1}$ of self-regulated gravito-turbulence with, over their
-averaging window, $\langle c_s\rangle_\rho = 2.187$ (theirs: $2.18$), rms
-$\delta v = 1.68\,H\Omega$ ($1.79$), $M/M_0 = 0.92$ ($\sim0.9$), and
-$\alpha_{\rm grav} = 0.034$ ($0.039$). The residual gaps ($Q = 1.11$ vs
-$1.33$; a burst-inflated Reynolds channel) all carry the signature of a single
-box-scale swing mode recharging quasi-periodically --- the half-width-box
-effect --- which the \textbf{full-width $64H$ run now queued on NAS} will
-resolve; the $\beta$-scan (their Table 1, via their ``morphing'' restart
-chain) is packaged alongside it (\code{scripts/cluster/}).
+$\alpha'$ (eq.~20) diagnostics as history outputs. The standard $\beta = 10$
+run \textbf{at their full size and resolution} ($256\times256\times48$, 64
+ranks on NAS Athena) reproduces their Figure~2 end to end
+(Fig.~\ref{fig:sc14}); over their averaging window ($t = 200$--$300$):
+$\alpha_{\rm grav} = 0.0379$ vs.\ their $0.0387$ (\textbf{2\%}), $Q = 1.29$
+vs.\ $1.33$, rms $\delta v = 1.71$ vs.\ $1.79\,H\Omega$, $M/M_0 = 0.83$
+(consistent), and $\alpha' = 0.038$ within $5\%$ of their eq.-21
+energy-balance prediction --- an end-to-end audit of the cooling--heating
+budget through the new gravity machinery. A half-width laptop twin isolates a
+clean box-width lesson: $32H$ boxes host a single quasi-periodic box-scale
+swing mode that inflates the Reynolds channel in bursts and depresses $Q$ ---
+worth knowing before shrinking boxes for economy. The $\beta$-scan (their
+Table 1, via their ``morphing'' restart chain) is packaged and ready
+(\code{scripts/cluster/}).
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.9\textwidth]{figures/sc14_half_hist.png}
-\caption{The SC14 $\beta = 10$ half-box run in their Figure-2 form (thick:
+\includegraphics[width=0.9\textwidth]{figures/sc14_b10_hist.png}
+\caption{The full-size SC14 $\beta = 10$ run in their Figure-2 form (thick:
 $12\,\Omega^{-1}$ boxcar; dotted: SC14's tc=10 values; dashed: their eq.-21
 energy-balance line): stresses, $\delta v/c_s$ and mass, Toomre $Q$.}
 \label{fig:sc14}
@@ -227,11 +228,11 @@ energy-balance line): stresses, $\delta v/c_s$ and mass, Toomre $Q$.}
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.85\textwidth]{figures/sc14_half_vol_cut.png}
-\caption{$\log_{10}\rho$ at $\Omega t = 300$, cutaway volume rendering in the
-style of SC14's Fig.~2: gravito-turbulent midplane wakes under the halo they
-force --- the configuration (stratified, open-$z$, refinable) that no FFT
-solver can host.}
+\includegraphics[width=0.85\textwidth]{figures/sc14_b10_vol_cut_t300.png}
+\caption{$\log_{10}\rho$ at $\Omega t = 300$ in the full-size box, cutaway
+volume rendering in the style of SC14's Fig.~2: gravito-turbulent midplane
+wakes under the halo they force --- the configuration (stratified, open-$z$,
+refinable) that no FFT solver can host.}
 \end{figure}
 
 \section*{Status and next steps}
