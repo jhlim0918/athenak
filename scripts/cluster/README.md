@@ -16,11 +16,31 @@ node with network access (or pre-clone `github.com/kokkos/kokkos-fft` and point
 
 ## 1. The standard beta = 10 run
 
-`gt_sc14_full.pbs` — PBS template for the full-size box (256 x 256 x 48, 768
-MeshBlocks of 16^3, 64 ranks; edit queue/model/module lines).  It freezes the
-input and provenance into `runs/gt_sc14_b10/` and uses `-t` to guarantee a final
-restart dump inside the walltime.  Expected duration at 64 ranks: a few hours to
-t = 300 (the transient phase t ~ 10-25 has the smallest timesteps).
+`gt_sc14_full.pbs` — PBS template (bash; Cray PE + cray-pals + cray-fftw
+modules).  Submit it **from the run directory**: `cd <rundir> && qsub
+<repo>/scripts/cluster/gt_sc14_full.pbs`.  Three conveniences worth knowing:
+
+- **Nothing below the `#PBS` block needs editing when you change the size.**
+  Ranks, nodes and ranks-per-node are derived from `$PBS_NODEFILE`
+  (`NRANKS=$(wc -l < $PBS_NODEFILE)`, `NNODES=$(sort -u $PBS_NODEFILE | wc -l)`),
+  so changing only the `select=` line changes the launch.  This also prevents
+  the classic waste of allocating `mpiprocs=256` and then launching `-ppn 32`:
+  NAS charges whole nodes, so unused cores are billed anyway.
+- **It is idempotent.**  If `<rundir>/rst` already holds dumps it continues from
+  the newest one; otherwise it starts fresh from `$INPUT` and freezes a copy.
+  A job cut off by the walltime is resumed by resubmitting the same script.
+- **It reserves time for the final restart dump** by reading the job's own
+  walltime from `qstat` and passing `walltime - GUARD_MIN` to athena's `-t`.
+
+Paths are variables at the top (`ATHENAK`, `INPUT`, `RUNDIR`, `OVERRIDES`), and
+per-run parameters are best passed as `OVERRIDES` rather than by editing the
+tracked input file (which causes `git pull` conflicts on the cluster):
+
+```bash
+cd $RUNS/gt_sc14_b5hi
+OVERRIDES="hydro_srcterms/bcool_beta=5 time/tlim=400" qsub -v OVERRIDES \
+  $ATHENAK/scripts/cluster/gt_sc14_full.pbs
+```
 
 Sanity marks while it runs (from `GravitoTurb.user.hst`, via
 `julia scripts/plot_gravito_turb_hist.jl runs/gt_sc14_b10 64 64` — pass the true
