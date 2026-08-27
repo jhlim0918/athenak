@@ -1,8 +1,5 @@
-#!/bin/bash
 #PBS -S /bin/bash
 #PBS -N gt_sc14_b10hi
-# Resources: N nodes, ALL 256 cores each (NAS charges whole nodes -- a partially
-# filled node wastes allocation in proportion).  Athena Turin = tur_ath.
 #PBS -l select=8:ncpus=256:mpiprocs=256:model=tur_ath
 #PBS -l walltime=48:00:00
 #PBS -q long
@@ -10,80 +7,23 @@
 #PBS -W group_list=s3183
 #PBS -m be
 #PBS -M jay.lim1@unlv.edu
-#
-# Submit FROM the run directory:  cd <rundir> && qsub <path>/gt_sc14_full.pbs
-#
-# The script is idempotent: if <rundir>/rst holds restart dumps it continues from
-# the newest one, otherwise it starts fresh from $INPUT.  So a job killed by the
-# walltime is resumed by simply resubmitting the same script -- no edits.
-#
-# Ranks and nodes are derived from $PBS_NODEFILE, so changing only the "select="
-# line above changes the launch; nothing below needs editing.
 
-set -eu
+# Submit from the run directory:   cd <rundir> && qsub <repo>/scripts/cluster/gt_sc14_full.pbs
+# To continue a run, replace the -i line with:  -r $(ls rst/*.rst | tail -1) \
+# Per-run parameters go on the mpiexec line, e.g.  hydro_srcterms/bcool_beta=5
 
-#---- user settings ---------------------------------------------------------
-ATHENAK=${ATHENAK:-$HOME/athenak}                 # repo root on the cluster
-ATHENA=$ATHENAK/build-cluster/src/athena          # binary (FFT-enabled build)
+ATHENAK=$HOME/athenak
 INPUT=$ATHENAK/inputs/shearing_box/gravito_turb_sc14_hi.athinput
-RUNDIR=${PBS_O_WORKDIR:-$PWD}                     # where outputs land
-OVERRIDES=${OVERRIDES:-}                          # e.g. "hydro_srcterms/bcool_beta=5"
-GUARD_MIN=${GUARD_MIN:-15}                        # minutes reserved for the final dump
 
-#---- environment -----------------------------------------------------------
 source /opt/cray/pe/modules/3.2.11.7/init/bash
-module load PrgEnv-intel          # (module swap PrgEnv-cray PrgEnv-intel also works)
+module load PrgEnv-intel
 module use /opt/cray/pals/modulefiles
-module load cray-pals
-module load cray-fftw             # the slab-gravity build links FFTW at runtime too
+module load cray-pals cray-fftw
 
-#---- derive the launch geometry from the allocation ------------------------
-# $PBS_NODEFILE has one line per MPI process; unique lines are the nodes.
-NRANKS=$(wc -l < "$PBS_NODEFILE")
-NNODES=$(sort -u "$PBS_NODEFILE" | wc -l)
-PPN=$(( NRANKS / NNODES ))
+# ranks and ranks-per-node straight from the allocation (fills every node)
+NRANKS=$(wc -l < $PBS_NODEFILE)
+PPN=$(( NRANKS / $(sort -u $PBS_NODEFILE | wc -l) ))
 
-#---- leave walltime for athena's own final restart dump (-t) ---------------
-WALL=$(qstat -f "$PBS_JOBID" 2>/dev/null | awk -F= '/Resource_List.walltime/{gsub(/ /,"",$2); print $2}')
-GUARD=$(python3 - "$WALL" "$GUARD_MIN" <<'PY'
-import sys
-w, g = sys.argv[1], int(sys.argv[2])
-try:
-    h, m, s = (int(x) for x in w.split(":"))
-except Exception:
-    h, m, s = 24, 0, 0            # fallback if qstat was unavailable
-t = max(h*3600 + m*60 + s - g*60, 600)
-print(f"{t//3600:02d}:{(t%3600)//60:02d}:{t%60:02d}")
-PY
-)
-
-#---- fresh start or continuation? ------------------------------------------
-cd "$RUNDIR"
-mkdir -p rst
-LAST_RST=$(ls -1 rst/*.rst 2>/dev/null | sort | tail -1 || true)
-if [ -n "$LAST_RST" ]; then
-  START=(-r "$LAST_RST")
-  MODE="restart from $LAST_RST"
-else
-  START=(-i "$INPUT")
-  MODE="fresh start from $INPUT"
-  cp "$INPUT" "$RUNDIR/input_frozen.athinput"
-fi
-
-#---- provenance ------------------------------------------------------------
-{
-  echo "date:     $(date)"
-  echo "job:      ${PBS_JOBID:-interactive}  ($NNODES nodes x $PPN = $NRANKS ranks)"
-  echo "mode:     $MODE"
-  echo "walltime: $WALL  (athena -t $GUARD)"
-  echo "overrides: ${OVERRIDES:-none}"
-  echo "commit:   $(git -C "$ATHENAK" rev-parse HEAD 2>/dev/null || echo n/a)"
-  git -C "$ATHENAK" diff --stat 2>/dev/null | tail -1 | sed 's/^/uncommitted: /'
-} >> "$RUNDIR/provenance.txt"
-
-echo "launching: $NNODES nodes, $PPN ranks/node, $NRANKS total; $MODE"
-mpiexec -np "$NRANKS" -ppn "$PPN" "$ATHENA" \
-        "${START[@]}" -d "$RUNDIR" -t "$GUARD" $OVERRIDES \
-        >> "$RUNDIR/run.log" 2>&1
-
-# -end of script-
+cd $PBS_O_WORKDIR
+mpiexec -np $NRANKS -ppn $PPN $ATHENAK/build-cluster/src/athena \
+        -i $INPUT -d ./ -t 47:45:00 >> run.log 2>&1
