@@ -100,7 +100,6 @@ orbital_advection = true
 solver    = multigrid # fft | multigrid
 four_pi_G = 4.25231   # = 4*pi*0.3384 (SC14 fiducial G)
 mg_bc     = slab      # slab-open (vacuum) x3 boundaries
-vert_bc   = open      # FFT solver only (solver=fft cross-checks; ignored by MG)
 mg_remap  = ppmx      # shear ghost + slab plane remap order
 threshold = 0.0       # automatic convergence control
 niteration = 20

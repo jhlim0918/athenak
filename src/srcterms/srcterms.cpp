@@ -81,12 +81,16 @@ SourceTerms::SourceTerms(std::string block, MeshBlockPack *pp, ParameterInput *p
 
   // (3c) optically thin thermal cooling: rho*L = U/t_cool, t_cool = b*(rho/P)^3
   // (SC14 eq. 8, constant kappa)
-  if (thermal_cooling) {
-    tcool_b = pin->GetReal(block, "tcool_b");
+  // read unconditionally so an input file that carries the knob for a variant run
+  // does not draw an "unused parameter" warning when that variant is switched off
+  tcool_b = pin->GetOrAddReal(block, "tcool_b", 1.0);
+  if (thermal_cooling && !pin->DoesParameterExist(block, "tcool_b")) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+              << std::endl << "thermal_cooling requires <" << block
+              << "> tcool_b" << std::endl;
+    std::exit(EXIT_FAILURE);
   }
-  if (beta_cooling || thermal_cooling) {
-    cool_eps = pin->GetOrAddReal(block, "cool_eps", 0.02);
-  }
+  cool_eps = pin->GetOrAddReal(block, "cool_eps", 0.02);
 
   // (4) radiation beam source (radiation)
   if (rad_beam) {
