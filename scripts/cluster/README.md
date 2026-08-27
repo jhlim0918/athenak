@@ -38,18 +38,24 @@ SC14's ".hi" resolution is 512 x 512 x 96 (8 cells/H) --- their tc = 3/4/5 rows
 exist ONLY at this resolution, so the fragmentation-boundary test needs it.
 Restarts cannot cross resolutions, so this family has its own anchor:
 
+Use **32^3 MeshBlocks** (already set in the input): the multigrid root grid has
+one cell per block and is solved replicated on every rank, so block count is a
+*serial* cost.  Measured at fixed mesh and rank count, 16^3 blocks make the
+gravity solve 1.45x slower, and the gap grows with rank count.  With 768 blocks
+the sweet spot is one filled node (256 ranks, 3 blocks/rank).
+
 ```bash
 # 1. anchor: beta = 10 at hi-res, from scratch (300/Omega)
-#    8-12 FILLED nodes: select=8:ncpus=256:mpiprocs=256:model=tur_ath
-mpiexec -np 2048 build-cluster/src/athena \
+#    ONE filled node: select=1:ncpus=256:mpiprocs=256:model=tur_ath
+mpiexec -np 256 build-cluster/src/athena \
   -i inputs/shearing_box/gravito_turb_sc14_hi.athinput \
   -d runs/gt_sc14_b10hi -t <walltime-10min>
 
 # 2. the three low-beta stages morph from it and are INDEPENDENT --
 #    submit them concurrently (each in its own PBS job)
-HIRES=1 NRANKS=2048 scripts/cluster/gt_sc14_beta_chain.sh run 5    # 200/Omega
-HIRES=1 NRANKS=2048 scripts/cluster/gt_sc14_beta_chain.sh run 4    # 200/Omega
-HIRES=1 NRANKS=2048 scripts/cluster/gt_sc14_beta_chain.sh run 3    #  20/Omega
+HIRES=1 NRANKS=256 scripts/cluster/gt_sc14_beta_chain.sh run 5    # 200/Omega
+HIRES=1 NRANKS=256 scripts/cluster/gt_sc14_beta_chain.sh run 4    # 200/Omega
+HIRES=1 NRANKS=256 scripts/cluster/gt_sc14_beta_chain.sh run 3    #  20/Omega
 ```
 
 Work and cost (Athena Turin, SBU = wall-hours x nodes x 12, MAU = one 256-core
@@ -62,18 +68,23 @@ node -- always fill the nodes, partial nodes waste allocation proportionally):
 | 3.hi | 20/Om | 1.1x | fragments |
 | total | 720/Om | 39.4x | ~230-760 SBU |
 
-Wall time on 8 filled nodes: anchor ~1-3 h, then ~1-2 h for the concurrent
-branches (throughput-dependent; calibrate first, below).
+Wall time is throughput-dependent -- calibrate first (below).  Note the SBU cost
+is set by node-hours, and the replicated root-grid solve does not accelerate with
+extra nodes, so more nodes can cost more without finishing sooner: prefer one
+filled node per run and let the three low-beta branches run concurrently.
 
 **Calibrate before committing.** One short job pins the throughput to ~10% and
 checks that 6144 blocks decompose and the slab solver scales at 2048 ranks:
 
 ```bash
-mpiexec -np 2048 build-cluster/src/athena \
+mpiexec -np 256 build-cluster/src/athena \
   -i inputs/shearing_box/gravito_turb_sc14_hi.athinput \
-  -d runs/gt_cal time/tlim=2.0 output2/dt=100 output3/dt=100 output4/dt=100
+  -d runs/gt_cal time/tlim=2.0 gravity/show_defect=1 output2/dt=100 output3/dt=100 output4/dt=100
 ```
-Cycles/wall-second from its log x 145,000 cycles gives the anchor's wall time.
+Cycles/wall-second from its log x 145,000 cycles gives the anchor's wall time;
+`show_defect=1` additionally prints `mg_solve_time` per solve, so you can see
+directly what fraction of the step the gravity solve costs (two solves per
+cycle: it is called once per RK stage).
 
 Expected results (SC14 Table 1, ".hi" rows; time-average the trailing
 100/Omega):

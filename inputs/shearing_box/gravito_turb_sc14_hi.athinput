@@ -8,10 +8,18 @@
 # cs(0) = 2.12625, G = 0.3384 (four_pi_G = 4.25231).
 #
 # Box [-32H,32H]^2 x [-6H,6H] at 512 x 512 x 96 -- SC14's ".hi" resolution
-# (8 cells/H), 16^3 cubic MeshBlocks = 6144 blocks (multigrid requirement).
-# Recommended launch: 8-12 FILLED Athena Turin nodes (256 ranks/node -> 2048-3072
-# ranks, 2-3 blocks/rank).  NAS charges whole nodes, so partially filled nodes
-# waste allocation proportionally.
+# (8 cells/H), 32^3 cubic MeshBlocks = 16 x 16 x 3 = 768 blocks.
+#
+# WHY 32^3 AND NOT 16^3: the multigrid root grid is one cell per MeshBlock and is
+# solved REPLICATED on every rank, so its cost is serial -- it does not fall with
+# added nodes.  16^3 blocks here would give a 32x32x6 = 6144-cell root grid (8x
+# this one) and, measured at fixed mesh and rank count, a 1.45x slower gravity
+# solve; the gap widens with rank count.  32^3 also halves the ghost-cell
+# overhead (1.67x vs 2.6x of the active volume at nghost=3).
+#
+# Recommended launch: 256 ranks = ONE filled Athena Turin node (3 blocks/rank),
+# or 384 ranks (2 blocks/rank).  Do NOT go past ~768 ranks: there are only 768
+# blocks, and NAS charges whole nodes whether or not their cores are working.
 #
 # This file is the beta = 10 ANCHOR of the hi-res chain: restarts cannot cross
 # resolutions, so tc = 5/4/3 morph from THIS run's final restart (they are
@@ -62,9 +70,9 @@ ix3_bc    = diode     # no-inflow outflow (plain outflow feeds a gravity-driven
 ox3_bc    = diode     # inflow runaway through the z faces; SC14's "outflow" intent)
 
 <meshblock>
-nx1       = 16        # cubic MeshBlocks (multigrid requirement)
-nx2       = 16
-nx3       = 16
+nx1       = 32        # cubic MeshBlocks (multigrid requirement); see header
+nx2       = 32
+nx3       = 32
 
 <time>
 evolution  = dynamic  # dynamic/kinematic/static

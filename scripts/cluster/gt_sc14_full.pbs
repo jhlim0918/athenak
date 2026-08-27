@@ -1,6 +1,6 @@
 #PBS -S /bin/bash
 #PBS -N gt_sc14_b10hi
-#PBS -l select=8:ncpus=256:mpiprocs=256:model=tur_ath
+#PBS -l select=1:ncpus=256:mpiprocs=256:model=tur_ath
 #PBS -l walltime=48:00:00
 #PBS -q long
 #PBS -j oe
