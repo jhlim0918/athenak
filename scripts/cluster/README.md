@@ -80,6 +80,39 @@ unchanged; SC14 Table-1 ".hi" targets:
 | tc= 4.hi | 0.0569 | 0.0650 | 0.122 | 0.100 | 2.31 | 1.96 |
 | tc= 3.hi | fragments -- no steady state (criterion: t_cool <~ 3/Omega) |
 
+### The beta=3 fragmentation continuation (with AMR)
+
+The campaign plan: run the hi-res beta=10 anchor to saturation, then morph to
+beta=3 -- fragmentation out of ESTABLISHED gravito-turbulence (the SC14
+protocol; a from-scratch beta=3 run fragments during the initial cooling
+collapse instead, which is a weaker statement) -- with adaptive refinement
+following the fragments.  This is the configuration no FFT-based code can run.
+
+Requirements already baked into the anchor input (do not undo):
+- `nghost = 4` (AMR needs even; restart files store ghosts, so it cannot be
+  changed at restart);
+- dormant `<mesh_refinement>` / `<amr_criterion0>` blocks (refinement=none,
+  rho > 10 criterion, 3 levels) -- present so the restart can enable them.
+
+The continuation itself:
+
+```bash
+mpiexec -np $NRANKS -ppn $PPN $ATHENAK/build-cluster/src/athena \
+  -r <anchor>/rst/<last>.rst -d ./ -t <guard> \
+  hydro_srcterms/bcool_beta=3 time/tlim=<t_anchor_end + 20> \
+  mesh_refinement/refinement=adaptive \
+  gravity/threshold=-1.0 gravity/niteration=6 >> run.log 2>&1
+```
+
+Verified end to end at small scale (uniform nghost=4 run -> restart with
+refinement=adaptive + beta flip): the tree rebuilds at root level and the
+criterion starts refining as clumps form.  Notes: fragments drifting into the
+two x1 boundary block-columns (|x| > 28H) will not refine (shear-face policy);
+expect the timestep to collapse with the fragments -- the run is over, physics-
+wise, once fragments pass the resolved ceiling even at 32 cells/H, so 20/Omega
+of tlim is ample.  Load balancing under AMR is dynamic; keep max_nmb_per_rank
+headroom (64 set) and expect the block count to grow by a few hundred.
+
 ## 3. The standard-resolution beta scan (the current campaign)
 
 The chosen set is tc = {3, 4, 5, 40, 80} at 256 x 256 x 48, all morphed from

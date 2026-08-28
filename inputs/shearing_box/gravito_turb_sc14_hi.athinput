@@ -50,7 +50,10 @@ problem   = SC14 gravito-turbulence (beta = 10)
 basename  = GravitoTurbHi
 
 <mesh>
-nghost    = 3         # Number of ghost cells
+nghost    = 4         # EVEN: the planned beta=3 AMR restart requires it, and
+                      # restart files store ghost zones, so nghost cannot change
+                      # at restart -- the anchor must pay the ~15% ghost overhead
+                      # up front to keep the AMR continuation possible
 nx1       = 512       # Number of cells in X1-direction (SC14 ".hi": 8 cells/H)
 x1min     = -32.0     # minimum value of X1
 x1max     = 32.0      # maximum value of X1
@@ -73,6 +76,24 @@ ox3_bc    = diode     # inflow runaway through the z faces; SC14's "outflow" int
 nx1       = 32        # cubic MeshBlocks (multigrid requirement); see header
 nx2       = 32
 nx3       = 32
+
+# Dormant AMR configuration: refinement=none for the anchor, but the blocks must
+# EXIST here so the beta=3 fragmentation restart can switch them on -- command
+# lines can only override parameters already present.  Planned continuation:
+#   athena -r <anchor rst> -d <newdir> hydro_srcterms/bcool_beta=3 \
+#     time/tlim=<t0+20> mesh_refinement/refinement=adaptive
+# Fragments that drift into the two x1 boundary block-columns (|x| > 28H) will
+# not refine (shear-face policy); the x3-face rows never refine (slab policy).
+<mesh_refinement>
+refinement = none     # anchor: uniform; beta=3 restart: adaptive (via CLI)
+max_nmb_per_rank = 64
+num_levels = 3        # up to 32 cells/H on the fragments
+refinement_interval = 5
+
+<amr_criterion0>
+method    = min_max
+variable  = hydro_w_d
+value_max = 10.0      # refine blocks containing rho > 10 rho0 (nonlinear clumps)
 
 <time>
 evolution  = dynamic  # dynamic/kinematic/static
