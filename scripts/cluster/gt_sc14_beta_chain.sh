@@ -37,11 +37,10 @@ sfx=""; [ "$HIRES" = "1" ] && sfx="hi"
 chain_source() {
   if [ "$HIRES" = "1" ]; then echo "gt_sc14_b10hi"; return; fi
   case "$1" in
-    3|4|5|8|20) echo gt_sc14_b10 ;;
-    40)         echo gt_sc14_b20 ;;
-    80)         echo gt_sc14_b40 ;;
-    120)        echo gt_sc14_b80 ;;
-    *)          echo gt_sc14_b10 ;;
+    3|4|5|8|20|40) echo gt_sc14_b10 ;;   # current campaign: everything except 80
+    80)            echo gt_sc14_b40 ;;   # morphs straight from the finished b10
+    120)           echo gt_sc14_b80 ;;
+    *)             echo gt_sc14_b10 ;;
   esac
 }
 
@@ -90,14 +89,15 @@ stage() {  # stage <beta> <duration> [source_run]
   } > "$run/provenance.txt"
   echo "# beta=$beta: restart $rst (t=$t0) -> tlim=$tlim"
   echo $MPIEXEC "$ATHENA" -r "$rst" -d "$run" \
-    hydro_srcterms/bcool_beta=$beta time/tlim=$tlim
+    hydro_srcterms/bcool_beta=$beta time/tlim=$tlim \
+    gravity/threshold=-1.0 gravity/niteration=6
 }
 
 case "${1:-print}" in
   print)
     echo "SC14 morphing chain (run each stage after its source finishes;"
     echo "HIRES=$HIRES -> family suffix '${sfx:-<standard>}'):"
-    seq_list="20 40 80 120 3 4 5 8"
+    seq_list="3 4 5 40 80"
     [ "$HIRES" = "1" ] && seq_list="3 4 5"
     for b in $seq_list; do
       printf "  %s run %-3s %-3s   # from runs/%s\n" \

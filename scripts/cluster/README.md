@@ -32,98 +32,81 @@ final restart dump inside the 48 h walltime; to continue, swap the `-i` line for
 (`hydro_srcterms/bcool_beta=5`) rather than into the tracked input file, which
 would conflict on the next `git pull`.
 
-## 2. The hi-res set: tc = 10, 5, 4, 3 (fragmentation boundary)
+## 2. Hi-res (".hi", 512 x 512 x 96): performance flags -- READ BEFORE SUBMITTING
 
-SC14's ".hi" resolution is 512 x 512 x 96 (8 cells/H) --- their tc = 3/4/5 rows
-exist ONLY at this resolution, so the fragmentation-boundary test needs it.
-Restarts cannot cross resolutions, so this family has its own anchor:
+SC14's ".hi" resolution is 8x the cells of the standard run and, measured on
+Athena Turin (2026-08), costs about **4,700 SBU for the beta=10 anchor alone**
+(~10-12k SBU for the tc = 10/5/4/3 set).  Decide against the allocation before
+launching; the standard-resolution scan below delivers most of the science at
+~1/10 the cost.  The flags that matter, each measured:
 
-Use **32^3 MeshBlocks** (already set in the input): the multigrid root grid has
-one cell per block and is solved replicated on every rank, so block count is a
-*serial* cost.  Measured at fixed mesh and rank count, 16^3 blocks make the
-gravity solve 1.45x slower, and the gap grows with rank count.  With 768 blocks
-the sweet spot is one filled node (256 ranks, 3 blocks/rank).
+- **The code is memory-BANDWIDTH-bound: budget by nodes, not cores.**
+  Measured: 11.8 s*node per cycle at hi-res regardless of how many of a node's
+  256 cores are ranked.  Consequences:
+  - `select=3:ncpus=256:mpiprocs=256` (768 ranks = 768 blocks, 1 block/rank)
+    is the balanced full-node launch: ~3.3 s/cycle with the solver fix.
+  - `select=6:ncpus=256:mpiprocs=128` (still 768 ranks) doubles the bandwidth
+    per rank: ~half the wall time at the SAME total SBU.  Preferred when queue
+    time matters.
+  - **Never 512 ranks**: 768 blocks / 512 ranks = 1.5 blocks/rank, so half the
+    ranks carry double load -- 25% of the charge is wasted (the load-balance
+    warning at startup is telling you this).
+- **Fixed gravity iterations, not the stagnation rule** (in the input already):
+  `threshold=-1.0, niteration=6, full_multigrid=false`.  The automatic rule
+  (`threshold=0.0`) polishes the defect to 1e-11 -- five orders below the
+  discretization error -- at 3.25 s/solve vs 1.1 s for 6 warm-started V-cycles,
+  and the extra V-cycles multiply the replicated coarsest-grid work that added
+  nodes cannot reduce.
+- **32^3 MeshBlocks** (in the input): 768 blocks, root grid 16x16x3 -- same
+  coarsest grid as the validated standard run, half the ghost overhead of 16^3.
+  The two startup warnings about the coarsest level (cannot reach one cell;
+  768 DOF) are expected for SC14's 12H-tall box and are shared by the validated
+  standard-resolution run.
+- **Timestep reality**: dt ~ 1.4e-3 in the transient (measured), ~2.2e-3 in
+  steady state -- about 155k cycles for the 300/Omega anchor.  Walltime at
+  3 full nodes: ~5.5 days (restart-chain through 48 h jobs); at 6 half-packed
+  nodes: ~2.7 days.
+- Restarts read their parameters from the rst file: when continuing a run that
+  predates these settings, pass `gravity/threshold=-1.0 gravity/niteration=6`
+  on the command line.
 
-```bash
-# 1. anchor: beta = 10 at hi-res, from scratch (300/Omega)
-#    ONE filled node: select=1:ncpus=256:mpiprocs=256:model=tur_ath
-mpiexec -np 256 build-cluster/src/athena \
-  -i inputs/shearing_box/gravito_turb_sc14_hi.athinput \
-  -d runs/gt_sc14_b10hi -t <walltime-10min>
-
-# 2. the three low-beta stages morph from it and are INDEPENDENT --
-#    submit them concurrently (each in its own PBS job)
-HIRES=1 NRANKS=256 scripts/cluster/gt_sc14_beta_chain.sh run 5    # 200/Omega
-HIRES=1 NRANKS=256 scripts/cluster/gt_sc14_beta_chain.sh run 4    # 200/Omega
-HIRES=1 NRANKS=256 scripts/cluster/gt_sc14_beta_chain.sh run 3    #  20/Omega
-```
-
-Work and cost (Athena Turin, SBU = wall-hours x nodes x 12, MAU = one 256-core
-node -- always fill the nodes, partial nodes waste allocation proportionally):
-
-| stage | duration | work vs the 256^2 run | |
-|---|---|---|---|
-| 10.hi anchor | 300/Om | 16.4x | |
-| 5.hi, 4.hi | 200/Om each | 10.9x each | concurrent |
-| 3.hi | 20/Om | 1.1x | fragments |
-| total | 720/Om | 39.4x | ~230-760 SBU |
-
-Wall time is throughput-dependent -- calibrate first (below).  Note the SBU cost
-is set by node-hours, and the replicated root-grid solve does not accelerate with
-extra nodes, so more nodes can cost more without finishing sooner: prefer one
-filled node per run and let the three low-beta branches run concurrently.
-
-**Calibrate before committing.** One short job pins the throughput to ~10% and
-checks that 6144 blocks decompose and the slab solver scales at 2048 ranks:
-
-```bash
-mpiexec -np 256 build-cluster/src/athena \
-  -i inputs/shearing_box/gravito_turb_sc14_hi.athinput \
-  -d runs/gt_cal time/tlim=2.0 gravity/show_defect=1 output2/dt=100 output3/dt=100 output4/dt=100
-```
-Cycles/wall-second from its log x 145,000 cycles gives the anchor's wall time;
-`show_defect=1` additionally prints `mg_solve_time` per solve, so you can see
-directly what fraction of the step the gravity solve costs (two solves per
-cycle: it is called once per RK stage).
-
-Expected results (SC14 Table 1, ".hi" rows; time-average the trailing
-100/Omega):
+The chain mechanics (anchor from scratch, tc = 5/4/3 morphed, `HIRES=1`) are
+unchanged; SC14 Table-1 ".hi" targets:
 
 | run | alpha_Reyn | alpha_grav | alpha | alpha' | dv [HOm] | <cs> |
 |---|---|---|---|---|---|---|
 | tc=10.hi | 0.0170 | 0.0382 | 0.0552 | 0.0406 | 1.79 | 2.17 |
 | tc= 5.hi | 0.0419 | 0.0582 | 0.100 | 0.0819 | 2.20 | 2.01 |
 | tc= 4.hi | 0.0569 | 0.0650 | 0.122 | 0.100 | 2.31 | 1.96 |
-| tc= 3.hi | fragments -- no steady state (their criterion: t_cool <~ 3/Omega) |
+| tc= 3.hi | fragments -- no steady state (criterion: t_cool <~ 3/Omega) |
 
-tc=4 surviving as turbulent while tc=3 fragments is a genuine prediction test
-of the criterion, not a re-fit.  For tc=3, watch rho_max: once fragments pass
-the Truelove ceiling the densities are resolution artifacts (see the Phase-2
-collapse program), so report fragmentation TIME and morphology, not peak rho --
-or rerun it with AMR.
+## 3. The standard-resolution beta scan (the current campaign)
 
-## 3. The full beta scan (Table 1 / Figures 3-4)
-
-`gt_sc14_beta_chain.sh` — implements SC14's "morphing": each constant-beta run
-restarts from the FINAL rst of an earlier run (10 -> 20 -> 40 -> 80 -> 120, and
-10 -> {4, 5, 8}), with the cooling time overridden on the command line and tlim
-extended by the SC14 Table-1 duration.  `print` shows the plan; `run <beta>`
-executes one stage (wrap it in a PBS job with the same resources as the b10 run):
+The chosen set is tc = {3, 4, 5, 40, 80} at 256 x 256 x 48, all morphed from
+the FINISHED standard-resolution beta=10 run (runs/gt_sc14_b10 -- do not rerun
+it).  Every stage except tc=80 sources b10 directly, so **tc = 3, 4, 5, 40 can
+run concurrently** (one filled node each); tc=80 follows tc=40:
 
 ```bash
-scripts/cluster/gt_sc14_beta_chain.sh print         # standard-res family
-HIRES=1 scripts/cluster/gt_sc14_beta_chain.sh print # ".hi" family
-scripts/cluster/gt_sc14_beta_chain.sh run 20        # after b10 finishes
+scripts/cluster/gt_sc14_beta_chain.sh print
+NRANKS=256 scripts/cluster/gt_sc14_beta_chain.sh run 3     #  20/Omega
+NRANKS=256 scripts/cluster/gt_sc14_beta_chain.sh run 4     # 200/Omega
+NRANKS=256 scripts/cluster/gt_sc14_beta_chain.sh run 5     # 200/Omega
+NRANKS=256 scripts/cluster/gt_sc14_beta_chain.sh run 40    # 300/Omega
+NRANKS=256 scripts/cluster/gt_sc14_beta_chain.sh run 80    # 400/Omega, after 40
 ```
 
-Environment knobs: `ATHENA` (binary path), `NRANKS`, `MPIEXEC`.
+The chain passes `gravity/threshold=-1.0 gravity/niteration=6` automatically
+(measured 3x cheaper than the stagnation rule at unchanged physical accuracy).
+Estimated cost of the whole set: ~1.1k-1.4k SBU; wall ~2-3 days with the four
+independent branches concurrent.  At this resolution the paper offers direct
+Table-1 comparisons for tc = 40 (alpha 1.44e-2) and 80 (0.89e-2); tc = 3/4/5
+exist in the paper only at hi-res, so those compare qualitatively
+(fragmentation yes/no and trend) unless the hi-res set is run later.
 
-Time-average the trailing 100-200/Omega of each stage for the alpha(beta)
-comparison; SC14's fits are <alpha> ~ 1/(Omega t_cool) (their Fig. 3) and
-alpha' = 4/(9*gamma*(gamma-1))/(Omega t_cool) (eq. 21, Fig. 4).  Their
-fragmentation boundary is t_cool <~ 3/Omega — the beta = 4 and 5 stages should
-remain turbulent, beta = 3 (not in the chain) fragments.
-
+Time-average the trailing 100-200/Omega of each stage; SC14's fits are
+<alpha> ~ 1/(Omega t_cool) (their Fig. 3) and
+alpha' = 4/(9*gamma*(gamma-1))/(Omega t_cool) (eq. 21, Fig. 4).
 ## Notes
 
 - Vertical boundaries are `diode` (no-inflow outflow): plain `outflow` feeds a
