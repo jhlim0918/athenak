@@ -107,6 +107,15 @@ exist in the paper only at hi-res, so those compare qualitatively
 Time-average the trailing 100-200/Omega of each stage; SC14's fits are
 <alpha> ~ 1/(Omega t_cool) (their Fig. 3) and
 alpha' = 4/(9*gamma*(gamma-1))/(Omega t_cool) (eq. 21, Fig. 4).
+## Backing up to Lou
+
+`backup_run.sh <rundir>` archives a finished run to NAS mass storage as two
+tars via `shiftc` (streamed -- no local copy -- checksummed, auto-retried):
+`<name>_data.tar` (bin/ + rst/) and `<name>_meta.tar` (histories, logs, PBS
+files, provenance -- small, so the history is retrievable without touching the
+bulk).  `module load shift` first if `shiftc` is missing; monitor with
+`shiftc --status`; restore with `shiftc --extract-tar lou:athenak_backups/<name>_data.tar <dest>`.
+
 ## Notes
 
 - Vertical boundaries are `diode` (no-inflow outflow): plain `outflow` feeds a
