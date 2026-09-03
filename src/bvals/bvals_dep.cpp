@@ -17,6 +17,11 @@
 //! MeshBoundaryValuesFC::SumBoundaryFluxes().
 //!
 //! Only same-level (uniform grid) exchanges are supported.
+//!
+//! MPI transport uses the rank-packed vars path of MeshBoundaryValues (one aggregated
+//! message per peer rank, posted by the base-class InitRecv/ClearSend/ClearRecv):
+//! off-rank payloads are written straight into rank_sendbuf_vars_ at the per-(m,n)
+//! offsets built by BuildRankPackedVarMetadata, exactly as in MeshBoundaryValuesCC.
 
 #include <cstdlib>
 #include <iostream>
@@ -125,6 +130,10 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a) {
   auto &mbgid = pmy_pack->pmb->mb_gid;
   auto &sbuf = sendbuf;
   auto &rbuf = recvbuf;
+#if MPI_PARALLEL_ENABLED
+  auto aggsbuf = rank_sendbuf_vars_;
+  auto sendoff = send_agg_offset_;
+#endif
   // Outer loop over (# of MeshBlocks)*(# of buffers)*(# of variables)
   int nmnv = nmb*nnghbr*nvar;
   Kokkos::TeamPolicy<> policy(DevExeSpace(), nmnv, Kokkos::AUTO);
@@ -166,10 +175,20 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a) {
           });
         // else copy into send buffer for MPI communication below
         } else {
+#if MPI_PARALLEL_ENABLED
+          // off-rank: write straight into the rank-packed aggregate send buffer
+          // at this entry's base offset (same idiom as MeshBoundaryValuesCC)
+          int base = sendoff(m*nnghbr + n);
+          Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il,iu+1),
+          [&](const int i) {
+            aggsbuf(base + (i-il + ni*(j-jl + nj*(k-kl + nk*v))) ) = a(m,v,k,j,i);
+          });
+#else
           Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il,iu+1),
           [&](const int i) {
             sbuf[n].vars(m, (i-il + ni*(j-jl + nj*(k-kl + nk*v))) ) = a(m,v,k,j,i);
           });
+#endif
         }
       });
     } // end if-neighbor-exists block
@@ -178,30 +197,16 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a) {
   }
 
 #if MPI_PARALLEL_ENABLED
-  // Send boundary buffer to neighboring MeshBlocks using MPI
+  // Send aggregated payloads to neighboring ranks. The kernel above already wrote every
+  // off-rank payload directly into rank_sendbuf_vars_, so one fence suffices.
   Kokkos::fence();
-  int my_rank = global_variable::my_rank;
-  auto &nghbr = pmy_pack->pmb->nghbr;
   bool no_errors=true;
-  for (int m=0; m<nmb; ++m) {
-    for (int n=0; n<nnghbr; ++n) {
-      if (nghbr.h_view(m,n).gid >= 0) {  // neighbor exists and not a physical boundary
-        // index and rank of destination Neighbor
-        int dn = nghbr.h_view(m,n).dest;
-        int drank = nghbr.h_view(m,n).rank;
-        if (drank != my_rank) {
-          // create tag using local ID and buffer index of *receiving* MeshBlock
-          int lid = nghbr.h_view(m,n).gid - pmy_pack->pmesh->gids_eachrank[drank];
-          int tag = CreateBvals_MPI_Tag(lid, dn);
-          int data_size = nvar*(sendbuf[n].isame_ndat);
-          auto send_ptr = Kokkos::subview(sendbuf[n].vars, m, Kokkos::ALL);
-
-          int ierr = MPI_Isend(send_ptr.data(), data_size, MPI_ATHENA_REAL, drank, tag,
-                               comm_vars, &(sendbuf[n].vars_req[m]));
-          if (ierr != MPI_SUCCESS) {no_errors=false;}
-        }
-      }
-    }
+  std::fill(send_var_reqs_.begin(), send_var_reqs_.end(), MPI_REQUEST_NULL);
+  for (std::size_t i = 0; i < send_var_msgs_.size(); ++i) {
+    const auto &msg = send_var_msgs_[i];
+    int ierr = MPI_Isend(rank_sendbuf_vars_.data() + msg.offset, msg.data_size,
+                         MPI_ATHENA_REAL, msg.rank, 1, comm_vars, &send_var_reqs_[i]);
+    if (ierr != MPI_SUCCESS) {no_errors=false;}
   }
   // Quit if MPI error detected
   if (!(no_errors)) {
@@ -231,18 +236,12 @@ TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
 
   bool bflag = false;
   bool no_errors=true;
-  for (int m=0; m<nmb; ++m) {
-    for (int n=0; n<nnghbr; ++n) {
-      if (nghbr.h_view(m,n).gid >= 0) { // neighbor exists and not a physical boundary
-        if (nghbr.h_view(m,n).rank != global_variable::my_rank) {
-          int test;
-          int ierr = MPI_Test(&(rbuf[n].vars_req[m]), &test, MPI_STATUS_IGNORE);
-          if (ierr != MPI_SUCCESS) {no_errors=false;}
-          if (!(static_cast<bool>(test))) {
-            bflag = true;
-          }
-        }
-      }
+  for (std::size_t i = 0; i < recv_var_reqs_.size(); ++i) {
+    int test;
+    int ierr = MPI_Test(&recv_var_reqs_[i], &test, MPI_STATUS_IGNORE);
+    if (ierr != MPI_SUCCESS) {no_errors=false;}
+    if (!(static_cast<bool>(test))) {
+      bflag = true;
     }
   }
   // Quit if MPI error detected
@@ -259,6 +258,10 @@ TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
   //----- STEP 2: buffers have all completed, so sum into active cells
 
   int nvar = a.extent_int(1);
+#if MPI_PARALLEL_ENABLED
+  auto aggrbuf = rank_recvbuf_vars_;
+  auto recvoff = recv_agg_offset_;
+#endif
 
   // Outer loop over (# of MeshBlocks)*(# of variables); loop over buffers is scalar
   Kokkos::TeamPolicy<> policy(DevExeSpace(), (nmb*nvar), Kokkos::AUTO);
@@ -279,6 +282,10 @@ TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
         int nj = ju - jl + 1;
         int nk = ku - kl + 1;
         int nkj  = nk*nj;
+#if MPI_PARALLEL_ENABLED
+        // base offset of this (m,n) payload in the aggregate buffer; -1 == on-rank
+        const int base = recvoff(m*nnghbr + n);
+#endif
 
         // Middle loop over k,j
         Kokkos::parallel_for(Kokkos::TeamThreadRange<>(tmember, nkj), [&](const int idx) {
@@ -289,7 +296,12 @@ TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
           // Inner (vector) loop over i
           Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il,iu+1),
           [&](const int i) {
-            a(m,v,k,j,i) += rbuf[n].vars(m, (i-il + ni*(j-jl + nj*(k-kl + nk*v))) );
+            const int bi = i-il + ni*(j-jl + nj*(k-kl + nk*v));
+#if MPI_PARALLEL_ENABLED
+            a(m,v,k,j,i) += (base >= 0) ? aggrbuf(base + bi) : rbuf[n].vars(m, bi);
+#else
+            a(m,v,k,j,i) += rbuf[n].vars(m, bi);
+#endif
           });
         });
       }
