@@ -7,8 +7,7 @@
                                  #   144 cores per node: the code is memory-bandwidth-
                                  #   bound, so the idle cores cost nothing (README sec. 2)
 #SBATCH -t 48:00:00              # gg queue maximum
-#SBATCH -A CHANGE_ME             # allocation to charge (see `sacctmgr show assoc user=$USER`
-                                 #   or the Vista dashboard); drop the line if you have one
+#SBATCH -A AST25015              # allocation to charge
 #SBATCH -o slurm.%j.out          # stdout+stderr (no -e => merged, like PBS -j oe)
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=jay.lim1@unlv.edu
