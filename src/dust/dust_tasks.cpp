@@ -216,7 +216,7 @@ TaskStatus DustGasDrag::InitRecvDep(Driver *pdrive, int stage) {
     if (tstat != TaskStatus::complete) return tstat;
   }
   if (back_reaction && use_dmom) {
-    tstat = pbval_dm->InitRecv(3);
+    tstat = pbval_dm->InitRecv(4);
     if (tstat != TaskStatus::complete) return tstat;
   }
   if (psbox_us != nullptr && use_ustar) {

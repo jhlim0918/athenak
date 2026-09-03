@@ -270,6 +270,12 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
   // initialize uniform gas at the equilibrium; azimuthal component is IM2 in 3D and
   // IM3 in the 2D r-z geometry (matching ShearingBoxCC::SourceTermsCC)
   Real rho0 = pin->GetOrAddReal("problem","rho0",1.0);
+  // ideal gas: uniform pressure <problem>/pgas (the equilibrium needs no pressure
+  // gradient; the radial forcing is the const_accel mimic), energy set below
+  EOS_Data &eos = pmbp->phydro->peos->eos_data;
+  const bool is_ideal = eos.is_ideal;
+  Real pgas = is_ideal ? pin->GetOrAddReal("problem","pgas",1.0) : 0.0;
+  Real gm1 = is_ideal ? (eos.gamma - 1.0) : 1.0;
   // optional smooth azimuthal modulation of the particle masses, m *= 1 + A sin(2 pi
   // (y - y_min)/L_y + phase): a deterministic (rank-independent) azimuthally STRUCTURED
   // dust distribution for exercising the shear-periodic deposit remap; 0 = inert
@@ -291,6 +297,9 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
     u0(m,IM1,k,j,i) = rho0*ugx;
     u0(m,IM2,k,j,i) = three_d ? rho0*ugp : 0.0;
     u0(m,IM3,k,j,i) = three_d ? 0.0 : rho0*ugp;
+    if (is_ideal) {
+      u0(m,IEN,k,j,i) = pgas/gm1 + 0.5*rho0*(SQR(ugx) + SQR(ugp));
+    }
   });
 
   // There are no particle or dust modules to initialize in the dust-free equilibrium.

@@ -1,0 +1,99 @@
+# AthenaK input file: 3D shear-periodic NSH equilibrium with an IDEAL-GAS EOS (dust
+# track, Phase 4b (ii)).  Same as dust_nsh_shear3d.athinput with eos = ideal, gamma = 1.4,
+# uniform pressure pgas = 1.  The drift equilibrium must hold to round-off in both energy
+# modes; with dust/drag_heating = true the internal energy grows at the analytic
+# dissipation rate sum_s eps_s rho0 |u - v_s|^2 / t_s (first-order accurate in dt:
+# 1.5% / 0.7% / 0.4% at cfl 0.45 / 0.225 / 0.1125 for the stiff t_s = 0.01 species).
+# See validation/dust_selfgravity_validation.pdf.
+
+<comment>
+problem   = multi-species NSH drift equilibrium
+
+<job>
+basename  = nsh3d_ideal
+
+<mesh>
+nghost    = 2         # Number of ghost cells
+nx1       = 32        # Number of zones in X1-direction (radial)
+x1min     = -0.5      # minimum value of X1
+x1max     = 0.5       # maximum value of X1
+ix1_bc    = shear_periodic  # 3D shearing box
+ox1_bc    = shear_periodic
+
+nx2       = 32        # Number of zones in X2-direction (vertical)
+x2min     = -0.5      # minimum value of X2
+x2max     = 0.5       # maximum value of X2
+ix2_bc    = periodic  # inner-X2 boundary flag
+ox2_bc    = periodic  # outer-X2 boundary flag
+
+nx3       = 8         # vertical (3D shearing box)
+x3min     = -0.5      # minimum value of X3
+x3max     = 0.5       # maximum value of X3
+ix3_bc    = periodic  # inner-X3 boundary flag
+ox3_bc    = periodic  # outer-X3 boundary flag
+
+<meshblock>
+nx1       = 16        # Number of cells in each MeshBlock, X1-dir
+nx2       = 16        # Number of cells in each MeshBlock, X2-dir
+nx3       = 8
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = imex2+   # time integration algorithm (required for dust)
+cfl_number = 0.45     # imex2+ explicit stage requires C <~ 0.58
+nlim       = -1       # cycle limit
+tlim       = 12.566370614359172   # 10 orbits (10 * 2*pi/omega0)
+ndiag      = 1000     # cycles between diagnostic output
+
+<hydro>
+eos         = ideal  # EOS type
+gamma           = 1.4     # isothermal sound speed
+reconstruct = plm         # spatial reconstruction method
+rsolver     = hlle        # Riemann-solver to be used
+
+<hydro_srcterms>
+const_accel     = true    # radial pressure-gradient mimic on the gas only
+const_accel_val = 0.1     # = 2*omega0*etavk
+const_accel_dir = 1       # radial
+
+<shearing_box>
+qshear    = 1.5           # shear parameter (Keplerian)
+omega0    = 1.0           # local orbital frequency
+
+<particles>
+particle_type = dust      # dust particles
+pusher        = imex_dust # pushed by the DustGasDrag module inside the IMEX stages
+ppc           = 3.0       # integer multiple of <dust>/nspecies
+
+<dust>
+drag_heating = false
+coupling      = imex      # imex (imex2+) | hybrid | pc2 (rk2)
+shear_fold    = true      # fold ghost deposits across the shear-periodic x1 faces
+shear_remap   = plm       # dc | plm | ppmx y-remap of the fold
+nspecies      = 3         # number of dust species
+taus_1        = 0.01      # stopping times spanning tightly to marginally coupled
+taus_2        = 0.1
+taus_3        = 1.0
+dust_to_gas   = 1.0       # unused when eps_s are given below
+back_reaction = true      # dust drags gas (PMBR)
+deposit       = tsc       # particle-mesh deposit scheme
+gamma_switch  = false     # fixed gamma = 1+1/sqrt(2)
+dt_cfl        = 0.5       # particle transport CFL number
+
+<problem>
+pgas      = 1.0
+mass_mod_amp = 0.0        # >0: azimuthal mass modulation (structured, rank-independent IC)
+mass_mod_phase = 0.0
+check_equilibrium = true  # set false with mass_mod_amp > 0
+pgen_name = dust_nsh      # problem generator name
+user_hist = true          # per-species drift-velocity history
+rho0      = 1.0           # uniform gas density
+etavk     = 0.05          # eta*v_K (radial forcing a_x = 2*omega0*etavk)
+eps_1     = 0.2           # per-species dust-to-gas ratios
+eps_2     = 0.5
+eps_3     = 0.3
+
+<output1>
+file_type  = hst          # History output
+dt         = 0.1          # time increment between outputs
+data_format = %.14e

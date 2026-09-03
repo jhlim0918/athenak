@@ -271,11 +271,11 @@ TaskStatus DustGasDrag::GasImplicitSolve(Driver *pdrive, int stage) {
         int nmb1 = pmy_pack->nmb_thispack - 1;
         auto &u0 = pmy_pack->phydro->u0;
         auto &qdep_ = qdep;
+        const bool ideal = gas_ideal;
         par_for("dust_pc2_apply_predictor",DevExeSpace(),0,nmb1,ks,ke,js,je,is,ie,
         KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-          u0(m,IM1,k,j,i) += qdep_(m,1,k,j,i);
-          u0(m,IM2,k,j,i) += qdep_(m,2,k,j,i);
-          u0(m,IM3,k,j,i) += qdep_(m,3,k,j,i);
+          GasKick(u0, m, k, j, i, qdep_(m,1,k,j,i), qdep_(m,2,k,j,i),
+                  qdep_(m,3,k,j,i), ideal);
         });
       }
       return TaskStatus::complete;
@@ -352,6 +352,7 @@ TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
   Real qo = qshear*omega0;
   auto &ustar_ = ustar;
   auto &dmom_ = dmom;
+  const bool heat = drag_heating;
 
   par_for("dust_gather",DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m = pi(PGID,p) - gids;
@@ -407,21 +408,32 @@ TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
       if (three_d) pr(IPZ,p) += dt*pr(IPVZ,p);
     }
 
-    // momentum back-reaction deposit with the SAME weights and dv
+    // momentum back-reaction deposit with the SAME weights and dv; with drag heating
+    // also the frictional dissipation of this kick, Q = m c (1 - c/2) |u~ - v|^2 (the
+    // kinetic energy lost by particle + gas beyond the gas kinetic-energy change that
+    // GasKick already books), deposited as heat
     if (br) {
       Real vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
       if (three_d) {vol *= mbsize.d_view(m).dx3;}
       Real fac = -pr(IPM,p)/vol;
+      Real qheat = 0.0;
+      if (heat) {
+        Real du2 = SQR(ux - pr(IPVX,p) + dvx) + SQR(uy - pr(IPVY,p) + dvy)
+                 + SQR(uz - pr(IPVZ,p) + dvz);   // |u~ - v_old|^2
+        qheat = pr(IPM,p)*cj*(1.0 - 0.5*cj)*du2/vol;
+      }
       for (int c=clo; c<=chi; ++c) {
         for (int b=0; b<3; ++b) {
           Real wcb = wz[c]*wy[b]*fac;
           if (wcb == 0.0) continue;
+          Real wcbq = wz[c]*wy[b]*qheat;
           for (int a=0; a<3; ++a) {
             Real w = wcb*wx[a];
             int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
             DepositAdd(&dmom_(m,0,kk,jj,ii), w*dvx);
             DepositAdd(&dmom_(m,1,kk,jj,ii), w*dvy);
             DepositAdd(&dmom_(m,2,kk,jj,ii), w*dvz);
+            if (heat) {DepositAdd(&dmom_(m,3,kk,jj,ii), wcbq*wx[a]);}
           }
         }
       }
@@ -452,11 +464,15 @@ TaskStatus DustGasDrag::ApplyPMBR(Driver *pdrive, int stage) {
     auto &qdep_ = qdep;
     bool pc2 = (hybrid_mode == HybridMode::pc2);
     Real wpred = pdrive->gam1[pdrive->nexp_stages-1];
+    const bool ideal = gas_ideal;
+    const bool heat = drag_heating;
     par_for("dust_hybrid_commit",DevExeSpace(),0,nmb1,ks,ke,js,je,is,ie,
     KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-      u0(m,IM1,k,j,i) += dmom_(m,0,k,j,i) - (pc2 ? wpred*qdep_(m,1,k,j,i) : 0.0);
-      u0(m,IM2,k,j,i) += dmom_(m,1,k,j,i) - (pc2 ? wpred*qdep_(m,2,k,j,i) : 0.0);
-      u0(m,IM3,k,j,i) += dmom_(m,2,k,j,i) - (pc2 ? wpred*qdep_(m,3,k,j,i) : 0.0);
+      GasKick(u0, m, k, j, i,
+              dmom_(m,0,k,j,i) - (pc2 ? wpred*qdep_(m,1,k,j,i) : 0.0),
+              dmom_(m,1,k,j,i) - (pc2 ? wpred*qdep_(m,2,k,j,i) : 0.0),
+              dmom_(m,2,k,j,i) - (pc2 ? wpred*qdep_(m,3,k,j,i) : 0.0), ideal);
+      if (heat) {u0(m,IEN,k,j,i) += dmom_(m,3,k,j,i);}
     });
     return TaskStatus::complete;
   }
@@ -469,15 +485,17 @@ TaskStatus DustGasDrag::ApplyPMBR(Driver *pdrive, int stage) {
   auto &u0 = pmy_pack->phydro->u0;
   auto &dmom_ = dmom;
   Real inv_adt = 1.0/((pdrive->a_impl)*(pmy_pack->pmesh->dt));
+  const bool ideal = gas_ideal;
+  const bool heat = drag_heating;
 
   par_for("dust_pmbr",DevExeSpace(),0,nmb1,ks,ke,js,je,is,ie,
   KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-    u0(m,IM1,k,j,i) += dmom_(m,0,k,j,i);
-    u0(m,IM2,k,j,i) += dmom_(m,1,k,j,i);
-    u0(m,IM3,k,j,i) += dmom_(m,2,k,j,i);
+    GasKick(u0, m, k, j, i, dmom_(m,0,k,j,i), dmom_(m,1,k,j,i), dmom_(m,2,k,j,i), ideal);
+    if (heat) {u0(m,IEN,k,j,i) += dmom_(m,3,k,j,i);}
     dmom_(m,0,k,j,i) *= inv_adt;
     dmom_(m,1,k,j,i) *= inv_adt;
     dmom_(m,2,k,j,i) *= inv_adt;
+    dmom_(m,3,k,j,i) *= inv_adt;
   });
 
   return TaskStatus::complete;
@@ -501,14 +519,16 @@ TaskStatus DustGasDrag::AddDragHistoryGas(Driver *pdrive, int stage) {
   int ks = indcs.ks, ke = indcs.ke;
   int nmb1 = pmy_pack->nmb_thispack - 1;
   auto &u0 = pmy_pack->phydro->u0;
-  auto &dmom_ = dmom;   // holds R_g recorded at the previous stage
+  auto &dmom_ = dmom;   // holds R_g (and the heating rate) recorded at the previous stage
   Real atw_dt = (pdrive->a_twid[2][2])*(pmy_pack->pmesh->dt);
+  const bool ideal = gas_ideal;
+  const bool heat = drag_heating;
 
   par_for("dust_gatwid",DevExeSpace(),0,nmb1,ks,ke,js,je,is,ie,
   KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-    u0(m,IM1,k,j,i) += atw_dt*dmom_(m,0,k,j,i);
-    u0(m,IM2,k,j,i) += atw_dt*dmom_(m,1,k,j,i);
-    u0(m,IM3,k,j,i) += atw_dt*dmom_(m,2,k,j,i);
+    GasKick(u0, m, k, j, i, atw_dt*dmom_(m,0,k,j,i), atw_dt*dmom_(m,1,k,j,i),
+            atw_dt*dmom_(m,2,k,j,i), ideal);
+    if (heat) {u0(m,IEN,k,j,i) += atw_dt*dmom_(m,3,k,j,i);}
   });
 
   return TaskStatus::complete;

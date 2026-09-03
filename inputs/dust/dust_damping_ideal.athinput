@@ -1,0 +1,96 @@
+# AthenaK input file: N-species drag damping test (Krapp et al. 2024 sec. 3.1) with an
+# IDEAL-GAS EOS -- the energy-budget test of the dust track, Phase 4b (ii).  Uniform gas
+# at rest with three dust species on a lattice (ppc = 3); fluxes vanish, so the gas
+# energy changes only through the drag kicks.  pgas = 1e-5 makes the total energy
+# comparable to the dissipated kinetic energy (~1.4e-5) so that the 6-digit history
+# resolves the budget; dtmax pins the step to the isothermal ladder's 1/95.
+#   default (drag_heating = false): every kick keeps the internal energy fixed; the
+#     residual change of e_int is the RK register-combination gap, ~1% of the
+#     dissipated energy at dt ~ t_s,min, first order in dt
+#   dust/drag_heating = true: the frictional dissipation is deposited as heat;
+#     E_gas + KE_dust conserved to a few % of the dissipated energy at dt ~ t_s,min,
+#     first order in dt
+# Overrides: time/dtmax=<1/n> for the convergence ladder; coupling=pc2 with
+# time/integrator=rk2 for the PC2 path.  See validation/dust_selfgravity_validation.pdf.
+
+<comment>
+problem   = N-species dust-gas drag damping test
+
+<job>
+basename  = dust_damping_ideal    # problem ID: basename of output filenames
+
+<mesh>
+nghost    = 2         # Number of ghost cells
+nx1       = 32        # Number of zones in X1-direction
+x1min     = -0.5      # minimum value of X1
+x1max     = 0.5       # maximum value of X1
+ix1_bc    = periodic  # inner-X1 boundary flag
+ox1_bc    = periodic  # outer-X1 boundary flag
+
+nx2       = 32        # Number of zones in X2-direction
+x2min     = -0.5      # minimum value of X2
+x2max     = 0.5       # maximum value of X2
+ix2_bc    = periodic  # inner-X2 boundary flag
+ox2_bc    = periodic  # outer-X2 boundary flag
+
+nx3       = 1         # Number of zones in X3-direction
+x3min     = -0.5      # minimum value of X3
+x3max     = 0.5       # maximum value of X3
+ix3_bc    = periodic  # inner-X3 boundary flag
+ox3_bc    = periodic  # outer-X3 boundary flag
+
+<meshblock>
+nx1       = 16        # Number of cells in each MeshBlock, X1-dir
+nx2       = 16        # Number of cells in each MeshBlock, X2-dir
+nx3       = 1         # Number of cells in each MeshBlock, X3-dir
+
+<time>
+dtmax      = 0.010526315789473684   # = 1/95, the isothermal ladder step at cfl 0.4
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = imex2+   # time integration algorithm (required for dust)
+cfl_number = 0.4      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = -1       # cycle limit
+tlim       = 1.0      # time limit
+ndiag      = 100      # cycles between diagnostic output
+
+<hydro>
+eos         = ideal  # EOS type
+gamma           = 1.4     # isothermal sound speed
+reconstruct = plm         # spatial reconstruction method
+rsolver     = hlle        # Riemann-solver to be used
+
+<particles>
+particle_type = dust      # dust particles
+pusher        = imex_dust # pushed by the DustGasDrag module inside the IMEX stages
+ppc           = 1.0       # one particle per cell (required for lattice placement)
+
+<dust>
+coupling      = imex      # imex (imex2+) | pc2 | hybrid (rk2)
+drag_heating = false
+nspecies      = 3         # number of dust species
+taus_1        = 0.01      # stopping time of species 1
+taus_2        = 0.1       # stopping time of species 2
+taus_3        = 1.0       # stopping time of species 3
+dust_to_gas   = 1.0       # total dust-to-gas mass ratio
+back_reaction = true      # dust drags gas (PMBR)
+deposit       = tsc       # particle-mesh deposit scheme
+gamma_switch  = false     # fixed gamma = 1+1/sqrt(2)
+dt_cfl        = 0.5       # particle transport CFL number
+drag_solver   = local     # local/applya/dc1/pcg/adaptive
+drag_rtol     = 1.0e-11   # strict-PCG true-residual relative tolerance
+drag_atol     = 1.0e-14
+drag_iter_max = 200
+drag_fail_policy = abort
+drag_diagnostic_interval = 0
+
+<problem>
+pgas      = 1.0e-5
+user_hist = true
+pgen_name = dust_damping  # problem generator name
+rho0      = 1.0           # uniform gas density
+v0        = 0.01          # initial dust velocity amplitude (v0*(s+1)/nspecies)
+lattice   = true          # particles at cell centers (exact ODE reference)
+
+<output1>
+file_type  = hst          # History output
+dt         = 0.05         # time increment between outputs

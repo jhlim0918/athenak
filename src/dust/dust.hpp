@@ -57,6 +57,29 @@ enum class HybridMode {pc2=0, split_be=1};
 enum class HybridForceMode {automatic=0, pc2=1, split_be=2};
 
 //----------------------------------------------------------------------------------------
+//! \fn void GasKick
+//! \brief Add a momentum kick (dmx, dmy, dmz) to the gas conserved variables of one cell
+//! and, for an ideal gas, the matching change of the kinetic energy so that the internal
+//! energy is unchanged by the kick.  Every drag-induced change of the gas momentum in the
+//! dust module goes through this helper (back-reaction apply, IMEX history term, PC2
+//! predictor apply and removal); frictional heating, when enabled, is added separately.
+
+KOKKOS_INLINE_FUNCTION
+void GasKick(const DvceArray5D<Real> &u0, const int m, const int k, const int j,
+             const int i, const Real dmx, const Real dmy, const Real dmz,
+             const bool ideal) {
+  if (ideal) {
+    const Real irho = 1.0/u0(m,IDN,k,j,i);
+    const Real m1 = u0(m,IM1,k,j,i), m2 = u0(m,IM2,k,j,i), m3 = u0(m,IM3,k,j,i);
+    const Real n1 = m1 + dmx, n2 = m2 + dmy, n3 = m3 + dmz;
+    u0(m,IEN,k,j,i) += 0.5*irho*((n1*n1 + n2*n2 + n3*n3) - (m1*m1 + m2*m2 + m3*m3));
+  }
+  u0(m,IM1,k,j,i) += dmx;
+  u0(m,IM2,k,j,i) += dmy;
+  u0(m,IM3,k,j,i) += dmz;
+}
+
+//----------------------------------------------------------------------------------------
 //! \struct DustGasDragTaskIDs
 //  \brief container to hold TaskIDs of all dust+hydro tasks
 
@@ -152,6 +175,8 @@ class DustGasDrag {
   DustDeposit deposit;       // particle-mesh deposit scheme (tsc default)
   ReconstructionMethod shear_remap;  // y-remap of the shear-periodic deposit fold (plm)
   bool shear_fold;           // false = diagnostic: skip the fold (unsheared x1 deposits)
+  bool gas_ideal;            // ideal-gas EOS: drag kicks carry an energy update
+  bool drag_heating;         // ideal gas: deposit the frictional dissipation as heat
   DustStoppingTimeMode stopping_time_mode;
   DustDragSolver drag_solver;
   DustCoupling coupling;
@@ -172,7 +197,8 @@ class DustGasDrag {
   // deposited fields, dimensioned (nmb, nvar, ncells3, ncells2, ncells1)
   DvceArray5D<Real> qdep;    // [0]=Q, [1-3]=P/predictor impulse, [4]=feedback rate
   DvceArray5D<Real> ustar;   // nvar=3: provisional drag-corrected gas velocity u*
-  DvceArray5D<Real> dmom;    // nvar=3: PMBR momentum deposit; becomes R_g after apply
+  DvceArray5D<Real> dmom;    // nvar=4: PMBR momentum deposit [0-2] and frictional heat
+                             // [3] (ideal gas with drag_heating); becomes R_g after apply
   DvceArray5D<Real> cdummy;  // 1-element dummy coarse array for ustar copy exchange
   DvceArray5D<Real> solver_r;   // coupled-solver residual
   DvceArray5D<Real> solver_p;   // PCG search direction

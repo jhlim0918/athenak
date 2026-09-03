@@ -120,6 +120,7 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
       if (br) Kokkos::deep_copy(DevExeSpace(), dmom, 0.0);
       auto &ustar_ = ustar;
       auto &dmom_ = dmom;
+      const bool heat = drag_heating;
       par_for("dust_pc2_advance",DevExeSpace(),0,(npart-1),
       KOKKOS_LAMBDA(const int p) {
         int m = pi(PGID,p) - gids;
@@ -214,16 +215,25 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
           Real vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
           if (three_d) vol *= mbsize.d_view(m).dx3;
           Real fac = -pr(IPM,p)/vol;
+          // frictional dissipation of the midpoint drag impulse (midpoint quadrature of
+          // m |u - v|^2/t_s over dt, minus the kinetic-energy form correction), as heat
+          Real qheat = 0.0;
+          if (heat) {
+            qheat = pr(IPM,p)*(dvx_drag*(ugx-vxh) + dvy_drag*(ugy-vyh) + dvz_drag*(ugz-vzh)
+                               - 0.5*(SQR(dvx_drag) + SQR(dvy_drag) + SQR(dvz_drag)))/vol;
+          }
           for (int c=clo; c<=chi; ++c) {
             for (int b=0; b<3; ++b) {
               Real wcb = wz[c]*wy[b]*fac;
               if (wcb == 0.0) continue;
+              Real wcbq = wz[c]*wy[b]*qheat;
               for (int a=0; a<3; ++a) {
                 Real w = wcb*wx[a];
                 int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
                 DepositAdd(&dmom_(m,0,kk,jj,ii), w*dvx_drag);
                 DepositAdd(&dmom_(m,1,kk,jj,ii), w*dvy_drag);
                 DepositAdd(&dmom_(m,2,kk,jj,ii), w*dvz_drag);
+                if (heat) {DepositAdd(&dmom_(m,3,kk,jj,ii), wcbq*wx[a]);}
               }
             }
           }

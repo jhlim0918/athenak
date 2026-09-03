@@ -262,12 +262,24 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   }
 
   // drag work is not deposited into the gas energy equation, so back-reaction requires
-  // an isothermal EOS for a consistent energy budget
-  if (back_reaction && phyd->peos->eos_data.is_ideal) {
-    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "Dust back-reaction requires an isothermal EOS (drag heating is not "
-              << "implemented)" << std::endl;
-    std::exit(EXIT_FAILURE);
+  // Ideal gas: every drag kick on the gas momentum is applied with the matching change
+  // of the kinetic energy (internal energy unchanged); <dust>/drag_heating additionally
+  // deposits the frictional dissipation Q_j = m_j c_j (1 - c_j/2) |u~ - v_j|^2 of each
+  // particle kick as heat, which conserves the total gas + dust energy.
+  gas_ideal = phyd->peos->eos_data.is_ideal;
+  drag_heating = pin->GetOrAddBoolean("dust","drag_heating",false);
+  if (drag_heating && !gas_ideal) {
+    if (global_variable::my_rank == 0) {
+      std::cout << "# WARNING (dust): <dust>/drag_heating = true has no effect with an "
+                << "isothermal EOS; ignored." << std::endl;
+    }
+    drag_heating = false;
+  }
+  if (back_reaction && gas_ideal && global_variable::my_rank == 0) {
+    std::cout << "# dust: ideal-gas EOS with back-reaction: drag kicks keep the gas "
+              << "internal energy fixed" << (drag_heating ?
+              "; frictional dissipation deposited as heat (<dust>/drag_heating = true)" :
+              " (<dust>/drag_heating = false: dissipation discarded)") << std::endl;
   }
 
   // per-species stopping times: <dust>/nspecies and taus_1, taus_2, ...
@@ -337,7 +349,7 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*(indcs.ng)) : 1;
   Kokkos::realloc(qdep,  nmb, 5, ncells3, ncells2, ncells1);
   Kokkos::realloc(ustar, nmb, 3, ncells3, ncells2, ncells1);
-  Kokkos::realloc(dmom,  nmb, 3, ncells3, ncells2, ncells1);
+  Kokkos::realloc(dmom,  nmb, 4, ncells3, ncells2, ncells1);
   Kokkos::deep_copy(dmom, 0.0);  // read as R_g=0 in stage 2 if back_reaction is off
   if (drag_solver == DustDragSolver::pcg || drag_solver == DustDragSolver::adaptive) {
     Kokkos::realloc(solver_r, nmb, 3, ncells3, ncells2, ncells1);
@@ -351,7 +363,7 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   pbval_qp = new MeshBoundaryValuesDep(pmy_pack, pin);
   pbval_qp->InitializeBuffers(5);
   pbval_dm = new MeshBoundaryValuesDep(pmy_pack, pin);
-  pbval_dm->InitializeBuffers(3);
+  pbval_dm->InitializeBuffers(4);
   pbval_us = new MeshBoundaryValuesCC(pmy_pack, pin, false);
   pbval_us->InitializeBuffers(3);
   if (drag_solver != DustDragSolver::local) {
