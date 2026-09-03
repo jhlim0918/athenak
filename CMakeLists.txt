@@ -119,6 +119,10 @@ endif()
 
 # add subdirectories for source code and include files
 add_subdirectory(src)
+# Kokkos 4.7.2's simd/src/CMakeLists.txt calls check_include_file_cxx() on the
+# ARM-SVE path (Kokkos_ARCH_ARMV9_GRACE and friends) without including the module
+# that defines it; CMake macros are global, so loading it here covers the submodule.
+include(CheckIncludeFileCXX)
 add_subdirectory(kokkos)
 include_directories(${Kokkos_INCLUDE_DIRS_RET})
 
