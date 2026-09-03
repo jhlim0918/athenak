@@ -927,6 +927,12 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     DivBAMR(pin, is_restart);
   } else if (pgen_fun_name.compare("diffusion") == 0) {
     Diffusion(pin, is_restart);
+  } else if (pgen_fun_name.compare("dust_damping") == 0) {
+    DustDamping(pin, is_restart);
+  } else if (pgen_fun_name.compare("dust_nsh") == 0) {
+    DustNSH(pin, is_restart);
+  } else if (pgen_fun_name.compare("dusty_wave") == 0) {
+    DustyWave(pin, is_restart);
   } else if (pgen_fun_name.compare("linear_wave") == 0) {
     LinearWave(pin, is_restart);
   } else if (pgen_fun_name.compare("implode") == 0) {
@@ -945,6 +951,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     ShockTube(pin, is_restart);
   } else if (pgen_fun_name.compare("shwave") == 0) {
     Shwave(pin, is_restart);
+  } else if (pgen_fun_name.compare("streaming_linear") == 0) {
+    StreamingLinear(pin, is_restart);
   } else if (pgen_fun_name.compare("z4c_boosted_puncture") == 0) {
     Z4cBoostedPuncture(pin, is_restart);
   } else if (pgen_fun_name.compare("z4c_linear_wave") == 0) {

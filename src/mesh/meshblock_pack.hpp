@@ -35,6 +35,7 @@ namespace z4c {class Z4c;}
 namespace z4c {class CCE;}
 namespace adm {class ADM;}
 namespace particles {class Particles;}
+namespace dust {class DustGasDrag;}
 namespace units {class Units;}
 namespace gravity {class Gravity;}
 
@@ -77,6 +78,7 @@ class MeshBlockPack {
   std::vector<z4c::CCE *> pz4c_cce;
   particles::Particles *ppart=nullptr;
   gravity::Gravity *pgrav=nullptr;
+  dust::DustGasDrag *pdust=nullptr;
 
 
   // units (needed to convert code units to cgs for, e.g., cooling or radiation)

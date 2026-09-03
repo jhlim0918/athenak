@@ -140,6 +140,8 @@ class Mesh {
 
   Real time, dt, dtold, dt_last_completed, dt_parabolic_sts, sts_max_dt_ratio, cfl_no;
   parabolic::STSIntegrator sts_integrator;
+  Real dtmax;                    // optional hard cap on dt (<time>/dtmax), for
+                                 // fixed-timestep convergence tests
   int ncycle;
   EventCounters ecounter;
 

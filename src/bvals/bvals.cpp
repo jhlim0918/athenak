@@ -444,6 +444,9 @@ void MeshBoundaryValues::InitializeBuffers(const int nvar) {
 particles::ParticlesBoundaryValues::ParticlesBoundaryValues(
   particles::Particles *pp, ParameterInput *pin) :
     sendlist("sendlist",1),
+    send_count("send_count",1),
+    sgid_map("sgid_map",1,1,1),
+    srank_map("srank_map",1,1,1),
 #if MPI_PARALLEL_ENABLED
     prtcl_rsendbuf("rsend",1),
     prtcl_rrecvbuf("rrecv",1),
@@ -458,6 +461,47 @@ particles::ParticlesBoundaryValues::ParticlesBoundaryValues(
   // create unique communicator for particles
   MPI_Comm_dup(MPI_COMM_WORLD, &mpi_comm_part);
 #endif
+
+  // With shear-periodic x1 boundaries, build the (side, lx3, lx2) -> gid/rank maps of
+  // the MeshBlocks adjacent to the two radial boundaries, used to route particles that
+  // cross them (their azimuthal shear shift changes the destination MeshBlock).
+  Mesh *pmesh = pp->pmy_pack->pmesh;
+  // Preserve the pre-dust behavior of every other particle type.  The transform below
+  // assumes the dust pusher's shear-relative velocity convention and RK registers; it
+  // is not a generic particle-boundary contract.
+  shear_periodic_x1 =
+      (pp->particle_type == ParticleType::dust) &&
+      (pmesh->mesh_bcs[BoundaryFace::inner_x1] == BoundaryFlag::shear_periodic);
+  if (shear_periodic_x1) {
+    if (pmesh->multilevel) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "Particles with shear-periodic boundaries do not "
+                << "support SMR/AMR" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    qshear_sp = pin->GetReal("shearing_box","qshear");
+    omega0_sp = pin->GetReal("shearing_box","omega0");
+    auto &mindcs = pmesh->mesh_indcs;
+    auto &bindcs = pmesh->mb_indcs;
+    int nmbx1 = mindcs.nx1/bindcs.nx1;
+    nmb_sp_x2 = std::max(mindcs.nx2/bindcs.nx2, 1);
+    nmb_sp_x3 = std::max(mindcs.nx3/bindcs.nx3, 1);
+    sgid_map = DualArray3D<int>("sgid_map", 2, nmb_sp_x3, nmb_sp_x2);
+    srank_map = DualArray3D<int>("srank_map", 2, nmb_sp_x3, nmb_sp_x2);
+    for (int m=0; m<(pmesh->nmb_total); ++m) {
+      auto &ll = pmesh->lloc_eachmb[m];
+      if (ll.lx1 == 0) {                // MeshBlocks at the inner x1 boundary
+        sgid_map.h_view(0,ll.lx3,ll.lx2) = m;
+        srank_map.h_view(0,ll.lx3,ll.lx2) = pmesh->rank_eachmb[m];
+      }
+      if (ll.lx1 == (nmbx1-1)) {        // MeshBlocks at the outer x1 boundary
+        sgid_map.h_view(1,ll.lx3,ll.lx2) = m;
+        srank_map.h_view(1,ll.lx3,ll.lx2) = pmesh->rank_eachmb[m];
+      }
+    }
+    Kokkos::deep_copy(sgid_map.d_view, sgid_map.h_view);
+    Kokkos::deep_copy(srank_map.d_view, srank_map.h_view);
+  }
 }
 
 //----------------------------------------------------------------------------------------

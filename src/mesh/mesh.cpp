@@ -671,6 +671,8 @@ void Mesh::NewTimeStep(const Real tlim) {
     dt_cycle = std::min(dt_cycle, sts_max_dt_ratio*dt_parabolic_sts);
   }
   dt = dt_cycle;
+  // optional hard cap (<time>/dtmax), e.g. for fixed-timestep convergence tests
+  dt = std::min(dt, dtmax);
 
   // limit last time step to stop at tlim *exactly*
   if ( (time < tlim) && ((time + dt) > tlim) ) {dt = tlim - time;}

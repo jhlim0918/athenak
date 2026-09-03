@@ -162,14 +162,21 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
        << out_params.block_name << "' but no Tmunu object has been constructed."
        << std::endl << "Input file is likely missing a <adm> block" << std::endl;
   }
-  if ((ivar>=151) && (ivar<153) && (pm->pmb_pack->ppart == nullptr)) {
+  if ((ivar>=151) && (ivar<154) && (pm->pmb_pack->ppart == nullptr)) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
        << "Output of particles requested in <output> block '"
        << out_params.block_name << "' but particle object not constructed."
        << std::endl << "Input file is likely missing corresponding block" << std::endl;
     exit(EXIT_FAILURE);
   }
-  if (ivar==153 && (pm->pmb_pack->pgrav == nullptr)) {
+  if ((ivar==153) && (pm->pmb_pack->pdust == nullptr)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+       << "Output variable 'dust_d' requested in <output> block '"
+       << out_params.block_name << "' but no dust object has been constructed."
+       << std::endl << "Input file is likely missing a <dust> block" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  if (ivar==154 && (pm->pmb_pack->pgrav == nullptr)) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
        << "Output of gravity potential requested in <output> block '"
        << out_params.block_name << "' but gravity object not constructed."
@@ -715,6 +722,13 @@ BaseTypeOutput::BaseTypeOutput(ParameterInput *pin, Mesh *pm, OutputParameters o
     out_params.contains_derived = true;
     out_params.n_derived += 1;
     outvars.emplace_back("pdens",0,&(derived_var));
+  }
+
+  // dust mass density binned to mesh (NGP, mass/volume)
+  if (out_params.variable.compare("dust_d") == 0) {
+    out_params.contains_derived = true;
+    out_params.n_derived += 1;
+    outvars.emplace_back("dustd",0,&(derived_var));
   }
 
   // initialize vector containing number of output MBs per rank
