@@ -1,0 +1,696 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,urlcolor=blue!60!black,
+            citecolor=blue!60!black]{hyperref}
+\usepackage[htt]{hyphenat}
+\usepackage{microtype}
+\emergencystretch=3em
+\usepackage{listings}
+\lstset{basicstyle=\ttfamily\footnotesize, backgroundcolor=\color{gray!8},
+        frame=single, rulecolor=\color{gray!40}, breaklines=true,
+        columns=fullflexible, keepspaces=true, showstringspaces=false}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\file}[1]{\texttt{\small #1}}
+\newcommand{\fn}[1]{\texttt{\small #1}}
+\newcommand{\Om}{\Omega_0}
+\newcommand{\qom}{q\Om}
+
+\newcommand{\invariant}[2]{%
+  \par\vspace{0.6em}\noindent
+  \fcolorbox{gray!40}{gray!8}{\parbox{0.97\linewidth}{\textbf{#1}\quad #2}}%
+  \par\vspace{0.6em}}
+
+\title{Dust Particles and Gas$+$Dust Self-Gravity\\
+       in the AthenaK Shearing Box\\[0.4em]
+       \large \textsc{Implementation Document}\\
+       \large Phase 4a: the dust-module merge}
+\author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}\\
+        \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
+        \code{78320aee} (second merge)}
+\date{September 3, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This document describes \emph{how} Lagrangian dust particles are being brought into
+the \code{athenak-multigrid} tree --- the shearing-box code with multigrid
+self-gravity on refined meshes documented in
+\file{multigrid\_shear\_implementation.pdf} --- on the way to gas$+$dust
+self-gravity in a stratified, cooling, gravito-turbulent box (the configuration of
+Baehr, Zhu \& Yang 2022, with the radial pressure gradient they omitted). It is the
+companion to \file{dust\_selfgravity\_validation.pdf}, which records what the
+resulting code does on test problems. Both documents are meant to grow phase by phase.
+
+\textbf{Phase 4a}, recorded here, merges the sibling fork \code{athenak-dust}
+(particle-mesh dust with IMEX drag, validated in its own repository) into the
+multigrid tree. The merge itself is mechanical --- eight keep-both conflicts and one
+renumbered output slot --- but it exposed a real defect: the dust module's additive
+ghost-deposit exchange was written against the per-neighbor MPI messaging of
+July's upstream, while this tree carries the rank-packed messaging of upstream
+\#775. Any multi-rank dust run deadlocked at cycle 0. The exchange now uses the
+aggregated-message path with the same idiom as the cell-centered exchange, and
+ranks 1, 2 and 4 agree to every printed digit. A second follow-up aligns the dust
+task graph with the tree's Prolongate-before-boundary-conditions order.
+
+A \textbf{second merge} the same day caught the tree up with the dust fork's own
+latest work (seven commits, to \code{1f3e1ed9}): the fork had independently made
+the identical rank-packed rewrite of the deposit exchange, so that conflict resolves
+to their version; and it now offers two \emph{predictor--corrector} coupling modes
+(\code{coupling = pc2} and the adaptive \code{hybrid}) that run under plain
+\code{rk2}, second order in the resolved drag regime with a stiff backward-Euler
+fallback. Dust can therefore run under the same integrator as every gravity
+validation before it; the \code{imex2+} path remains for stiff cases.
+
+The document also records, for the phases that follow, the integration map derived
+from the code survey: where the gravity solve is called relative to the dust task
+graph, the three places the solver reads density, the ghost-width contract of the
+potential, and the design chosen for the particle force (grid gradient, exchanged
+and shear-remapped like the module's provisional gas velocity, gathered with the
+deposit kernel), together with the known gaps that Phases 4b--4d must close.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%=========================================================================================
+\section{Scope, sources, and how to read this}
+\label{sec:scope}
+
+\subsection{What this document is}
+
+This is an implementation reference for the dust track. For each phase it answers:
+what the code relies on, where that is established and enforced, which data
+structure carries the new state, which function does the work, and from which call
+site it is reached. Results live in the companion documents:
+
+\begin{center}
+\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{7.4cm}>{\raggedright\arraybackslash}p{7.6cm}@{}}
+\toprule
+\file{validation/dust\_selfgravity\_validation.pdf} & results, tests, figures (this track) \\
+\file{validation/multigrid\_shear\_implementation.pdf} & the gravity/refinement machinery being extended \\
+\file{validation/multigrid\_selfgravity\_validation.pdf} & its validation record (Phases 0--3) \\
+\file{../athenak\_dust\_tests/} & the dust module's own validation notebooks and inputs \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{The program}
+\label{sec:program}
+
+The target science is the interaction of gravitational instability of the gas with
+dust concentration and collapse in a shearing box: Baehr, Zhu \& Yang (2022, ApJ 933,
+100) in 3D stratified, cooling, gravito-turbulent boxes with superparticles at
+$\mathrm{St} = 0.1$--$10$, plus the radial pressure gradient (and hence the streaming
+instability) that their setup left out, and eventually adaptive zoom on the dust
+clumps. The phases:
+
+\begin{center}
+\small
+\begin{tabular}{@{}llp{8.6cm}@{}}
+\toprule
+Phase & Status & Content \\
+\midrule
+4a & \textbf{done} & merge \code{athenak-dust} into the multigrid tree; establish that both
+     the dust module and the gravity machinery are unchanged by the merge \\
+4b & next & shear-periodic \emph{additive} deposit remap; ideal-gas energy update under
+     drag back-reaction; particle timestep on the shear-subtracted velocity; adopt the
+     PC2 coupling (\S\ref{sec:merge2}) as the production path \\
+4c & planned & dust self-gravity: mass deposit into the Poisson source, three density
+     reads, force gather to particles; dust-only and gas$+$dust tests \\
+4d & planned & the science configuration: SC14 box $+$ pressure gradient $+$ dust;
+     particle restart; clump diagnostics \\
+5  & deferred & particles on refined meshes (deposit exchange across levels, particle
+     redistribution on remesh) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Commit provenance}
+
+\begin{table}[htb]
+\centering
+\small
+\begin{tabular}{@{}llp{9.4cm}@{}}
+\toprule
+Commit & Phase & Content \\
+\midrule
+\code{449b8f09} & 4a & Merge of \code{dust/dust} (\code{d6de1296}) into \code{multigrid}
+                       (\code{b4d4c547}); eight conflicts resolved keep-both; output slot
+                       \code{grav\_phi} $153 \to 154$ \\
+\code{a7c0def3} & 4a & Dust task graph: \fn{Prolongate} before \fn{ApplyPhysicalBCs} \\
+\code{774c6519} & 4a & \file{bvals\_dep.cpp}: additive deposit exchange on the rank-packed
+                       MPI vars path (multi-rank deadlock fix) \\
+\code{78320aee} & 4a & Second merge, \code{dust/dust} at \code{1f3e1ed9}: the fork's own
+                       rank-packed deposit exchange (taken), PC2/hybrid coupling, PM
+                       optimizations; three conflicts (\S\ref{sec:merge2}) \\
+\bottomrule
+\end{tabular}
+\caption{Implementation commits covered by this document.}
+\label{tab:commits}
+\end{table}
+
+The merged fork is \code{github.com/athenak-dust/athenak}, branch \code{dust}. At
+the first merge it stood at \code{d6de1296}, thirteen commits on top of upstream
+AthenaK as of July 8, 2026 (commit \code{5f199310}, the merge base with this tree).
+The one that matters is \code{e785735e} ``Add IMEX dust-particle coupling to
+hydrodynamics'' (36 files, $+3864$ lines); the rest are the matrix-free coupled drag
+solvers, GPU migration fixes, a snapshot-seeded clump benchmark, and diagnostics.
+The local clone turned out to be two weeks stale; the second merge (\S\ref{sec:merge2})
+brought in the seven commits through \code{1f3e1ed9} (September 2). The remote is
+registered locally as \code{dust} (\code{git remote add dust ../athenak-dust}), so
+later fixes in that fork come in with a plain \code{git merge dust/dust} --- which is
+exactly what the second merge was.
+
+\subsection{Files touched}
+
+\begin{center}
+\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{6.6cm}>{\raggedright\arraybackslash}p{9.2cm}@{}}
+\toprule
+File & Role \\
+\midrule
+\file{src/dust/dust.\{cpp,hpp\}} & \code{DustGasDrag} module: parameters, arrays,
+  boundary objects, guards, the shared PM kernel \fn{dust::PMWeights} \\
+\file{src/dust/dust\_tasks.cpp} & the combined hydro$+$particle task graph
+  (\fn{AssembleDustGasDragTasks}) and the boundary tasks \\
+\file{src/dust/dust\_pm.cpp} & deposit, per-cell implicit solve, gather/kick, back-reaction \\
+\file{src/dust/dust\_push.cpp} & explicit particle push (Coriolis, tide, drift, drag history) \\
+\file{src/dust/dust\_newdt.cpp} & particle transport timestep, stopping-time bookkeeping,
+  the $\gamma$-switch \\
+\file{src/dust/dust\_solver.cpp} & optional matrix-free coupled drag solvers \\
+\file{src/bvals/bvals\_dep.cpp} & \code{MeshBoundaryValuesDep}: additive ghost-deposit
+  exchange (rewired in 4a) \\
+\file{src/bvals/bvals\_part.cpp}, \file{bvals.\{cpp,hpp\}} & shear-periodic particle
+  routing; deposit-exchange class declaration \\
+\file{src/driver/driver.\{cpp,hpp\}} & \fn{SetImEx2PlusCoefficients} (the $\gamma$-switch
+  entry point) \\
+\file{src/mesh/meshblock\_pack.\{cpp,hpp\}} & \code{pdust} registration; hydro/particle
+  task lists ceded to the dust module when a \code{<dust>} block exists \\
+\file{src/mesh/mesh.\{cpp,hpp\}}, \file{build\_tree.cpp} & \code{<time>/dtmax} hard cap \\
+\file{src/athena.hpp} & widened \code{ParticlesIndex} (17 real, 3 integer fields) \\
+\file{src/outputs/*} & \code{dust\_d} derived output; particle velocities in \code{pvtk};
+  slot renumbering \\
+\file{src/pgen/tests/dust\_*.cpp}, \file{streaming\_linear.cpp} & the four built-in dust
+  problem generators \\
+\file{inputs/dust/*.athinput} & their reference inputs \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+%=========================================================================================
+\section{The target problem and the design it implies}
+\label{sec:design}
+
+\subsection{What is being built}
+
+The reference implementation for particle self-gravity in a shearing box is the
+Athena-C problem generator \file{parsg\_strat3d.c} in \file{athena\_parsg/src/prob/}
+(Rixin Li's fork). Its method, with \code{PLUS\_GAS\_SELF\_GRAVITY}: deposit the dust mass onto the grid with
+the TSC kernel, \emph{add the gas density into the same buffer}, solve \emph{one}
+Poisson equation, difference $\Phi$ on the grid, and interpolate the resulting
+acceleration to the particles with the \emph{same} TSC kernel used for the deposit.
+The gas feels the total potential as a body force. Baehr et al.\ do the same in
+\textsc{Pencil} (their eq.~15, $\rho = \rho_g + \rho_d$ in a periodic FFT). Two
+details of the Athena-C version are not to be copied: its deposit omits the
+cell-volume division and hides it in the particle mass, and its drag feedback must
+subtract the gravitational kick because gravity is folded into the same implicit
+particle update as drag.
+
+\subsection{The integration map}
+\label{sec:map}
+
+The survey of this tree fixed where each piece attaches. These are facts about the
+code as merged; the items marked \emph{planned} are the Phase 4b/4c designs.
+
+\paragraph{Where gravity is solved.} Gravity has no task-list entry. The driver
+calls \fn{Gravity::Solve(stage)} once per explicit stage, \emph{between} the
+\code{before\_stagen} and \code{stagen} task lists
+(\file{driver/driver.cpp}, lines 563--569). Anything the solver must see --- the dust mass
+deposit and its ghost exchange --- has to complete inside \code{before\_stagen}
+(\emph{planned}: a deposit task there, on the stage-start particle positions).
+
+\paragraph{The three density reads.} The solver reads gas density in three places,
+and all three must learn about dust (\emph{planned}, Phase 4c):
+\begin{itemize}\itemsep2pt
+  \item \file{gravity/mg\_gravity.cpp:353}, \fn{LoadSource(u0, IDN, \ldots)} into the
+        multigrid source: loads active zones \emph{plus one ghost layer}, so the dust
+        deposit must already be additively ghost-exchanged one layer deep;
+  \item \file{multigrid/multigrid\_slab.cpp:263}, the slab-plane gather that builds the
+        open-$z$ Dirichlet planes (active zones, reduced across ranks) --- omitting dust
+        here would make the planes inconsistent with the interior source;
+  \item \file{gravity/fft\_gravity.cpp:218}, the FFT oracle's density gather.
+\end{itemize}
+
+\paragraph{The potential's ghost contract.} \code{phi} is allocated with the hydro
+ghost width but only \emph{one} ghost layer is ever filled
+(\code{mg\_nghost = 1}; larger values are fatal with shear). The gas source term
+(\fn{SourceTerms::SelfGravity}, \file{srcterms/srcterms.cpp:298}) needs exactly
+that: a centered $-\rho\nabla\Phi$ for momentum and the flux-based energy term of
+Mullen, Hanawa \& Gammie (2020). A TSC gather at a particle in the last active cell
+reaches one ghost cell of the \emph{acceleration}, i.e.\ two of the potential.
+\emph{Planned}: compute $\mathbf g = -\nabla\Phi$ on active cells, then copy-exchange
+and shear-remap the three-component field exactly as the module already does for its
+provisional gas velocity $u^\ast$ (\code{MeshBoundaryValuesCC} plus a
+\code{ShearingBoxCC}), and gather with \fn{dust::PMWeights}. Using the deposit kernel
+for the force gather --- not the derivative of the kernel --- is the
+Hockney--Eastwood choice that suppresses self-force, and it is what the Athena-C
+reference does.
+
+\paragraph{Where the particle force goes.} \fn{DustGasDrag::ExplicitPush}
+(\file{dust/dust\_push.cpp:65}) already assembles the Coriolis and vertical-tide
+accelerations per particle; the gathered $\mathbf g$ joins them there. The
+back-reaction deposits only the drag kick $\Delta v_j = c_j(\tilde u^\ast_j - v_j)$,
+so gravity is never double-counted --- there is no analogue of the Athena-C
+\fn{feedback\_corrector} subtraction to write.
+
+\paragraph{The gas force.} Nothing to add: the existing source term applies whatever
+potential the solver produced.
+
+\paragraph{Stage structure.} Under \code{coupling = imex}, \code{imex2+} has three
+explicit stages of which the third is dormant for explicit physics ($\beta_3 = 0$);
+the gravity solve should be skipped there or a third of the solver cost is wasted
+(\emph{planned}). Under the PC2/hybrid couplings of \S\ref{sec:merge2} the integrator
+is \code{rk2} and the gravity solve runs exactly as it does for gas alone.
+
+%=========================================================================================
+\section{The dust module as inherited}
+\label{sec:module}
+
+This section is the working summary of \code{athenak-dust}, with the facts the later
+phases build on. The design is Yang \& Johansen (2016) particle-mesh coupling (one
+shared kernel for scatter and gather, exact momentum-conserving back-reaction) with
+the Benítez-Llambay, Krapp \& Pessah (2019) closed-form per-cell implicit drag inside
+the Krapp et al.\ (2024) IMEX(4,3,2) integrator (\code{imex2+}), generalized to
+per-particle stopping times.
+
+\subsection{Data layout}
+
+Particles are two flat device arrays indexed \code{(field, particle)}. The field
+enumeration (\file{athena.hpp:76}) is
+\begin{lstlisting}
+enum ParticlesIndex {PGID=0, PTAG=1, PSP=2,
+                     IPX=0, IPVX=1, IPY=2, IPVY=3, IPZ=4, IPVZ=5,
+                     IPX1=6, IPVX1=7, IPY1=8, IPVY1=9, IPZ1=10, IPVZ1=11,
+                     IPRX=12, IPRY=13, IPRZ=14, IPTS=15, IPM=16};
+\end{lstlisting}
+so a dust particle carries position, velocity (all three components even in 2D
+$r$--$z$), the low-storage stage-1 registers, the recorded drag rate
+$R_j$, its stopping time and its \textbf{mass}. Integer data: owning MeshBlock,
+global tag, species. \code{nrdata = 17}, \code{nidata = 3}.
+
+\subsection{The particle-mesh kernel}
+
+\fn{dust::PMWeights} (\file{dust/dust.hpp:78}) returns the three weights of a
+NGP / CIC / TSC stencil in one direction; every deposit, gather, matrix-free
+operator and kick uses it, which is what makes scatter and gather weights identical
+by construction. \code{<dust>/deposit} selects the kernel (default \code{tsc}); the
+stencil is always three wide (NGP zeroes the wings). Particle-mesh assignment needs
+\code{nghost >= 2}.
+
+\subsection{The stage algorithm}
+\label{sec:stage}
+
+Per explicit stage, on the conserved gas state (primitives are stale mid-stage),
+with $a\,\Delta t = a_{\rm impl}\Delta t$ the implicit weight of the tableau:
+\begin{enumerate}\itemsep2pt
+  \item \fn{DepositDrag}: scatter $Q = \sum_j \mu_j W_{jk}$ and
+        $\mathbf P = \sum_j \mu_j W_{jk}\mathbf v_j$ with $c_j = a\Delta t/(t_{s,j} + a\Delta t)$,
+        $\mu_j = m_j c_j / V$ (a \emph{drag-weighted} density, not a mass density);
+        additive halo exchange.
+  \item \fn{GasImplicitSolve}: per cell, $\mathbf u^\ast = (\rho\mathbf u + \mathbf P)/(\rho + Q)$,
+        the closed-form momentum-conserving backward-Euler pair. With
+        \code{back\_reaction = false} the deposits are excluded so test particles are
+        kicked toward the unmodified gas.
+  \item Copy exchange of $\mathbf u^\ast$ ghosts (plus shear remap in a 3D shearing box).
+  \item \fn{GatherKickPMBR}: gather $\tilde{\mathbf u}^\ast_j$, kick
+        $\Delta\mathbf v_j = c_j(\tilde{\mathbf u}^\ast_j - \mathbf v_j)$, record
+        $R_j = \Delta\mathbf v_j/(a\Delta t)$, and deposit
+        $-m_j W_{jk}\Delta\mathbf v_j/V$ with the \emph{same} weights and the same
+        $\Delta\mathbf v$ --- exact momentum conservation to round-off.
+  \item Additive halo exchange of that deposit; \fn{ApplyPMBR} adds it to the gas
+        momentum and rescales it in place into the gas drag rate $R_g$.
+  \item Next stage, the history terms $\tilde a_{22}\Delta t\,R$ enter on both sides
+        (\fn{AddDragHistoryGas}; the particle side inside \fn{ExplicitPush}).
+\end{enumerate}
+There is \emph{no} drag timestep constraint for any $t_s$ or dust-to-gas ratio; only
+particle transport limits $\Delta t$ (\S\ref{sec:dt}).
+
+\subsection{The task graph}
+\label{sec:graph}
+
+When a \code{<dust>} block exists, \fn{MeshBlockPack::AddPhysics} skips both
+\fn{Hydro::AssembleHydroTasks} and \fn{Particles::AssembleTasks} and hands the whole
+graph to \fn{DustGasDrag::AssembleDustGasDragTasks} (\file{mesh/meshblock\_pack.cpp:265--271},
+\file{dust/dust\_tasks.cpp:37--108}), the same pattern as \code{IonNeutral}. The
+consequence for later phases:
+
+\invariant{Ownership.}{The dust module owns the entire per-stage task graph. Any
+task the gravity work needs (deposit, exchange, force gather) is inserted into
+\fn{AssembleDustGasDragTasks}, and the hydro chain inside it must track changes made
+to \fn{Hydro::AssembleHydroTasks} in this tree (the 4a follow-up
+\code{a7c0def3} is the first instance).}
+
+The \code{stagen} sequence: \fn{FirstTwoImpRK} (replaces \fn{CopyCons}) $\to$ gas
+fluxes / update / source terms $\to$ \fn{AddDragHistoryGas}; in parallel
+\fn{ExplicitPush} $\to$ particle migration (\fn{NewGID}, counts, sends, receives ---
+\emph{inside every stage}, not once per cycle) $\to$ the deposit chain of
+\S\ref{sec:stage} $\to$ the gas tail (orbital advection, restrict, exchange, shear
+exchange, \fn{Prolongate}, \fn{ApplyPhysicalBCs}, \fn{ConToPrim}, timesteps). Every
+dust task returns early on the dormant third stage.
+
+\subsection{Shearing-box conventions}
+
+Particle velocities are \emph{shear-subtracted}: the explicit push applies the
+FARGO-form Coriolis terms $f_x = 2\Om v_y$, $f_y = -(2-q)\Om v_x$ and, with
+\code{<shearing\_box>/stratified}, $f_z = -\Om^2 z$
+(\file{dust/dust\_push.cpp:98--100}); positions drift with the \emph{full}
+azimuthal velocity, $\dot y = v_y - \qom x$ (\file{:113--114}). This matches the gas
+with \code{orbital\_advection = true} (the tree's default and the SC14 setting).
+Crossing a radial face is therefore a \emph{position-only} transform: wrap $x$, shift
+$y$ by $\mp y_{\rm sh}$, $y_{\rm sh} = \qom L_x t \bmod L_y$
+(\file{bvals/bvals\_part.cpp:76,134}), with the RK position registers shifted by the
+same amounts so the low-storage combination stays in one periodic image. The
+destination MeshBlock is found from a precomputed $(y,z)\to$ (gid, rank) map of the
+face blocks, not from the $x_1$ neighbor.
+
+The radial pressure gradient is a gas-only constant acceleration through the stock
+\code{<hydro\_srcterms>/const\_accel} machinery ($2\Om\eta v_K$ along $x$); particles
+never feel it.
+
+\subsection{The particle timestep}
+\label{sec:dt}
+
+\fn{DustGasDrag::NewTimeStep} (\file{dust/dust\_newdt.cpp:95}) takes
+$\min_p \min_i \Delta x_i/|v_{{\rm transport},i}|$ times \code{<dust>/dt\_cfl}
+(default $0.5$), where in a 3D shearing box $v_{{\rm transport},y} = v_y - \qom x$
+(\file{:120}). In a wide box this is the same penalty the gas pays without orbital
+advection ($\sim 5\times$ at SC14 size). Phase 4b relaxes it (\S\ref{sec:next}).
+
+\subsection{Guards and parameters}
+
+Fatal conditions in \fn{DustGasDrag::DustGasDrag} (\file{dust/dust.cpp}): MHD
+present (\code{:45}); 1D mesh (\code{:50}); an integrator other than \code{imex2+}
+(\code{:63}); \code{multilevel} (\code{:69}); boundaries neither strictly periodic
+nor 3D with shear-periodic $x_1$ (\code{:78}); \code{nghost < 2} (\code{:93});
+back-reaction with a non-isothermal EOS (\code{:170}); a coupled solver other than
+\code{local} with shear (\code{:227}). A \emph{warning} at \code{:84} states that
+ghost deposits are exchanged with the plain-periodic pattern under shear, exact only
+for azimuthally uniform states. The same \code{multilevel} guard is repeated in the
+\code{MeshBoundaryValuesDep} constructor and in the shear-periodic particle
+constructor. The parameter interface is reproduced in \S\ref{sec:params}.
+
+%=========================================================================================
+\section{Phase 4a: the merge}
+\label{sec:phase4a}
+
+\subsection{Route}
+
+The two forks share upstream history through \code{5f199310} (July 8, 2026); the
+dust fork adds 13 commits, this tree about 140 including an upstream merge on
+August 10 that brought in \#775 (rank-packed boundary messaging) and \#612
+(\code{imex2+}). A merge was preferred over cherry-picks: it keeps the dust fork's
+history and authorship, resolves conflicts once, and makes later fixes from that
+fork a one-line pull. The whole sequence was first rehearsed in a scratch clone
+(conflicts, follow-ups, both builds, the full acceptance battery) and then repeated
+in the working tree with the rehearsed resolutions copied in.
+
+\subsection{Conflicts}
+
+Eighteen files were touched by both forks; eight conflicted, all of the same kind
+--- both sides appended adjacent code at the same anchor --- and all were resolved by
+keeping both sides:
+
+\begin{center}
+\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{4.6cm}>{\raggedright\arraybackslash}p{5.4cm}>{\raggedright\arraybackslash}p{5.8cm}@{}}
+\toprule
+File & this tree had added & the dust fork had added \\
+\midrule
+\file{driver/driver.cpp} & the super-time-stepping controller functions &
+  \fn{SetImEx2PlusCoefficients} (the constructor's inline \code{imex2+} tableau moved
+  into a function the $\gamma$-switch can call) \\
+\file{mesh/mesh.cpp}, \file{mesh.hpp} & STS timestep cap and members & \code{dtmax}
+  hard cap (default $\infty$, inert) \\
+\file{mesh/meshblock\_pack.cpp}, \file{.hpp} & physics (9) gravity, \code{pgrav} &
+  physics (10) dust, \code{pdust} \\
+\file{outputs/outputs.hpp}, \file{basetype\_output.cpp} & \code{grav\_phi} at slot 153
+  and its guard & \code{dust\_d} at slot 153 and its guard \\
+\file{parameter\_input.cpp} & \code{gravity} in the block-name list & \code{dust} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{The output slot.} Output variable names live in one static array,
+\code{var\_choice}, and the index of the matching name (\code{ivar}) is used only by
+the sanity guards that test numeric ranges (``151--153 are particle outputs, so a
+\code{<particles>} block must exist''). Each fork had appended one name at position
+153 and written a guard for it. Resolution: \code{dust\_d} keeps 153,
+\code{grav\_phi} becomes 154, \code{NOUTPUT\_CHOICES} $154 \to 155$, the gravity
+guard tests 154. Everything downstream selects by name string, so the number appears
+nowhere else. The 31 auto-merged files were verified identical to the rehearsal.
+
+\subsection{Follow-up 1: task order}
+
+Upstream reordered the hydro chain to \fn{Prolongate} $\to$ \fn{ApplyPhysicalBCs}
+$\to$ \fn{ConToPrim} (so physical boundaries act on prolongated ghosts); the dust
+graph still had the July order. Commit \code{a7c0def3} aligns
+\file{dust/dust\_tasks.cpp:96--98}. Inert on uniform meshes (dust is fatal on refined
+ones), but the invariant of \S\ref{sec:graph} says keep them in lockstep.
+
+\subsection{Follow-up 2: the deposit exchange on the rank-packed path}
+\label{sec:rankpacked}
+
+\paragraph{Symptom.} The first multi-rank test of the merged tree (the damping
+problem with drifting particles, \code{v0 = 0.5}, 4 ranks) hung at cycle 0 with all
+four processes spinning; the 1-rank run of the same binary reproduced the reference
+number exactly, and multigrid tests at 4 ranks were bit-identical to serial.
+
+\paragraph{Mechanism.} \code{MeshBoundaryValuesDep} (\file{bvals/bvals\_dep.cpp})
+was written as a copy of July's \code{MeshBoundaryValuesCC}: per-neighbor
+\code{MPI\_Isend} on \code{sendbuf[n].vars\_req[m]} with
+\fn{CreateBvals\_MPI\_Tag(lid, dn)} tags, and per-neighbor \code{MPI\_Test} on
+\code{recvbuf[n].vars\_req[m]}, relying on the base class \fn{InitRecv} to post the
+matching per-neighbor receives. In this tree \fn{MeshBoundaryValues::InitRecv}
+(\file{bvals/bvals\_tasks.cpp:32}) is \emph{rank-packed} since upstream \#775: it
+builds, once per mesh sequence, a metadata table of all (block, neighbor) payloads
+per peer rank (\fn{BuildRankPackedVarMetadata}, \file{bvals/bvals.cpp:134}, which
+also does a one-shot header exchange so receivers know the pack order), and posts
+\emph{one} \code{MPI\_Irecv} per peer rank with tag 1 into
+\code{rank\_recvbuf\_vars\_}. \fn{ClearRecv}/\fn{ClearSend} wait on those aggregated
+requests. So the deposit's per-neighbor sends had no receiver, its tests polled
+requests that were never posted, and the stage never completed.
+
+\paragraph{Fix.} Commit \code{774c6519} re-expresses the two transport steps in the
+same idiom as the cell-centered exchange (\fn{PackAndSendCC} and \fn{RecvAndUnpackCC}
+of \code{MeshBoundaryValuesCC}):
+\begin{itemize}\itemsep2pt
+  \item \fn{PackAndSendDeposit} (\file{:122}): on-rank neighbors are still written
+        straight into the destination's \code{recvbuf[dn].vars}; off-rank payloads go
+        into \code{rank\_sendbuf\_vars\_} at \code{send\_agg\_offset\_(m*nnghbr+n)}; after
+        one fence, one \code{MPI\_Isend} per message in \code{send\_var\_msgs\_} (tag 1,
+        \code{send\_var\_reqs\_});
+  \item \fn{RecvAndSumDeposit} (\file{:228}): \code{MPI\_Test} over
+        \code{recv\_var\_reqs\_}; in the (deliberately scalar) loop over neighbors the
+        addend is \code{aggrbuf(base + bi)} when \code{recv\_agg\_offset\_(m*nnghbr+n) >= 0}
+        and \code{rbuf[n].vars(m, bi)} otherwise.
+\end{itemize}
+The metadata builder sizes each entry from the buffer index ranges the derived class
+defines (\fn{GetVarDataSize} $\to$ \code{isame\_ndat}), so the reversed data flow of
+the additive exchange (pack ghosts, sum into active strips) needs no change to the
+base class. The serial path is unchanged (bit-identical damping ladder); ranks 1, 2
+and 4 now agree to every printed digit.
+
+\invariant{Messaging.}{Every new boundary-exchange class in this tree must use the
+rank-packed vars path (\code{send\_var\_msgs\_} / \code{recv\_var\_reqs\_} /
+\code{*\_agg\_offset\_}); the per-neighbor \code{vars\_req} arrays are dead for vars
+traffic and only the flux-correction path still posts per-neighbor requests.}
+
+\subsection{The second merge: catching up with the dust fork}
+\label{sec:merge2}
+
+\paragraph{What came in.} A question about a colleague's commit revealed that the
+local dust clone was two weeks behind. \code{origin/dust} at \code{1f3e1ed9} adds,
+oldest first: a CPU particle-mesh optimization (plain addition instead of atomics
+under \code{Kokkos::Serial}, weights evaluated in cell coordinates); the NSH generator
+without dust; \emph{their own} import of upstream \#775 (\code{0d7688b6}),
+extended to the additive deposit exchange --- the same rewrite as \code{774c6519},
+validated by them at 2, 4 and 8 ranks and on CUDA; adaptive PC2 / split-BE coupling
+(\code{4b44ba09}); and direct PC2 (\code{7fc41cd8}).
+
+\paragraph{Conflicts.} Three files. \file{bvals/bvals\_dep.cpp}: both sides rewrote
+the same functions the same way; the fork's version was taken (it additionally
+rebuilds the rank-packed metadata inside \fn{PackAndSendDeposit} when the variable
+count or mesh sequence changed, instead of relying on \fn{InitRecv} having run).
+\file{bvals/bvals\_fc.cpp}: ours kept --- the early return on inactive face-centered
+faces is upstream \#739's $\nabla\!\cdot\!B$ fix, which the fork's \#775 import predates.
+\file{mesh/mesh\_refinement.cpp}: ours kept --- the fork calls
+\fn{InitBoundaryValuesAndPrimitives} at the ancestor's position, while the Phase-0c
+code here calls it later, after the shear-state rebuild; keeping both would call it
+twice. The base boundary-value files auto-merged with \emph{no net change}: the
+fork's \#775 import is textually the upstream copy this tree already had.
+
+\paragraph{The PC2 and hybrid couplings.} \code{<dust>/coupling} now selects
+\code{imex} (the default, \S\ref{sec:stage}, requires \code{imex2+}), \code{hybrid}, or
+\code{pc2} (both require \code{rk2}; \code{gamma\_switch} is ignored with a warning).
+From the fork's own description: the \emph{PC2} branch advances the particles once
+per cycle without a coupled gas solve --- a fresh old-state drag-feedback predictor
+is deposited during RK stage 1, the midpoint gas velocity is built after the completed
+stage-1 boundary tail, the particles take an implicit-midpoint drag update at the
+predicted midpoint position, the actual drag impulse is deposited at that midpoint,
+and the final gas momentum is corrected by removing the tableau-weighted predictor.
+Particles migrate once, after the update. The \emph{split-BE} branch first completes a
+dust-free hydro RK2 step and then performs one full-$\Delta t$ coupled backward-Euler
+drag solve (first order, L-stable). \code{hybrid} switches between them globally with
+hysteresis on two stiffness measures,
+\begin{equation}
+  \zeta = \max_p \frac{\Delta t}{t_{s,p}}, \qquad
+  \chi  = \max \frac{\Delta t\,\rho_d}{\rho_g\,t_s},
+\end{equation}
+entering split-BE when either exceeds \code{hybrid\_enter\_\{zeta,chi\}} ($0.5$) and
+returning to PC2 only when both fall below \code{hybrid\_exit\_\{zeta,chi\}} ($0.25$);
+\code{hybrid\_force\_mode = pc2 | split\_be} pins a branch, and \code{coupling = pc2}
+is that pin made permanent. The choice is reduced across ranks so every rank takes the
+same branch, and a \code{DUST\_HYBRID\_SUMMARY} line reports the cycle counts and the
+last $\zeta$, $\chi$. In the task graph (\file{dust/dust\_tasks.cpp}) this appears as
+per-stage gates on every exchange and two migration chains; the deposited $Q,\mathbf P$
+field gains a fifth feedback-rate channel; a second timestep task follows the split-BE
+migration.
+
+\paragraph{Consequence for the program.} The science targets ($\mathrm{St} = 0.1$--$10$
+at $\Delta t \sim 10^{-2}\,\Om^{-1}$) sit in the resolved regime $\zeta \ll 1$, so
+\code{coupling = pc2} under \code{rk2} is the natural production setting: second
+order, about twice the speed of the IMEX dc1 path by the fork's measurement, no
+\code{imex2+} CFL penalty, and the same integrator as all gravity validation. Note
+that \code{hybrid} with the three-species NSH test ($t_{s,\min} = 0.01$) already
+trips $\zeta = 0.55$ and runs split-BE throughout; the validation document records
+the first-order signature that produces. The IMEX path stays as the reference for
+stiff configurations.
+
+\subsection{Build notes}
+
+\code{imex2+} needed nothing: it is upstream \#612 and was already in the tree; the
+dust fork only refactored its coefficients into \fn{SetImEx2PlusCoefficients}. Dust
+sources are part of every build (\file{src/CMakeLists.txt}); the four dust problem
+generators are built-in (\code{-D PROBLEM=built\_in\_pgens}, selected by
+\code{<problem>/pgen\_name}). The rehearsal clone was built without network by
+linking the tree's \file{kokkos} checkout and pointing
+\code{FETCHCONTENT\_SOURCE\_DIR\_KOKKOS-FFT} at the cached \file{build/\_deps/kokkos-fft-src}.
+
+%=========================================================================================
+\section{What the next phases must add}
+\label{sec:next}
+
+The survey established these gaps; they are listed in the order they bite.
+
+\begin{enumerate}\itemsep4pt
+\item \textbf{Shear-periodic additive deposit remap (4b).} The $u^\ast$ copy exchange
+      is shear-remapped, the two additive deposits ($Q,\mathbf P$ and the back-reaction
+      momentum) are not; the module warns and is exact only for axisymmetric states.
+      The Phase-4c gravity deposit will be a third additive field. Design: gather the
+      $x_1$ ghost slabs of the boundary blocks, shift in $y$ by $\pm y_{\rm sh}$ with
+      the conservative remap kernels of \file{remap\_fluxes.hpp} (the Phase-1
+      machinery; PPMX default), and \emph{add} into the receiving active strips ---
+      i.e.\ a \code{ShearingBoxCC}-style pack/remap with additive unpack. Mass is
+      conserved exactly by construction; the remap's smoothing touches only the
+      ghost-sourced part of the boundary columns. The alternative (image particles
+      deposited directly in the neighbor's frame) is exact but needs a second particle
+      exchange; keep it in reserve.
+\item \textbf{Ideal-gas back-reaction (4b).} \fn{ApplyPMBR} updates momentum only, so
+      back-reaction requires an isothermal EOS, while gravito-turbulence needs cooling.
+      Add $\Delta E = \Delta(|\mathbf M|^2/2\rho)$ (internal energy fixed under the drag
+      kick), with frictional heating as a flagged option.
+\item \textbf{Particle timestep under shear (4b).} Limit on $v_y$, not $v_y - \qom x$,
+      with a guard that the per-stage azimuthal jump stays below a MeshBlock width
+      (migration is position-based and finds the destination by $(y,z)$ lookup, so
+      multi-cell jumps are legal). Otherwise every dust run in a wide box pays the
+      non-FARGO factor.
+\item \textbf{Dust self-gravity (4c).} A plain mass deposit $\sum_j m_j W_{jk}/V$ into
+      a new \code{rho\_dust} (with the additive exchange of item 1), added at the three
+      reads of \S\ref{sec:map}; the $\mathbf g$ field, its exchange, and the gather in
+      \fn{ExplicitPush}; skip the dormant-stage solve. The FFT solver is extended too so
+      it remains the oracle (decided).
+\item \textbf{Particle restart (4d).} \file{outputs/restart.cpp} ignores the particle
+      arrays; long cluster runs are restart chains.
+\item \textbf{Diagnostics (4d).} \code{dust\_d} is an NGP binning while the physics
+      deposit is TSC; \code{pvtk} omits stopping time and mass; the SC14 history's
+      gravitational stress becomes a \emph{total}-gravity stress once dust contributes
+      to $\Phi$ and needs its own dust columns; a Roche-density / Hill-radius clump
+      finder does not exist.
+\item \textbf{Vertical boundary policy (4c/4d).} Particles reaching the open (diode)
+      $z$ faces and deposits landing in their ghost zones: the Athena-C reference
+      silently discards both; decide explicitly and count the mass.
+\item \textbf{Refinement (Phase 5).} Dust is fatal on \code{multilevel} in three
+      places, and upstream particles have no remesh handling at all (\code{PGID} goes
+      stale after the first regrid; nothing in \file{mesh\_refinement.cpp} touches
+      particles). Needs the deposit exchange across levels and a particle
+      redistribution hook next to \fn{ShearingBox::ReinitAfterMeshUpdate}.
+\item \textbf{Upstream defect.} \code{Particles::dtnew} is never assigned on the
+      cosmic-ray path yet is read by \fn{Mesh::NewTimeStep}; the dust module sets it,
+      plain particle runs do not.
+\end{enumerate}
+
+%=========================================================================================
+\section{Input-file interface}
+\label{sec:params}
+
+Required: \code{<time>/integrator = imex2+} for \code{coupling = imex}, \code{rk2}
+for \code{pc2} or \code{hybrid}; \code{<particles>/particle\_type = dust},
+\code{pusher = imex\_dust}, \code{ppc} (particles per cell, an integer multiple of
+\code{nspecies} for lattice placement); \code{<mesh>/nghost >= 2}; periodic
+boundaries, or shear-periodic $x_1$ in 3D; \code{<hydro>/eos = isothermal} whenever
+\code{back\_reaction = true}. Shearing-box runs read \code{<shearing\_box>/qshear},
+\code{omega0}, \code{stratified}.
+
+\begin{center}
+\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{4.3cm}>{\raggedright\arraybackslash}p{2.5cm}>{\raggedright\arraybackslash}p{8.6cm}@{}}
+\toprule
+\code{<dust>} parameter & default & meaning \\
+\midrule
+\code{coupling} & imex & \code{imex} (needs \code{imex2+}) / \code{hybrid} / \code{pc2}
+  (both need \code{rk2}); see \S\ref{sec:merge2} \\
+\code{hybrid\_force\_mode} & auto & \code{auto} / \code{pc2} / \code{split\_be}
+  (\code{hybrid} only) \\
+\code{hybrid\_enter\_zeta}, \code{hybrid\_enter\_chi} & 0.5, 0.5 & split-BE entry
+  thresholds on $\zeta$, $\chi$ \\
+\code{hybrid\_exit\_zeta}, \code{hybrid\_exit\_chi} & 0.25, 0.25 & PC2 re-entry thresholds \\
+\code{nspecies} & 1 & number of species; \code{taus\_1..N} (positive) required \\
+\code{dust\_to\_gas} & 0.01 & total dust-to-gas ratio for the default mass initializer \\
+\code{back\_reaction} & true & deposit the drag reaction onto the gas \\
+\code{deposit} & tsc & \code{ngp} / \code{cic} / \code{tsc} assignment and gather kernel \\
+\code{dt\_cfl} & 0.5 & particle transport CFL factor \\
+\code{gamma\_switch} & false & Krapp et al.\ eq.~18: $\gamma \to 1/2$ when
+  $\Delta t > \max t_s$ \\
+\code{stopping\_time\_mode} & species\_fixed & or \code{particle\_static}, \code{dynamic} \\
+\code{drag\_solver} & local & \code{local} / \code{dc1} / \code{dc2} / \code{pcg} /
+  \code{adaptive} / \code{applya} (coupled Schur-complement solvers; \code{local} is
+  the BLKP19 closed form and the validated baseline) \\
+\code{drag\_rtol}, \code{drag\_atol}, \code{drag\_iter\_max} & $10^{-11}$, $10^{-14}$, 200 &
+  PCG tolerances \\
+\code{drag\_adaptive\_*} & --- & error target of the adaptive solver \\
+\code{drag\_diagnostic\_interval} & 0 & \code{DUST\_SOLVER\_DIAG} print cadence \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Problem-generator parameters (\code{rho0}, \code{etavk}, \code{eps\_s}, placement,
+seeds, eigenmode amplitudes) are specific to the four built-in generators
+\code{dust\_damping}, \code{dust\_nsh}, \code{dusty\_wave}, \code{streaming\_linear};
+the files under \file{inputs/dust/} and \file{../athenak\_dust\_tests/inputs/} are
+the reference configurations. Outputs: \code{file\_type = pvtk} with
+\code{variable = prtcl\_all} (positions, gid, tag, species, velocities);
+\code{variable = dust\_d} on any mesh output (NGP mass density, needs a \code{<dust>}
+block); \code{<time>/dtmax} caps the step for fixed-step convergence tests.
+
+\end{document}
