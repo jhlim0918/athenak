@@ -1,0 +1,70 @@
+# AthenaK input file: unit test of the additive ghost-deposit exchange across the
+# shear-periodic x1 faces (dust track, Phase 4b; pgen dust_deposit_shear).  No
+# particles: the x1 ghost slabs of the face MeshBlocks are filled with a smooth
+# function periodic in y and z, the exchange + shear fold is run once, and
+# "# DEPOSIT-SHEAR ERRORS" reports the strip error vs. the shifted analytic
+# expectation (remap interpolation error), the constant-field error (exact), the
+# leakage outside the receiving strips (must be exactly 0) and the mass change
+# (round-off).  Nothing evolves (nlim = 0).
+#
+# Validation (see validation/dust_selfgravity_validation.pdf, Phase 4b):
+#   problem/time0=0     max_rel = leak = mass_err = 0 (integer shift, exact)
+#   generic phase       second-order convergence of max_rel/l1_rel with mesh/nx2
+#                       (plm), third with problem/remap=ppmx; leak exactly 0
+# Resolution scan via CLI overrides, e.g. mesh/nx1=64 mesh/nx2=64 mesh/nx3=16
+# meshblock/nx1=32 meshblock/nx2=32 meshblock/nx3=16.
+
+<comment>
+problem   = shear-periodic additive deposit exchange test
+
+<job>
+basename  = dds       # problem ID: basename of output filenames
+
+<mesh>
+nghost    = 3         # PPMX remap needs 3; the exchange itself needs >= 2
+nx1       = 32        # Number of zones in X1-direction (radial)
+x1min     = -0.5      # minimum value of X1
+x1max     = 0.5       # maximum value of X1
+ix1_bc    = shear_periodic  # inner-X1 boundary flag
+ox1_bc    = shear_periodic  # outer-X1 boundary flag
+
+nx2       = 32        # Number of zones in X2-direction (azimuthal)
+x2min     = -0.5      # minimum value of X2
+x2max     = 0.5       # maximum value of X2
+ix2_bc    = periodic  # inner-X2 boundary flag
+ox2_bc    = periodic  # outer-X2 boundary flag
+
+nx3       = 8         # Number of zones in X3-direction (vertical)
+x3min     = -0.125    # minimum value of X3
+x3max     = 0.125     # maximum value of X3
+ix3_bc    = periodic  # inner-X3 boundary flag
+ox3_bc    = periodic  # outer-X3 boundary flag
+
+<meshblock>
+nx1       = 16        # Number of cells in each MeshBlock, X1-dir (2 columns: both faces)
+nx2       = 16        # Number of cells in each MeshBlock, X2-dir
+nx3       = 8         # Number of cells in each MeshBlock, X3-dir
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # unused: nothing evolves
+cfl_number = 0.3
+nlim       = 0        # run the problem generator only
+tlim       = 0.0
+ndiag      = 1
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = plm
+rsolver     = hlle
+
+<shearing_box>
+qshear    = 1.5       # shear parameter
+omega0    = 1.0       # orbital frequency: yshear = qshear*omega0*Lx*time0
+
+<problem>
+pgen_name = dust_deposit_shear
+time0     = 0.37      # shear phase (0 = exact integer-shift check)
+remap     = plm       # dc | plm | ppmx
+fold      = true      # false: plain pass only (diagnostic; strips must stay 0)

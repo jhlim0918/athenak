@@ -933,6 +933,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     DustNSH(pin, is_restart);
   } else if (pgen_fun_name.compare("dusty_wave") == 0) {
     DustyWave(pin, is_restart);
+  } else if (pgen_fun_name.compare("dust_deposit_shear") == 0) {
+    DustDepositShear(pin, is_restart);
   } else if (pgen_fun_name.compare("linear_wave") == 0) {
     LinearWave(pin, is_restart);
   } else if (pgen_fun_name.compare("implode") == 0) {

@@ -270,6 +270,13 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
   // initialize uniform gas at the equilibrium; azimuthal component is IM2 in 3D and
   // IM3 in the 2D r-z geometry (matching ShearingBoxCC::SourceTermsCC)
   Real rho0 = pin->GetOrAddReal("problem","rho0",1.0);
+  // optional smooth azimuthal modulation of the particle masses, m *= 1 + A sin(2 pi
+  // (y - y_min)/L_y + phase): a deterministic (rank-independent) azimuthally STRUCTURED
+  // dust distribution for exercising the shear-periodic deposit remap; 0 = inert
+  Real mass_mod_amp = pin->GetOrAddReal("problem","mass_mod_amp",0.0);
+  Real mass_mod_phase = pin->GetOrAddReal("problem","mass_mod_phase",0.0);
+  Real mesh_y0 = pmy_mesh_->mesh_size.x2min;
+  Real mesh_ly = pmy_mesh_->mesh_size.x2max - pmy_mesh_->mesh_size.x2min;
   bool three_d = pmy_mesh_->three_d;
   auto &indcs = pmy_mesh_->mb_indcs;
   int &ng = indcs.ng;
@@ -371,6 +378,10 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
     Real vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
     if (three_d) {vol *= mbsize.d_view(m).dx3;}
     pr(IPM,p) = spdat.d_view(s,2)*vol;
+    if (mass_mod_amp != 0.0) {
+      pr(IPM,p) *= 1.0 + mass_mod_amp*sin(6.283185307179586*(pr(IPY,p) - mesh_y0)/mesh_ly
+                                          + mass_mod_phase);
+    }
     pr(IPVX,p) = spdat.d_view(s,0);
     pr(IPVY,p) = three_d ? spdat.d_view(s,1) : 0.0;
     pr(IPVZ,p) = three_d ? 0.0 : spdat.d_view(s,1);

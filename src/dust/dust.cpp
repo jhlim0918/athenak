@@ -105,13 +105,35 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
                 << "directions (or shear-periodic x1 in 3D)" << std::endl;
       std::exit(EXIT_FAILURE);
     }
-    if (global_variable::my_rank == 0) {
-      std::cout << "# WARNING (dust): shear-periodic x1 boundaries active. The "
-                << "conservative azimuthal remap of ghost DEPOSITS across the radial "
-                << "boundaries is not yet implemented (deposits are exchanged with the "
-                << "plain-periodic pattern, exact only for azimuthally uniform states "
-                << "such as the NSH drift equilibrium). The u* ghost fill IS remapped."
-                << std::endl;
+  }
+  // y-remap order of the shear-periodic fold of ghost deposits across the radial faces
+  // (MeshBoundaryValuesDep::FoldShearDeposit); inert without shear-periodic x1
+  {
+    std::string rmap = pin->GetOrAddString("dust","shear_remap","plm");
+    if (rmap == "dc") {
+      shear_remap = ReconstructionMethod::dc;
+    } else if (rmap == "plm") {
+      shear_remap = ReconstructionMethod::plm;
+    } else if (rmap == "ppmx") {
+      shear_remap = ReconstructionMethod::ppmx;
+    } else {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "<dust>/shear_remap = '" << rmap
+                << "' not recognized (must be dc, plm, or ppmx)" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    shear_fold = pin->GetOrAddBoolean("dust","shear_fold",true);
+    if (shear_x1 && pmy_pack->pmesh->three_d && global_variable::my_rank == 0) {
+      if (shear_fold) {
+        std::cout << "# dust: shear-periodic x1 boundaries active; ghost deposits are "
+                  << "folded across the radial faces with a conservative y-remap "
+                  << "(<dust>/shear_remap = " << rmap << ")" << std::endl;
+      } else {
+        std::cout << "# WARNING (dust): <dust>/shear_fold = false: ghost deposits are "
+                  << "NOT folded across the shear-periodic radial faces (diagnostic "
+                  << "mode; the x1-face deposits of the face blocks are dropped)"
+                  << std::endl;
+      }
     }
   }
   if (pmy_pack->pmesh->mb_indcs.ng < 2) {

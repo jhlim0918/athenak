@@ -92,6 +92,8 @@ void DustGasDrag::CompleteAddExchange(DvceArray5D<Real> &field) {
     status = pbval_solver_add->RecvAndSumDeposit(field);
     RequireComplete(status, "add receive");
   } while (status == TaskStatus::incomplete);
+  RequireComplete(pbval_solver_add->FoldShearDeposit(field, ShearOffset(), shear_remap),
+                  "add shear fold");
   RequireComplete(pbval_solver_add->ClearSend(), "add ClearSend");
   RequireComplete(pbval_solver_add->ClearRecv(), "add ClearRecv");
   ++solver_halo_count;

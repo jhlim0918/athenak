@@ -259,6 +259,27 @@ class MeshBoundaryValuesDep : public MeshBoundaryValues {
   // pack ghost-region deposits and send; receive and sum into active cells
   TaskStatus PackAndSendDeposit(DvceArray5D<Real> &a);
   TaskStatus RecvAndSumDeposit(DvceArray5D<Real> &a);
+
+  // Shear-periodic x1 faces (3D shearing box): fold the x1 ghost slabs of the face
+  // MeshBlocks through global y-z planes, remap them in y by the shear offset, and ADD
+  // them into the active edge strips of the MeshBlocks across the face.  This is the
+  // adjoint of the copy-exchange ghost fill: an inner-ghost deposit at y belongs to the
+  // outer boundary at y - yshear (and vice versa).  RecvAndSumDeposit skips the
+  // unsheared plain-periodic x1 contributions of the face blocks when this path is
+  // active.  yshear is a length (q*Omega*Lx*t).  No-op unless the mesh is 3D with
+  // shear-periodic x1 faces.  Contains one MPI_Allreduce: all ranks call it in lockstep.
+  TaskStatus FoldShearDeposit(DvceArray5D<Real> &a, const Real yshear,
+                              ReconstructionMethod rcon);
+  bool ShearX1() const {return shear_x1_;}
+
+ private:
+  bool shear_x1_ = false;         // 3D mesh with shear-periodic x1 faces
+  bool x3_periodic_ = true;       // z-ghost rows of the slab wrap in z (else dropped)
+  int shear_gny_ = 0, shear_gnz_ = 0;  // global cell counts in y and z (uniform grid)
+  int shear_nvar_ = 0;            // nvar the planes are currently sized for
+  DvceArray4D<Real> shear_plane_; // (face, v*ng+d, gk, gj); face 0 = inner-ghost slabs
+  DvceArray2D<int> shear_goffs_;  // (m, {gj0, gk0}): global index of first active cell
+  DvceArray1D<int> nghbr_ox1_;    // x1 direction (-1, 0, +1) of each buffer index n
 };
 
 //----------------------------------------------------------------------------------------

@@ -70,7 +70,10 @@ void DustGasDrag::AssembleDustGasDragTasks(
   id.scat      = tl["stagen"]->AddTask(&DustGasDrag::DepositDrag, this, id.p_recvp);
   id.sendd     = tl["stagen"]->AddTask(&DustGasDrag::SendDepQP, this, id.scat);
   id.recvd     = tl["stagen"]->AddTask(&DustGasDrag::RecvDepQP, this, id.sendd);
-  TaskID dep_solve = (id.recvd | id.gatwid);
+  // shear-periodic x1: fold the y-remapped ghost deposits of the face blocks (no-op
+  // otherwise; contains a collective, reached by all ranks in lockstep)
+  id.foldd     = tl["stagen"]->AddTask(&DustGasDrag::FoldDepQP, this, id.recvd);
+  TaskID dep_solve = (id.foldd | id.gatwid);
   id.solve     = tl["stagen"]->AddTask(&DustGasDrag::GasImplicitSolve, this, dep_solve);
   id.sendus    = tl["stagen"]->AddTask(&DustGasDrag::SendUstar, this, id.solve);
   id.recvus    = tl["stagen"]->AddTask(&DustGasDrag::RecvUstar, this, id.sendus);
@@ -92,7 +95,8 @@ void DustGasDrag::AssembleDustGasDragTasks(
   id.p2_recvp  = tl["stagen"]->AddTask(&DustGasDrag::RecvParticles2, this, id.p2_sendp);
   id.sendbr    = tl["stagen"]->AddTask(&DustGasDrag::SendPMBR, this, id.gkp);
   id.recvbr    = tl["stagen"]->AddTask(&DustGasDrag::RecvPMBR, this, id.sendbr);
-  TaskID commit_ready = (id.recvbr | id.p2_recvp);
+  id.foldbr    = tl["stagen"]->AddTask(&DustGasDrag::FoldPMBR, this, id.recvbr);
+  TaskID commit_ready = (id.foldbr | id.p2_recvp);
   id.apply     = tl["stagen"]->AddTask(&DustGasDrag::ApplyPMBR, this, commit_ready);
   // standard hydro tail (boundary comms, BCs, cons-to-prim, timestep)
   id.h_sendu_oa  = tl["stagen"]->AddTask(&Hydro::SendU_OA, phyd, id.apply);
@@ -248,6 +252,18 @@ TaskStatus DustGasDrag::RecvDepQP(Driver *pdrive, int stage) {
   return pbval_qp->RecvAndSumDeposit(qdep);
 }
 
+TaskStatus DustGasDrag::FoldDepQP(Driver *pdrive, int stage) {
+  bool use = (coupling == DustCoupling::imex) ||
+      (coupling == DustCoupling::hybrid &&
+       ((hybrid_mode == HybridMode::pc2 && stage == 1) ||
+        (hybrid_mode == HybridMode::split_be && stage == 2)));
+  if (!ActiveStage(pdrive, stage) || !back_reaction || !use) {
+    return TaskStatus::complete;
+  }
+  if (!shear_fold) {return TaskStatus::complete;}
+  return pbval_qp->FoldShearDeposit(qdep, ShearOffset(), shear_remap);
+}
+
 TaskStatus DustGasDrag::SendUstar(Driver *pdrive, int stage) {
   bool use = (coupling == DustCoupling::imex) ||
       (coupling == DustCoupling::hybrid &&
@@ -300,6 +316,27 @@ TaskStatus DustGasDrag::RecvPMBR(Driver *pdrive, int stage) {
     return TaskStatus::complete;
   }
   return pbval_dm->RecvAndSumDeposit(dmom);
+}
+
+TaskStatus DustGasDrag::FoldPMBR(Driver *pdrive, int stage) {
+  bool use = (coupling == DustCoupling::imex) ||
+      (coupling == DustCoupling::hybrid && stage == 2);
+  if (!ActiveStage(pdrive, stage) || !back_reaction || !use) {
+    return TaskStatus::complete;
+  }
+  if (!shear_fold) {return TaskStatus::complete;}
+  return pbval_dm->FoldShearDeposit(dmom, ShearOffset(), shear_remap);
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn DustGasDrag::ShearOffset
+//! \brief The shear-periodic azimuthal offset q*Omega*Lx*t (a length), evaluated at the
+//! same time as the u* remap (pmesh->time on every stage; the O(dt) offset between
+//! stages is second-order consistent, cf. InitRecvDep).
+
+Real DustGasDrag::ShearOffset() const {
+  const auto &msize = pmy_pack->pmesh->mesh_size;
+  return qshear*omega0*(msize.x1max - msize.x1min)*(pmy_pack->pmesh->time);
 }
 
 //----------------------------------------------------------------------------------------

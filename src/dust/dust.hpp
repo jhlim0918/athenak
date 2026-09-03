@@ -70,8 +70,8 @@ struct DustGasDragTaskIDs {
   TaskID h_flux, h_sendf, h_recvf, h_rkupdt, h_srctrms;
   TaskID gatwid, push;
   TaskID p_newgid, p_cnt, p_irecv, p_sendp, p_recvp;
-  TaskID scat, sendd, recvd, solve, sendus, recvus, sendus_shr, recvus_shr;
-  TaskID gkp, sendbr, recvbr, apply;
+  TaskID scat, sendd, recvd, foldd, solve, sendus, recvus, sendus_shr, recvus_shr;
+  TaskID gkp, sendbr, recvbr, foldbr, apply;
   TaskID p2_newgid, p2_cnt, p2_irecv, p2_sendp, p2_recvp;
   TaskID h_sendu_oa, h_recvu_oa, h_restu, h_sendu, h_recvu, h_sendu_shr, h_recvu_shr;
   TaskID h_bcs, h_prol, h_c2p, h_newdt, newdt, newdt2;
@@ -150,6 +150,8 @@ class DustGasDrag {
   Real dust_to_gas;          // total dust/gas mass ratio for default mass normalization
   DualArray1D<Real> taus;    // per-species stopping times
   DustDeposit deposit;       // particle-mesh deposit scheme (tsc default)
+  ReconstructionMethod shear_remap;  // y-remap of the shear-periodic deposit fold (plm)
+  bool shear_fold;           // false = diagnostic: skip the fold (unsheared x1 deposits)
   DustStoppingTimeMode stopping_time_mode;
   DustDragSolver drag_solver;
   DustCoupling coupling;
@@ -239,6 +241,7 @@ class DustGasDrag {
   TaskStatus DepositDrag(Driver *pdrive, int stage);       // scatter Q,P
   TaskStatus SendDepQP(Driver *pdrive, int stage);
   TaskStatus RecvDepQP(Driver *pdrive, int stage);
+  TaskStatus FoldDepQP(Driver *pdrive, int stage);
   TaskStatus GasImplicitSolve(Driver *pdrive, int stage);  // u* = (rho*u+P)/(rho+Q)
   void UpdateHybridMetric(Driver *pdrive, int stage);
   TaskStatus SolveCoupledStage(Driver *pdrive, int stage);
@@ -264,6 +267,8 @@ class DustGasDrag {
   TaskStatus GatherKickPMBR(Driver *pdrive, int stage);    // gather+kick+record+scatter
   TaskStatus SendPMBR(Driver *pdrive, int stage);
   TaskStatus RecvPMBR(Driver *pdrive, int stage);
+  TaskStatus FoldPMBR(Driver *pdrive, int stage);
+  Real ShearOffset() const;   // q*Omega*Lx*time: the shear-periodic y offset (a length)
   TaskStatus ApplyPMBR(Driver *pdrive, int stage);         // u0 += dmom; dmom -> R_g
   TaskStatus NewTimeStep(Driver *pdrive, int stage);
   TaskStatus NewTimeStep2(Driver *pdrive, int stage);
