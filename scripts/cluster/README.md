@@ -23,6 +23,17 @@ Submit it **from the run directory**, which is where outputs land:
 cd <rundir> && qsub <repo>/scripts/cluster/gt_sc14_full.pbs
 ```
 
+`gt_sc14_full.slurm` is the TACC Vista twin (Slurm, `ibrun`, Grace-Grace `gg`
+queue, `gcc`/`openmpi`/`fftw3` modules; build with `-D Kokkos_ARCH_ARMV9_GRACE=ON`).
+Same submit-from-the-run-directory convention, run directories in `$SCRATCH`:
+
+```bash
+cd <rundir> && sbatch $WORK/athenak-multigrid/scripts/cluster/gt_sc14_full.slurm
+```
+
+Set `#SBATCH -A` to your allocation first.  256 ranks = 2 nodes x 128 of 144
+cores (3 MeshBlocks per rank, as on NAS); the hi-res twin is `-N 6 -n 768`.
+
 `ATHENAK` and `INPUT` are variables at the top.  Ranks and ranks-per-node come
 from `$PBS_NODEFILE`, so changing only the `select=` line changes the launch --
 and every allocated core is used (NAS charges whole nodes, so `mpiprocs=256`
