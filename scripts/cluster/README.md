@@ -28,7 +28,7 @@ queue, `gcc`/`openmpi`/`fftw3` modules; build with `-D Kokkos_ARCH_ARMV9_GRACE=O
 Same submit-from-the-run-directory convention, run directories in `$SCRATCH`:
 
 ```bash
-cd <rundir> && sbatch $WORK/athenak-multigrid/scripts/cluster/gt_sc14_full.slurm
+cd <rundir> && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_sc14_full.slurm
 ```
 
 Set `#SBATCH -A` to your allocation first.  256 ranks = 2 nodes x 128 of 144

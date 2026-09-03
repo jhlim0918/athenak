@@ -15,13 +15,13 @@
 
 # Slurm/Vista twin of gt_sc14_full.pbs (NAS).  Submit from the RUN directory in
 # $SCRATCH -- outputs land there and Slurm starts the job in the submit directory:
-#     cd $SCRATCH/gt_sc14_stndrd/b10 && sbatch $WORK/athenak-multigrid/scripts/cluster/gt_sc14_full.slurm
+#     cd $SCRATCH/gt_sc14_stndrd/b10 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_sc14_full.slurm
 # To continue a run after a walltime kill, replace the -i line with:
 #     -r $(ls rst/*.rst | tail -1) \
 # Per-run parameters go on the ibrun line, e.g.  hydro_srcterms/bcool_beta=5
 # Hi-res twin: INPUT=.../gravito_turb_sc14_hi.athinput with -N 6 -n 768 (README sec. 2).
 
-ATHENAK=$WORK/athenak-multigrid
+ATHENAK=$HOME/athenak-multigrid
 INPUT=$ATHENAK/inputs/shearing_box/gravito_turb_sc14.athinput
 
 # the modules the binary was built with -- mirror `module list` from the cmake shell
