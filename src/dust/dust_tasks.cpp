@@ -93,9 +93,9 @@ void DustGasDrag::AssembleDustGasDragTasks(
   id.h_recvu     = tl["stagen"]->AddTask(&Hydro::RecvU, phyd, id.h_sendu);
   id.h_sendu_shr = tl["stagen"]->AddTask(&Hydro::SendU_Shr, phyd, id.h_recvu);
   id.h_recvu_shr = tl["stagen"]->AddTask(&Hydro::RecvU_Shr, phyd, id.h_sendu_shr);
-  id.h_bcs       = tl["stagen"]->AddTask(&Hydro::ApplyPhysicalBCs, phyd, id.h_recvu_shr);
-  id.h_prol      = tl["stagen"]->AddTask(&Hydro::Prolongate, phyd, id.h_bcs);
-  id.h_c2p       = tl["stagen"]->AddTask(&Hydro::ConToPrim, phyd, id.h_prol);
+  id.h_prol      = tl["stagen"]->AddTask(&Hydro::Prolongate, phyd, id.h_recvu_shr);
+  id.h_bcs       = tl["stagen"]->AddTask(&Hydro::ApplyPhysicalBCs, phyd, id.h_prol);
+  id.h_c2p       = tl["stagen"]->AddTask(&Hydro::ConToPrim, phyd, id.h_bcs);
   id.h_newdt     = tl["stagen"]->AddTask(&Hydro::NewTimeStep, phyd, id.h_c2p);
   id.newdt       = tl["stagen"]->AddTask(&DustGasDrag::NewTimeStep, this, id.gkp);
 
