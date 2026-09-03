@@ -18,7 +18,8 @@
 
 \title{Dust Particles and Gas$+$Dust Self-Gravity\\
        in the AthenaK Shearing Box:\\
-       I.\ The Dust-Module Merge (Phase 4a)}
+       I.\ The Dust-Module Merge (Phase 4a)\\
+       and the Shear-Periodic Deposit Fold (Phase 4b, i)}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}}
 \date{September 3, 2026}
 
@@ -63,6 +64,19 @@ bit), and the fork's new predictor--corrector coupling under plain \code{rk2}
 damping ladder (orders $2.23$, $2.10$, $2.04$) and in the dusty wave ($1.85$, $1.98$,
 $2.00$), NSH to round-off, rank-independent at 1, 2 and 4 ranks --- the integrator
 freedom that lets dust run under the same \code{rk2} as every gravity result before it.
+
+\textbf{Phase 4b (i)} adds the conservative azimuthal remap of ghost deposits across the
+shear-periodic radial faces, the first of the gaps the dust module carried. A
+particle-free unit test certifies the new fold: the plain exchange delivers nothing
+across the faces, the fold is exact at integer shifts ($3.5\times10^{-16}$) including the
+overlap multiplicity of corner rows, mass is conserved to $10^{-15}$, nothing leaks
+outside the receiving strips, the remap error converges at second order (donor cell),
+second/third (PLM), third (PPMX) in a fixed-phase scan, and 1, 2 and 4 ranks agree to
+every digit. The 3D shear-periodic NSH equilibrium still holds to round-off; a
+deterministic azimuthally structured dust distribution with back-reaction agrees
+between serial and 4-rank runs to $10^{-14}$ over an orbit, and shows the old unsheared
+exchange was a $1$--$7\%$ error in the gas kinetic energy while the remap order matters
+only at $10^{-7}$.
 \end{abstract}
 
 \tableofcontents
@@ -106,6 +120,9 @@ the science configuration; Phase 5 takes particles onto refined meshes.
         gravito-turbulence box under both integrators, compared column by column.
   \item \textbf{The second merge} (\S\ref{sec:merge2}). After catching up with the dust
         fork: the battery again, and the new PC2/hybrid couplings under \code{rk2}.
+  \item \textbf{Phase 4b (i)} (\S\ref{sec:phase4b1}). The shear-periodic deposit fold:
+        exactness, convergence, conservation, rank independence, and its effect on a
+        structured 3D run.
 \end{enumerate}
 
 %=========================================================================================
@@ -469,6 +486,130 @@ is therefore \code{coupling = pc2}; \code{hybrid} is the safety net for
 configurations with stopping times below the timestep.
 
 %=========================================================================================
+\section{Phase 4b (i): the shear-periodic deposit fold}
+\label{sec:phase4b1}
+
+The mechanism is in the implementation document \S5: the $x_1$ ghost slabs of the
+shear-face MeshBlocks are gathered into global $y$--$z$ planes, remapped in $y$ by
+$\mp y_{\rm sh}$ (the adjoint of the ghost-fill signs), and added into the active edge
+strips across the face, while the unsheared plain-periodic $x_1$ buffers of those
+blocks are skipped. Data: \file{run/dust4b/} (README there).
+
+\subsection{The unit test}
+
+\code{pgen\_name = dust\_deposit\_shear} (\file{inputs/dust/dust\_deposit\_shear.athinput}:
+$32\times32\times8$, $16\times16\times8$ blocks so both $x_1$ columns are face blocks,
+\code{nghost = 3}, $q = 3/2$, $\Om = 1$, $L_x = 1$). Three fields live only in the $x_1$
+ghost slabs of the face blocks: a smooth periodic $g$ on the slab rows within the
+block's own $y$/$z$ range, a constant on the same rows, and a constant on the whole slab
+including the corner ghosts (whose expectation is the analytic overlap multiplicity).
+
+\begin{center}
+\small
+\begin{tabular}{@{}lllllll@{}}
+\toprule
+case & $y_{\rm sh}/\Delta y$ & max rel ($g$) & const & multipl. & leak & mass \\
+\midrule
+plain pass only (\code{fold = false}) & 0 & $0$ & $0$ & $0$ & $0$ & (none delivered) \\
+fold, \code{time0 = 0} & 0 & $0$ & $0$ & $0$ & $0$ & $5.9\times10^{-16}$ \\
+fold, 3-cell integer shift & 3 & $3.5\times10^{-16}$ & $0$ & $0$ & $0$ & $5.9\times10^{-16}$ \\
+fold, generic phase, 4 = 2 = 1 ranks & 35.52 & $1.332091\times10^{-3}$ & $0$ & (frac.) & $0$ & $10^{-15}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The first row is the suppression check: with the fold switched off the receiving
+strips stay \emph{exactly} zero, so no unsheared $x_1$ contribution survives (the first
+version of the direction table failed this row for the $x_3x_1$ corners; implementation
+document \S5.4). Rows two and three are the exactness checks, including the
+multiplicity of overlapping corner rows. At a fractional shift the multiplicity field
+is a step profile and carries an $O(1)$ remap error at block boundaries, as expected;
+the smooth field's error is the remap interpolation error, which the last row shows to
+be identical at 1, 2 and 4 ranks to every printed digit.
+
+\paragraph{Convergence.} At a fixed fractional shift ($y_{\rm sh}/\Delta y = n_y/2 + 1/2$,
+so \code{eps} $= 1/2$ at every resolution; the generic-phase scan is confounded by the
+changing fraction):
+
+\begin{center}
+\small
+\begin{tabular}{@{}rcccccc@{}}
+\toprule
+$n_y$ & DC $L_1$ & DC max & PLM $L_1$ & PLM max & PPMX $L_1$ & PPMX max \\
+\midrule
+32  & $1.86\times10^{-3}$ & $1.24\times10^{-2}$ & $2.69\times10^{-4}$ & $6.40\times10^{-3}$ & $1.11\times10^{-4}$ & $2.11\times10^{-3}$ \\
+64  & $4.66\times10^{-4}$ & $3.18\times10^{-3}$ & $3.89\times10^{-5}$ & $1.33\times10^{-3}$ & $9.16\times10^{-6}$ & $4.76\times10^{-4}$ \\
+128 & $1.17\times10^{-4}$ & $7.96\times10^{-4}$ & $5.33\times10^{-6}$ & $6.49\times10^{-4}$ & $9.90\times10^{-7}$ & $1.17\times10^{-4}$ \\
+256 & $2.91\times10^{-5}$ & $1.99\times10^{-4}$ & $6.21\times10^{-7}$ & $1.47\times10^{-4}$ & $9.78\times10^{-8}$ & $2.92\times10^{-5}$ \\
+\midrule
+order & 2.00 & 2.0 & 2.8--3.1 & $\sim$2 & 3.2--3.6 & 2.0 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Donor cell is exactly second order (the half-cell shift is symmetric); PLM, the default
+(matching the $u^\ast$ remap), is second order in the maximum norm and better than
+second in $L_1$; PPMX is third order in $L_1$ with a limiter-bound maximum
+(Fig.~\ref{fig:depshear}). Mass is conserved to $\le 3\times10^{-15}$ and the leak is
+exactly zero in every run.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{figures/dust4b_deposit_shear.png}
+\caption{Convergence of the shear-periodic deposit fold at a fixed half-cell fractional
+shift, for the three remap orders.}
+\label{fig:depshear}
+\end{figure}
+
+\subsection{Regression: the 3D shear-periodic NSH equilibrium}
+
+The new tracked input \file{inputs/dust/dust\_nsh\_shear3d.athinput} ($32\times32\times8$,
+$2\times2\times1$ blocks, ten orbits) is the azimuthally uniform state for which the old
+unsheared exchange was already exact:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+ & max deviation, before the fold & with the fold & PC2, with the fold & 4 ranks \\
+\midrule
+NSH, 3D shear-periodic & $2.7\times10^{-16}$ & $2.6\times10^{-16}$ & $1.8\times10^{-15}$ & $1.1\times10^{-16}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{A structured run: rank independence and the size of the correction}
+
+Random particle placement in the NSH generator is rank-dependent by construction (it
+hashes tags to \emph{local} block indices), which made a first serial-vs-MPI comparison
+look like a defect; with test particles the same runs agreed to $10^{-13}$, and the
+cycle-0 dust density already differed. The deterministic alternative is the lattice
+with a $50\%$ sinusoidal azimuthal modulation of the particle masses
+(\code{problem/mass\_mod\_amp = 0.5}, \code{check\_equilibrium = false}), IMEX coupling
+with back-reaction, one orbit. Relative differences of the gas $x$-kinetic energy and of
+the species-1 radial-velocity sum:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+$t$ & serial vs 2 ranks & serial vs 4 ranks & fold vs.\ no fold & PLM vs.\ PPMX remap \\
+\midrule
+0.81 & $10^{-14}$ / $7\times10^{-15}$ & $5\times10^{-15}$ / $9\times10^{-15}$ & $4.2\times10^{-2}$ / $2.7\times10^{-2}$ & $3.7\times10^{-7}$ / $7.9\times10^{-8}$ \\
+3.20 & $1.2\times10^{-14}$ / $5\times10^{-15}$ & $1.2\times10^{-14}$ / $9\times10^{-15}$ & $9.7\times10^{-3}$ / $5.8\times10^{-3}$ & $5.4\times10^{-9}$ / $2.1\times10^{-8}$ \\
+4.80 & $6\times10^{-15}$ / $7\times10^{-15}$ & $6\times10^{-15}$ / $5\times10^{-15}$ & $6.8\times10^{-2}$ / $3.9\times10^{-2}$ & $4.6\times10^{-7}$ / $3.1\times10^{-7}$ \\
+6.28 & $6\times10^{-15}$ / $5\times10^{-15}$ & $6\times10^{-15}$ / $5\times10^{-15}$ & $5.4\times10^{-3}$ / $3.6\times10^{-3}$ & $4.4\times10^{-7}$ / $2.6\times10^{-7}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Three conclusions. The fold is rank-independent to round-off on a structured field
+with back-reaction. The old unsheared exchange (\code{dust/shear\_fold = false}) was a
+$1$--$7\%$ error in the gas kinetic energy for a structured state, oscillating with the
+shear phase --- not a small correction. And the remap order is a $10^{-7}$ effect on
+this run, so PLM is converged for the purpose.
+
+%=========================================================================================
 \section{Summary}
 \label{sec:summary}
 
@@ -483,12 +624,13 @@ second merge that constraint is optional: the PC2 coupling runs under \code{rk2}
 second order with the same conservation properties, and is the recommended
 production path in the resolved drag regime.
 
-What 4a does \emph{not} yet provide, and Phase 4b takes up next: the shear-periodic
-remap of the additive deposits (the module warns that ghost deposits cross the
-radial faces unremapped, exact only for axisymmetric states), back-reaction with an
-ideal-gas energy equation (required for cooling), and a particle timestep that does
-not pay the full-shear-velocity penalty in wide boxes. The tests for those are the
-3D shear-periodic NSH state, an azimuthally structured deposit conserved through the
-remap, and the momentum--energy budget of a drag-coupled ideal gas.
+Phase 4b (i) closes the first gap Phase 4a left open: ghost deposits now cross the
+shear-periodic radial faces with a conservative azimuthal remap, certified exact at
+integer shifts, convergent otherwise, conservative, leak-free and rank-independent,
+and shown to matter at the percent level on structured states. Still open in 4b:
+back-reaction with an ideal-gas energy equation (required for cooling) and a particle
+timestep that does not pay the full-shear-velocity penalty in wide boxes; their tests
+are the momentum--energy budget of a drag-coupled ideal gas and the NSH state under
+the relaxed step.
 
 \end{document}

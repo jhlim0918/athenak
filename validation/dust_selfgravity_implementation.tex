@@ -31,7 +31,8 @@
 \title{Dust Particles and Gas$+$Dust Self-Gravity\\
        in the AthenaK Shearing Box\\[0.4em]
        \large \textsc{Implementation Document}\\
-       \large Phase 4a: the dust-module merge}
+       \large Phase 4a: the dust-module merge; Phase 4b (i): the shear-periodic
+       deposit fold}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}\\
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge)}
@@ -70,6 +71,17 @@ to their version; and it now offers two \emph{predictor--corrector} coupling mod
 \code{rk2}, second order in the resolved drag regime with a stiff backward-Euler
 fallback. Dust can therefore run under the same integrator as every gravity
 validation before it; the \code{imex2+} path remains for stiff cases.
+
+\textbf{Phase 4b (i)} closes the first of the gaps the survey named: ghost
+deposits of the MeshBlocks on the shear-periodic $x_1$ faces are now folded across the
+faces with a conservative azimuthal remap --- gathered into global $y$--$z$ planes,
+shifted by the shear offset with the Phase-1 remap-flux kernels, and \emph{added} into
+the active edge strips of the blocks across the face --- while the unsheared
+plain-periodic $x_1$ contributions of those blocks are suppressed. The fold is the
+adjoint of the copy-exchange ghost fill, so its shift signs are the reverse of the
+multigrid fill's. A unit-test problem generator certifies it exactly at integer shifts
+and at second/third order otherwise, and a structured 3D run shows the old unsheared
+exchange was a percent-level error.
 
 The document also records, for the phases that follow, the integration map derived
 from the code survey: where the gravity solve is called relative to the dust task
@@ -123,9 +135,10 @@ Phase & Status & Content \\
 \midrule
 4a & \textbf{done} & merge \code{athenak-dust} into the multigrid tree; establish that both
      the dust module and the gravity machinery are unchanged by the merge \\
-4b & next & shear-periodic \emph{additive} deposit remap; ideal-gas energy update under
-     drag back-reaction; particle timestep on the shear-subtracted velocity; adopt the
-     PC2 coupling (\S\ref{sec:merge2}) as the production path \\
+4b & (i) \textbf{done} & (i) shear-periodic \emph{additive} deposit remap
+     (\S\ref{sec:phase4b1}); (ii) ideal-gas energy update under drag back-reaction;
+     (iii) particle timestep on the shear-subtracted velocity; adopt the PC2 coupling
+     (\S\ref{sec:merge2}) as the production path \\
 4c & planned & dust self-gravity: mass deposit into the Poisson source, three density
      reads, force gather to particles; dust-only and gas$+$dust tests \\
 4d & planned & the science configuration: SC14 box $+$ pressure gradient $+$ dust;
@@ -154,6 +167,9 @@ Commit & Phase & Content \\
 \code{78320aee} & 4a & Second merge, \code{dust/dust} at \code{1f3e1ed9}: the fork's own
                        rank-packed deposit exchange (taken), PC2/hybrid coupling, PM
                        optimizations; three conflicts (\S\ref{sec:merge2}) \\
+(next) & 4b (i) & \fn{MeshBoundaryValuesDep::FoldShearDeposit}, the $x_1$-buffer skip,
+                  the dust hooks, the \code{dust\_deposit\_shear} test generator, the
+                  3D shear-periodic NSH input, the NSH mass modulation \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -588,24 +604,146 @@ linking the tree's \file{kokkos} checkout and pointing
 \code{FETCHCONTENT\_SOURCE\_DIR\_KOKKOS-FFT} at the cached \file{build/\_deps/kokkos-fft-src}.
 
 %=========================================================================================
+\section{Phase 4b (i): the shear-periodic deposit fold}
+\label{sec:phase4b1}
+
+\subsection{The problem}
+
+A particle near a MeshBlock boundary deposits part of its weight into ghost cells of
+its own block; the additive exchange (\S\ref{sec:rankpacked}) adds those ghost deposits
+into the active cells of the neighbor that owns the location. Across a shear-periodic
+$x_1$ face the owner's cells sit at a \emph{different} $y$: the tree wraps
+\code{shear\_periodic} exactly like \code{periodic} (\file{mesh/meshblock\_tree.cpp}), so
+the $x_1$ buffers of the face blocks carry the deposits to the unshifted $y$ --- the
+``exact only for azimuthally uniform states'' caveat the module used to print. The copy
+exchanges of hydro and of $u^\ast$ fix this by \emph{overwriting} the $x_1$ ghosts with
+a remapped copy after the plain exchange; an additive exchange cannot overwrite, so the
+unsheared contribution has to be suppressed and replaced.
+
+\subsection{The sign}
+
+The shearing-box identification used throughout the tree is
+$u(x, y) = u(x + L_x, y - \qom t)$: the copy exchange fills the inner-$x_1$ ghosts with
+the outer boundary's content shifted by $+y_{\rm sh}$ ($y_{\rm sh} = \qom L_x t$), and
+the outer ghosts by $-y_{\rm sh}$ (\file{multigrid/multigrid\_shear.cpp:144--146},
+\file{gravity/fft\_gravity.cpp:414--416}). A \emph{deposit} in an inner ghost cell at
+$y$ is a contribution to the outer boundary at $y - y_{\rm sh}$; the deposit map is the
+adjoint (transpose) of the ghost-fill map, so its signs are reversed:
+
+\invariant{Adjoint signs.}{Inner-ghost deposits are shifted by $-y_{\rm sh}$ and
+added to the \emph{outer} face blocks; outer-ghost deposits by $+y_{\rm sh}$ into the
+\emph{inner} face blocks. Copying the multigrid fill's per-face signs verbatim gives
+the wrong answer.}
+
+\subsection{The fold}
+
+\fn{MeshBoundaryValuesDep::FoldShearDeposit(a, yshear, rcon)} (\file{bvals/bvals\_dep.cpp})
+reuses the Phase-1 global-plane machinery of \fn{Multigrid::FillShearGhostPack} with
+three changes: the gather reads \emph{ghost} slabs and is additive, the signs are the
+adjoint ones, and the scatter \emph{adds} into active cells.
+\begin{enumerate}\itemsep2pt
+  \item \textbf{Gather.} Two planes \code{shear\_plane\_(face, v*ng+d, gk, gj)} of the
+        global $y$--$z$ extent (uniform grid: \code{mesh\_indcs.nx2}$\times$\code{nx3}),
+        zeroed, then every face block adds its whole $x_1$ ghost slab --- all $k, j$
+        \emph{including the $y$/$z$ corner ghosts} --- at the periodically wrapped
+        global index (face 0 $\leftarrow$ inner ghosts \code{is-1-d}, face 1
+        $\leftarrow$ outer ghosts \code{ie+1+d}). The corner rows overlap the active
+        rows of the $y$/$z$ neighbors' slabs, so the gather is an atomic
+        \emph{sum}: unlike the multigrid fill, several blocks legitimately write the same
+        plane cell. Rows beyond a non-periodic $z$ face are dropped (the vertical-boundary
+        policy of \S\ref{sec:next} item 7; the dust guards currently require periodic $z$).
+  \item \textbf{MPI seam.} \code{Kokkos::fence} and one \code{MPI\_Allreduce(SUM)} of each
+        plane, reached by every rank in lockstep (the fold is a task; all ranks run the
+        same graph, and every send a rank waits for is posted before the collective).
+  \item \textbf{Remap.} Per (face, variable, depth, $z$-row): the integer part of the
+        shift is folded into a periodically wrapped scratch load, the fractional part
+        \code{eps = fmod(ysh, dy)/dy} goes through \fn{DC/PLM/PPMX\_RemapFlx}
+        (\file{shearing\_box/remap\_fluxes.hpp}) and the conservative update
+        $q_j \leftarrow q_j - (F_{j+1} - F_j)$; $dy = L_y/\code{gny}$ is the global
+        rank-consistent cell width (the \fn{ConsistentDx2} lesson). Face 0 uses
+        $-y_{\rm sh}$, face 1 $+y_{\rm sh}$.
+  \item \textbf{Scatter-add.} Face 0 into the outer face blocks' \code{ie-d}, face 1
+        into the inner blocks' \code{is+d}, active $k, j$ only.
+\end{enumerate}
+The remap preserves the row sum, so the total deposited mass is conserved to
+round-off; the summation order in the gather and the reduction can differ with the
+rank count at round-off level only.
+
+\subsection{Suppressing the unsheared contribution}
+
+\fn{RecvAndSumDeposit} skips, on a block whose inner (outer) $x_1$ face is
+shear-periodic, every receive buffer whose direction has $o_{x1} < 0$ ($> 0$): faces,
+$x_1x_2$ and $x_3x_1$ edges, and corners --- all of which carry $x_1$-ghost content of
+the neighbor across the face. The direction of buffer index $n$ comes from a 56-entry
+table built in the constructor from the slot layout documented in
+\file{mesh/nghbr\_index.hpp} (faces 0--7, $x_1x_2$ edges 16--23, $x_3x_1$ edges 32--39,
+corners 48--55) and cross-checked against \fn{NeighborIndex} at construction.
+
+\paragraph{A pitfall worth recording.} The first version built that table by calling
+\fn{NeighborIndex} over all direction and sub-index arguments. For edges the function
+uses only the first sub-index, and the second landed on \emph{other} slots --- the
+$x_3x_1$ edges of one sign overwrote those of the other. The plain pass then still
+delivered the unsheared $x_3x_1$-corner deposits, which the unit test caught as an
+off-by-one in the multiplicity check (\S\ref{sec:phase4b1test}) and as a $10^{-4}$ drift
+of the 3D NSH equilibrium.
+
+\subsection{Hooks and parameters}
+
+Two tasks, \fn{DustGasDrag::FoldDepQP} and \fn{FoldPMBR} (\file{dust/dust\_tasks.cpp}),
+follow \fn{RecvDepQP} and \fn{RecvPMBR} with the same per-coupling stage gates; the
+implicit solve now depends on the fold. \fn{CompleteAddExchange} (coupled solvers) calls
+the fold as well. The offset is \fn{DustGasDrag::ShearOffset()} $= \qom L_x\,t$ at
+\code{pmesh->time} on every stage, the convention of the $u^\ast$ remap.
+\code{<dust>/shear\_remap} selects the order (\code{plm} default, as for $u^\ast$;
+\code{ppmx} available), \code{<dust>/shear\_fold = false} is a diagnostic that skips the
+fold (the face blocks' $x_1$ deposits are then dropped, not unsheared). The warning the
+module printed under shear is replaced by an information line.
+
+\subsection{The test generator}
+\label{sec:phase4b1test}
+
+\code{pgen\_name = dust\_deposit\_shear} (\file{pgen/tests/dust\_deposit\_shear.cpp},
+\file{inputs/dust/dust\_deposit\_shear.athinput}) exercises the exchange without
+particles: the $x_1$ ghost slabs of the face blocks are filled with known data, every
+other cell is zero, and the exchange runs exactly as the module runs it. Ghost deposits
+are \emph{partial} sums (a block's corner ghosts overlap its neighbors' active rows),
+which the first version of the test got wrong by filling every ghost cell with the full
+function; the corrected test carries three fields: a smooth $g(x,y,z)$ periodic in $y,z$
+on the slab rows inside the block's own $y$/$z$ range (one source per location, so the
+strips must equal $g$ at the shifted location up to the remap error), a constant on the
+same rows (exact for any shift), and a constant on the \emph{whole} slab whose received
+value must equal the analytic overlap multiplicity $(1 + n_y)(1 + n_z)$ of the source
+row (exact at integer shifts). The generator also reports the largest value leaked into
+any active cell outside the receiving strips (must be exactly zero) and the relative
+mass change (round-off). \code{problem/fold = false} runs the plain pass alone.
+
+\subsection{A structured, rank-independent initial condition}
+
+The NSH generator's random placement hashes each particle's tag to a block index
+\emph{within the local pack}, so the realization depends on the rank count (as does
+\code{dust\_damping}'s, seeded by the pack's first GID) --- fine for physics runs,
+useless for serial-vs-MPI comparisons; a divergence that this produced was first
+mistaken for a bug in the fold (the no-back-reaction control agreed to $10^{-13}$
+because test particles never feed positions back). \code{dust\_nsh} therefore gained
+\code{<problem>/mass\_mod\_amp}, \code{mass\_mod\_phase}: on the lattice, particle
+masses are multiplied by $1 + A\sin(2\pi (y - y_{\min})/L_y + \phi)$, a deterministic
+azimuthally structured dust distribution (with \code{check\_equilibrium = false}).
+\file{inputs/dust/dust\_nsh\_shear3d.athinput} is the tracked 3D shear-periodic NSH
+input with all Phase-4b keys present for command-line overrides.
+
+%=========================================================================================
 \section{What the next phases must add}
 \label{sec:next}
 
 The survey established these gaps; they are listed in the order they bite.
 
 \begin{enumerate}\itemsep4pt
-\item \textbf{Shear-periodic additive deposit remap (4b).} The $u^\ast$ copy exchange
-      is shear-remapped, the two additive deposits ($Q,\mathbf P$ and the back-reaction
-      momentum) are not; the module warns and is exact only for axisymmetric states.
-      The Phase-4c gravity deposit will be a third additive field. Design: gather the
-      $x_1$ ghost slabs of the boundary blocks, shift in $y$ by $\pm y_{\rm sh}$ with
-      the conservative remap kernels of \file{remap\_fluxes.hpp} (the Phase-1
-      machinery; PPMX default), and \emph{add} into the receiving active strips ---
-      i.e.\ a \code{ShearingBoxCC}-style pack/remap with additive unpack. Mass is
-      conserved exactly by construction; the remap's smoothing touches only the
-      ghost-sourced part of the boundary columns. The alternative (image particles
-      deposited directly in the neighbor's frame) is exact but needs a second particle
-      exchange; keep it in reserve.
+\item \textbf{Shear-periodic additive deposit remap (4b).} \textbf{Done},
+      \S\ref{sec:phase4b1}. The Phase-4c gravity deposit will be a third additive field
+      and inherits the fold through \code{MeshBoundaryValuesDep}. The alternative
+      design (image particles deposited directly in the neighbor's frame) stays in
+      reserve; the field remap is exact for constants and second/third order otherwise,
+      and it costs one small collective per fold.
 \item \textbf{Ideal-gas back-reaction (4b).} \fn{ApplyPMBR} updates momentum only, so
       back-reaction requires an isothermal EOS, while gravito-turbulence needs cooling.
       Add $\Delta E = \Delta(|\mathbf M|^2/2\rho)$ (internal energy fixed under the drag
@@ -660,6 +798,9 @@ boundaries, or shear-periodic $x_1$ in 3D; \code{<hydro>/eos = isothermal} whene
 \midrule
 \code{coupling} & imex & \code{imex} (needs \code{imex2+}) / \code{hybrid} / \code{pc2}
   (both need \code{rk2}); see \S\ref{sec:merge2} \\
+\code{shear\_remap} & plm & \code{dc} / \code{plm} / \code{ppmx}: $y$-remap order of the
+  shear-periodic deposit fold (\S\ref{sec:phase4b1}) \\
+\code{shear\_fold} & true & \code{false}: diagnostic, skip the fold \\
 \code{hybrid\_force\_mode} & auto & \code{auto} / \code{pc2} / \code{split\_be}
   (\code{hybrid} only) \\
 \code{hybrid\_enter\_zeta}, \code{hybrid\_enter\_chi} & 0.5, 0.5 & split-BE entry
@@ -685,8 +826,11 @@ boundaries, or shear-periodic $x_1$ in 3D; \code{<hydro>/eos = isothermal} whene
 \end{center}
 
 Problem-generator parameters (\code{rho0}, \code{etavk}, \code{eps\_s}, placement,
-seeds, eigenmode amplitudes) are specific to the four built-in generators
-\code{dust\_damping}, \code{dust\_nsh}, \code{dusty\_wave}, \code{streaming\_linear};
+seeds, eigenmode amplitudes; \code{dust\_nsh}'s \code{mass\_mod\_amp},
+\code{mass\_mod\_phase}, \code{check\_equilibrium}; \code{dust\_deposit\_shear}'s
+\code{time0}, \code{remap}, \code{fold}) are specific to the five built-in generators
+\code{dust\_damping}, \code{dust\_nsh}, \code{dusty\_wave}, \code{streaming\_linear},
+\code{dust\_deposit\_shear};
 the files under \file{inputs/dust/} and \file{../athenak\_dust\_tests/inputs/} are
 the reference configurations. Outputs: \code{file\_type = pvtk} with
 \code{variable = prtcl\_all} (positions, gid, tag, species, velocities);
