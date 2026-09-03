@@ -17,12 +17,8 @@
 //! MeshBoundaryValuesFC::SumBoundaryFluxes().
 //!
 //! Only same-level (uniform grid) exchanges are supported.
-//!
-//! MPI transport uses the rank-packed vars path of MeshBoundaryValues (one aggregated
-//! message per peer rank, posted by the base-class InitRecv/ClearSend/ClearRecv):
-//! off-rank payloads are written straight into rank_sendbuf_vars_ at the per-(m,n)
-//! offsets built by BuildRankPackedVarMetadata, exactly as in MeshBoundaryValuesCC.
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <utility>
@@ -84,6 +80,8 @@ void MeshBoundaryValuesDep::InitSendIndices(MeshBoundaryBuffer &buf,
   }
   buf.isame_ndat = (isame.bie - isame.bis + 1)*(isame.bje - isame.bjs + 1)*
                    (isame.bke - isame.bks + 1);
+  // Keep these per-axis extents identical to the partner ranges constructed by
+  // InitRecvIndices(). Rank-packed MPI sends and receives must agree on payload size.
 }
 
 //----------------------------------------------------------------------------------------
@@ -107,6 +105,8 @@ void MeshBoundaryValuesDep::InitRecvIndices(MeshBoundaryBuffer &buf,
   isame.bke = (ox3 < 0) ? (mb_indcs.ks + ng1) : mb_indcs.ke;
   buf.isame_ndat = (isame.bie - isame.bis + 1)*(isame.bje - isame.bjs + 1)*
                    (isame.bke - isame.bks + 1);
+  // Keep these per-axis extents identical to the partner ranges constructed by
+  // InitSendIndices(). Rank-packed MPI sends and receives must agree on payload size.
 }
 
 //----------------------------------------------------------------------------------------
@@ -131,6 +131,12 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a) {
   auto &sbuf = sendbuf;
   auto &rbuf = recvbuf;
 #if MPI_PARALLEL_ENABLED
+  // Build (or refresh) the rank-packed metadata before the kernel writes off-rank
+  // payloads directly into the aggregate send buffer.
+  if (rank_packed_bvals_nvars_ != nvar ||
+      rank_packed_mesh_seq_ != pmy_pack->pmesh->GetAMRLoadBalanceUpdateSeq()) {
+    BuildRankPackedVarMetadata(nvar);
+  }
   auto aggsbuf = rank_sendbuf_vars_;
   auto sendoff = send_agg_offset_;
 #endif
@@ -176,12 +182,10 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a) {
         // else copy into send buffer for MPI communication below
         } else {
 #if MPI_PARALLEL_ENABLED
-          // off-rank: write straight into the rank-packed aggregate send buffer
-          // at this entry's base offset (same idiom as MeshBoundaryValuesCC)
           int base = sendoff(m*nnghbr + n);
           Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il,iu+1),
           [&](const int i) {
-            aggsbuf(base + (i-il + ni*(j-jl + nj*(k-kl + nk*v))) ) = a(m,v,k,j,i);
+            aggsbuf(base + (i-il + ni*(j-jl + nj*(k-kl + nk*v)))) = a(m,v,k,j,i);
           });
 #else
           Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il,iu+1),
@@ -197,10 +201,10 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a) {
   }
 
 #if MPI_PARALLEL_ENABLED
-  // Send aggregated payloads to neighboring ranks. The kernel above already wrote every
-  // off-rank payload directly into rank_sendbuf_vars_, so one fence suffices.
+  // Send one aggregate boundary payload to each neighboring MPI rank. The packing
+  // kernel wrote off-rank entries directly into rank_sendbuf_vars_.
   Kokkos::fence();
-  bool no_errors=true;
+  bool no_errors = true;
   std::fill(send_var_reqs_.begin(), send_var_reqs_.end(), MPI_REQUEST_NULL);
   for (std::size_t i = 0; i < send_var_msgs_.size(); ++i) {
     const auto &msg = send_var_msgs_[i];
@@ -283,7 +287,8 @@ TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
         int nk = ku - kl + 1;
         int nkj  = nk*nj;
 #if MPI_PARALLEL_ENABLED
-        // base offset of this (m,n) payload in the aggregate buffer; -1 == on-rank
+        // A non-negative aggregate offset identifies an off-rank payload. Same-rank
+        // payloads remain in their per-neighbor receive buffers.
         const int base = recvoff(m*nnghbr + n);
 #endif
 
@@ -296,7 +301,7 @@ TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
           // Inner (vector) loop over i
           Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il,iu+1),
           [&](const int i) {
-            const int bi = i-il + ni*(j-jl + nj*(k-kl + nk*v));
+            const int bi = (i-il + ni*(j-jl + nj*(k-kl + nk*v)));
 #if MPI_PARALLEL_ENABLED
             a(m,v,k,j,i) += (base >= 0) ? aggrbuf(base + bi) : rbuf[n].vars(m, bi);
 #else
