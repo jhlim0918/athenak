@@ -18,8 +18,9 @@
 
 \title{Dust Particles and Gas$+$Dust Self-Gravity\\
        in the AthenaK Shearing Box:\\
-       I.\ The Dust-Module Merge (Phase 4a)\\
-       and the Shear-Periodic Deposit Fold (Phase 4b, i)}
+       I.\ The Dust-Module Merge (Phase 4a),\\
+       the Shear-Periodic Deposit Fold and the Ideal-Gas\\
+       Energy Update (Phase 4b, i--ii)}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}}
 \date{September 3, 2026}
 
@@ -77,6 +78,17 @@ deterministic azimuthally structured dust distribution with back-reaction agrees
 between serial and 4-rank runs to $10^{-14}$ over an orbit, and shows the old unsheared
 exchange was a $1$--$7\%$ error in the gas kinetic energy while the remap order matters
 only at $10^{-7}$.
+
+\textbf{Phase 4b (ii)} removes the isothermal restriction on back-reaction. With every
+drag kick booking its kinetic-energy change, the ideal-gas damping test keeps the
+momentum dynamics identical to the isothermal reference and changes the internal
+energy by $1\%$ (IMEX) / $2\%$ (PC2) of the dissipated energy at a step equal to the
+stiffest stopping time --- the low-storage RK combination gap, converging with the
+step; the frictional-heating option conserves $E_{\rm gas} + K_{\rm dust}$ to $4$--$6\%$
+of the dissipated energy at that step, first order in $\Delta t$; and on the 3D
+shear-periodic NSH state the heating rate matches the analytic dissipation to $1.5\%$,
+$0.7\%$, $0.4\%$ as the step is halved twice, with the equilibrium itself at round-off
+in both modes.
 \end{abstract}
 
 \tableofcontents
@@ -123,6 +135,9 @@ the science configuration; Phase 5 takes particles onto refined meshes.
   \item \textbf{Phase 4b (i)} (\S\ref{sec:phase4b1}). The shear-periodic deposit fold:
         exactness, convergence, conservation, rank independence, and its effect on a
         structured 3D run.
+  \item \textbf{Phase 4b (ii)} (\S\ref{sec:phase4b2}). The ideal-gas energy update:
+        momentum dynamics unchanged, energy budgets of both modes versus the step, the
+        heating rate against the analytic dissipation.
 \end{enumerate}
 
 %=========================================================================================
@@ -610,6 +625,92 @@ shear phase --- not a small correction. And the remap order is a $10^{-7}$ effec
 this run, so PLM is converged for the purpose.
 
 %=========================================================================================
+\section{Phase 4b (ii): the ideal-gas energy update}
+\label{sec:phase4b2}
+
+Mechanism: implementation document \S6. Every drag kick on the gas momentum now books
+the matching kinetic-energy change (internal energy fixed under the kick); with
+\code{dust/drag\_heating = true} the frictional dissipation of each particle kick is
+deposited as heat. Data: \file{run/dust4b/energy/}.
+
+\subsection{The damping test with an ideal gas}
+
+\file{inputs/dust/dust\_damping\_ideal.athinput}: the three-species damping problem of
+\S\ref{sec:fidelity} with \code{eos = ideal}, $\gamma = 1.4$ and $p_{\rm gas} = 10^{-5}$
+(comparable to the $1.4\times10^{-5}$ of kinetic energy the drag dissipates, so the
+six-digit history resolves the budget; the first attempt with $p = 1$ could not),
+\code{dtmax} $= 1/95$ (the isothermal ladder's first step). The internal energy is
+$e = E - K_{\rm gas}$ from the hydro history, the dust kinetic energy
+$K_{\rm dust} = \sum_s \tfrac12\epsilon_s\rho_0 V\bar v_s^2$ from the species velocity
+history (exact on the lattice).
+
+\paragraph{Momentum dynamics.} The four errors of the ODE test are identical between the
+default and heating modes to all printed digits ($9.733252\times10^{-8}$ etc.\ under
+IMEX, $1.660169\times10^{-7}$ under PC2) --- pressure and heat do not touch the
+velocities on a uniform state --- and momentum is conserved to $10^{-16}$.
+
+\paragraph{Energy budgets versus the step.} Errors relative to the dissipated kinetic
+energy, default mode ($|\Delta e|$) and heating mode ($|\Delta(E_{\rm gas} + K_{\rm dust})|$),
+with the order between successive rows in parentheses:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+$\Delta t$ & IMEX default & IMEX heating & PC2 default & PC2 heating \\
+\midrule
+$1/95$  & $1.07\times10^{-2}$ & $3.81\times10^{-2}$ & $2.15\times10^{-2}$ & $5.89\times10^{-2}$ \\
+$1/190$ & $6.83\times10^{-3}$ (0.65) & $2.80\times10^{-2}$ (0.44) & $7.14\times10^{-3}$ (1.59) & $3.09\times10^{-2}$ (0.93) \\
+$1/380$ & $4.17\times10^{-3}$ (0.71) & $1.93\times10^{-2}$ (0.54) & $2.82\times10^{-3}$ (1.34) & $1.53\times10^{-2}$ (1.01) \\
+$1/760$ & $2.43\times10^{-3}$ (0.78) & $1.23\times10^{-2}$ (0.65) & $1.24\times10^{-3}$ (1.18) & $7.56\times10^{-3}$ (1.02) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The default-mode residual is the register-combination gap
+$\gamma_0\gamma_1|\mathbf K_1|^2/2\rho$ per step (implementation document \S6.3): the
+$1\%$ at $\Delta t = 1/95$ is reproduced by that estimate with the stage-1 kick of the
+$t_s = 0.01$ species, and the sub-first-order IMEX slope is the saturation of that kick
+while $\Delta t \gtrsim t_s$ (the orders climb toward one as the step shrinks; PC2,
+with its RK2 weights, is already first order and better). The heating mode inherits
+the same gap on the dust side and converges at first order. Both are truncation
+errors of the tableau, not bookkeeping mistakes: the sign, size and $\Delta t$-scaling
+are the predicted ones.
+
+\subsection{The NSH state with an ideal gas}
+
+\file{inputs/dust/dust\_nsh\_shear3d\_ideal.athinput} ($p = 1$, two orbits):
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+ & max deviation of the drift equilibrium & $\dot e$ / analytic dissipation rate \\
+\midrule
+default mode, \code{cfl 0.45} & $4.6\times10^{-15}$ & (no heat: $e$ constant to $8\times10^{-5}$) \\
+heating, \code{cfl 0.45} ($\Delta t/t_{s,1} = 1.16$) & $4.6\times10^{-15}$ & $1.0148$ \\
+heating, \code{cfl 0.225} & --- & $1.0074$ \\
+heating, \code{cfl 0.1125} & --- & $1.0037$ \\
+heating, \code{cfl 0.45}, 4 ranks & $6.7\times10^{-16}$ & $1.014777$ (serial: $1.014777$) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The analytic rate is $\sum_s \epsilon_s\rho_0|\mathbf u - \mathbf v_s|^2/t_s$ from the
+equilibrium velocities. The heating rate converges to it at first order (the error
+halves with the step; the stiff $t_s = 0.01$ species dominates), the equilibrium is
+untouched by either mode, and 4 ranks reproduce the serial rate to every digit.
+
+\subsection{Regression}
+
+Isothermal runs cannot enter the new branches. The 2D damping ladder is bit-identical
+to the second-merge battery; the 2D and 3D NSH errors and the structured-run
+histories differ from their Phase-4b (i) values only in quantities at the $10^{-16}$
+level (the deposit kernels changed shape and the compiler schedules the fused
+multiply-adds differently), and the 4-rank drifting-particle test reproduces the
+reference $1.158578\times10^{-5}$ with the now four-channel exchange.
+
+%=========================================================================================
 \section{Summary}
 \label{sec:summary}
 
@@ -627,10 +728,12 @@ production path in the resolved drag regime.
 Phase 4b (i) closes the first gap Phase 4a left open: ghost deposits now cross the
 shear-periodic radial faces with a conservative azimuthal remap, certified exact at
 integer shifts, convergent otherwise, conservative, leak-free and rank-independent,
-and shown to matter at the percent level on structured states. Still open in 4b:
-back-reaction with an ideal-gas energy equation (required for cooling) and a particle
-timestep that does not pay the full-shear-velocity penalty in wide boxes; their tests
-are the momentum--energy budget of a drag-coupled ideal gas and the NSH state under
-the relaxed step.
+and shown to matter at the percent level on structured states. Phase 4b (ii) makes
+back-reaction usable with an ideal gas: the energy bookkeeping is exact per kick, the
+residuals are the RK combination gap (a percent of the dissipated energy at a step
+equal to the stiffest stopping time, converging), and the optional frictional heating
+reproduces the analytic dissipation rate to first order. Still open in 4b: a particle
+timestep that does not pay the full-shear-velocity penalty in wide boxes, tested on the
+NSH state under the relaxed step.
 
 \end{document}

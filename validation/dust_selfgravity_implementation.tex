@@ -32,7 +32,7 @@
        in the AthenaK Shearing Box\\[0.4em]
        \large \textsc{Implementation Document}\\
        \large Phase 4a: the dust-module merge; Phase 4b (i): the shear-periodic
-       deposit fold}
+       deposit fold; (ii): the ideal-gas energy update}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}\\
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge)}
@@ -81,7 +81,12 @@ plain-periodic $x_1$ contributions of those blocks are suppressed. The fold is t
 adjoint of the copy-exchange ghost fill, so its shift signs are the reverse of the
 multigrid fill's. A unit-test problem generator certifies it exactly at integer shifts
 and at second/third order otherwise, and a structured 3D run shows the old unsheared
-exchange was a percent-level error.
+exchange was a percent-level error. \textbf{Phase 4b (ii)} lifts the isothermal
+restriction on back-reaction: every drag kick on the gas momentum now goes through one
+helper that, for an ideal gas, books the matching kinetic-energy change so the internal
+energy is untouched, and a flagged option deposits the frictional dissipation of each
+particle kick as heat. The residual energy errors are the convexity gap of the
+low-storage RK combination, first order in the timestep, and are quantified.
 
 The document also records, for the phases that follow, the integration map derived
 from the code survey: where the gravity solve is called relative to the dust task
@@ -135,10 +140,10 @@ Phase & Status & Content \\
 \midrule
 4a & \textbf{done} & merge \code{athenak-dust} into the multigrid tree; establish that both
      the dust module and the gravity machinery are unchanged by the merge \\
-4b & (i) \textbf{done} & (i) shear-periodic \emph{additive} deposit remap
-     (\S\ref{sec:phase4b1}); (ii) ideal-gas energy update under drag back-reaction;
-     (iii) particle timestep on the shear-subtracted velocity; adopt the PC2 coupling
-     (\S\ref{sec:merge2}) as the production path \\
+4b & (i), (ii) \textbf{done} & (i) shear-periodic \emph{additive} deposit remap
+     (\S\ref{sec:phase4b1}); (ii) ideal-gas energy update under drag back-reaction
+     (\S\ref{sec:phase4b2}); (iii) particle timestep on the shear-subtracted velocity;
+     adopt the PC2 coupling (\S\ref{sec:merge2}) as the production path \\
 4c & planned & dust self-gravity: mass deposit into the Poisson source, three density
      reads, force gather to particles; dust-only and gas$+$dust tests \\
 4d & planned & the science configuration: SC14 box $+$ pressure gradient $+$ dust;
@@ -167,9 +172,12 @@ Commit & Phase & Content \\
 \code{78320aee} & 4a & Second merge, \code{dust/dust} at \code{1f3e1ed9}: the fork's own
                        rank-packed deposit exchange (taken), PC2/hybrid coupling, PM
                        optimizations; three conflicts (\S\ref{sec:merge2}) \\
-(next) & 4b (i) & \fn{MeshBoundaryValuesDep::FoldShearDeposit}, the $x_1$-buffer skip,
+\code{(4b-i)} & 4b (i) & \fn{MeshBoundaryValuesDep::FoldShearDeposit}, the $x_1$-buffer skip,
                   the dust hooks, the \code{dust\_deposit\_shear} test generator, the
                   3D shear-periodic NSH input, the NSH mass modulation \\
+(next) & 4b (ii) & \fn{GasKick}, the four kick sites, the heat channel of the
+                  back-reaction deposit, \code{<dust>/drag\_heating}, the isothermal
+                  guard removed, ideal-gas initialization of \code{dust\_nsh} \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -732,6 +740,72 @@ azimuthally structured dust distribution (with \code{check\_equilibrium = false}
 input with all Phase-4b keys present for command-line overrides.
 
 %=========================================================================================
+\section{Phase 4b (ii): the ideal-gas energy update}
+\label{sec:phase4b2}
+
+\subsection{The problem}
+
+The dust fork applied the drag back-reaction to the gas momentum only and therefore
+required an isothermal EOS (a fatal guard). Gravito-turbulence needs cooling, hence an
+ideal gas, and then every change of the gas momentum must be accompanied by a change of
+the total energy: otherwise the internal energy $e = E - |\mathbf M|^2/2\rho$ silently
+absorbs the negative of the kinetic-energy change.
+
+\subsection{The rule}
+
+\fn{GasKick(u0, m,k,j,i, dm, ideal)} (\file{dust/dust.hpp}) is the single entry point
+for a drag kick $\Delta\mathbf M$ on a cell: for an ideal gas it adds
+$\Delta E = \big(|\mathbf M + \Delta\mathbf M|^2 - |\mathbf M|^2\big)/2\rho$ before
+adding $\Delta\mathbf M$, so the kick leaves $e$ unchanged. The four sites where the
+module changes the gas momentum all use it: the IMEX back-reaction apply
+(\fn{ApplyPMBR}), the IMEX history term (\fn{AddDragHistoryGas},
+$\Delta\mathbf M = \tilde a_{22}\Delta t\,\mathbf R_g$), the PC2 predictor apply
+(\fn{GasImplicitSolve}, stage 1) and the hybrid commit (\fn{ApplyPMBR}, stage 2, with
+the tableau-weighted predictor removal folded into the same kick). The coupled solvers
+only read the gas state and apply through \fn{ApplyPMBR}.
+
+\paragraph{Frictional heating (\code{<dust>/drag\_heating}, default \code{false}).}
+The dissipation of one drag kick $\Delta\mathbf v_j = c_j(\tilde{\mathbf u}_j - \mathbf v_j)$
+on particle $j$ --- the kinetic energy lost by particle and gas together beyond the gas
+kinetic-energy change that \fn{GasKick} books --- is
+\begin{equation}
+  Q_j = m_j\,c_j\,(1 - c_j/2)\,|\tilde{\mathbf u}_j - \mathbf v_j|^2 \;\ge 0 ,
+\end{equation}
+deposited with the particle's weights into a fourth channel of the back-reaction field
+\code{dmom} (now four variables; the exchange objects follow) and added to $E$ where the
+momentum channels are applied; the IMEX history term scales it with the same
+$\tilde a_{22}$. On the PC2 path the midpoint impulse gives
+$Q_j = m_j[\Delta\mathbf v_{\rm drag}\cdot(\mathbf u_g - \mathbf v_h)
+- \tfrac12|\Delta\mathbf v_{\rm drag}|^2]$, the midpoint quadrature of
+$m_j|\mathbf u - \mathbf v|^2/t_s$ over $\Delta t$ in kinetic-energy form. With an
+isothermal EOS the flag is ignored with a warning.
+
+\subsection{What the bookkeeping cannot do, and the lesson from the first test}
+
+Inside a low-storage RK stage the conserved state is combined linearly,
+$\mathbf u \leftarrow \gamma_0\mathbf u + \gamma_1\mathbf u_1$; $E$ combines linearly
+but $|\mathbf M|^2/2\rho$ does not, so the combined internal energy exceeds the
+combination of internal energies by $\gamma_0\gamma_1|\mathbf M_a - \mathbf M_b|^2/2\rho$
+per step, where $\mathbf M_a - \mathbf M_b$ is the stage-1 momentum change --- for a
+drag-dominated cell, the stage-1 kick. The default mode therefore does \emph{not} keep
+$e$ exactly fixed over a step; it gains this positive gap, first order in $\Delta t$
+(the kick scales with $\Delta t$ while $\Delta t \ll t_s$) and sub-first-order while
+$\Delta t \gtrsim t_s$ of the stiffest species, where the kick saturates. The particle
+velocities are combined the same way, so the heating mode carries the analogous gap on
+the dust side: exact conservation of $E_{\rm gas} + K_{\rm dust}$ is not attainable in
+this framework, and the measured residuals (validation document \S6) are this
+truncation error. Both modes converge with $\Delta t$; both are inert for an
+isothermal gas.
+
+The first energy test looked like a 30\% bookkeeping error; it was the history file's
+six significant digits (a total energy of $2.5$ cannot show changes of $10^{-6}$).
+\file{inputs/dust/dust\_damping\_ideal.athinput} therefore uses $p_{\rm gas} = 10^{-5}$,
+comparable to the dissipated energy, and \code{<time>/dtmax} to pin the step. The NSH
+generator gained the ideal-gas initialization it lacked (uniform \code{<problem>/pgas});
+\file{inputs/dust/dust\_nsh\_shear3d\_ideal.athinput} is the ideal-gas twin of the 3D
+input.
+
+%=========================================================================================
 \section{What the next phases must add}
 \label{sec:next}
 
@@ -744,10 +818,7 @@ The survey established these gaps; they are listed in the order they bite.
       design (image particles deposited directly in the neighbor's frame) stays in
       reserve; the field remap is exact for constants and second/third order otherwise,
       and it costs one small collective per fold.
-\item \textbf{Ideal-gas back-reaction (4b).} \fn{ApplyPMBR} updates momentum only, so
-      back-reaction requires an isothermal EOS, while gravito-turbulence needs cooling.
-      Add $\Delta E = \Delta(|\mathbf M|^2/2\rho)$ (internal energy fixed under the drag
-      kick), with frictional heating as a flagged option.
+\item \textbf{Ideal-gas back-reaction (4b).} \textbf{Done}, \S\ref{sec:phase4b2}.
 \item \textbf{Particle timestep under shear (4b).} Limit on $v_y$, not $v_y - \qom x$,
       with a guard that the per-stage azimuthal jump stays below a MeshBlock width
       (migration is position-based and finds the destination by $(y,z)$ lookup, so
@@ -786,8 +857,7 @@ Required: \code{<time>/integrator = imex2+} for \code{coupling = imex}, \code{rk
 for \code{pc2} or \code{hybrid}; \code{<particles>/particle\_type = dust},
 \code{pusher = imex\_dust}, \code{ppc} (particles per cell, an integer multiple of
 \code{nspecies} for lattice placement); \code{<mesh>/nghost >= 2}; periodic
-boundaries, or shear-periodic $x_1$ in 3D; \code{<hydro>/eos = isothermal} whenever
-\code{back\_reaction = true}. Shearing-box runs read \code{<shearing\_box>/qshear},
+boundaries, or shear-periodic $x_1$ in 3D. Any EOS (the isothermal requirement for back-reaction is gone, \S\ref{sec:phase4b2}). Shearing-box runs read \code{<shearing\_box>/qshear},
 \code{omega0}, \code{stratified}.
 
 \begin{center}
@@ -801,6 +871,8 @@ boundaries, or shear-periodic $x_1$ in 3D; \code{<hydro>/eos = isothermal} whene
 \code{shear\_remap} & plm & \code{dc} / \code{plm} / \code{ppmx}: $y$-remap order of the
   shear-periodic deposit fold (\S\ref{sec:phase4b1}) \\
 \code{shear\_fold} & true & \code{false}: diagnostic, skip the fold \\
+\code{drag\_heating} & false & ideal gas: deposit the frictional dissipation of each
+  drag kick as heat (\S\ref{sec:phase4b2}); default keeps $e$ fixed and discards it \\
 \code{hybrid\_force\_mode} & auto & \code{auto} / \code{pc2} / \code{split\_be}
   (\code{hybrid} only) \\
 \code{hybrid\_enter\_zeta}, \code{hybrid\_enter\_chi} & 0.5, 0.5 & split-BE entry
