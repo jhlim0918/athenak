@@ -1,0 +1,171 @@
+# AthenaK input file: AMR-ENABLED OVERLAY of gravito_turb_sc14.athinput.
+#
+# Identical to that file except for nghost = 4 and the dormant <mesh_refinement> /
+# <amr_criterion0> blocks at the bottom of the <meshblock> section.  Its purpose is
+# to be passed alongside -r so that a beta=3 fragmentation run can switch adaptive
+# refinement on from a restart whose own input never had those blocks:
+#
+#   athena -r <b10>/rst/<last>.rst -i <this file> -d ./ \
+#          hydro_srcterms/bcool_beta=3.0 time/tlim=<t0+20> \
+#          mesh_refinement/refinement=adaptive \
+#          gravity/threshold=-1.0 gravity/niteration=6
+#
+# main.cpp loads the restart parameters first, then overlays -i (LoadFromStream uses
+# FindOrAddBlock, so blocks absent from the restart are ADDED), then applies the
+# command line -- which is why mesh_refinement/refinement=adaptive resolves here but
+# aborts with "Block name ... not found" when -i is omitted.
+#
+# WARNING: the overlay replaces EVERY parameter it contains, and Mesh::Mesh() takes
+# nghost from the merged set (mesh.cpp:87).  Keep <mesh> and <meshblock> byte-identical
+# to what the anchor actually ran with -- nghost = 4 here matches the anchor's
+# `mesh/nghost=4` command-line override.  A mismatch mis-sizes the arrays that the
+# restart file is read into.
+#
+# Physics, grid and constants below are unchanged from the standard beta = 10 run of
+# Shi & Chiang (2014), ApJ 789, 34 (their tc=10).
+#
+# Physics: 3D hydro shearing box (q = 3/2, Omega = 1) with linearized vertical tidal
+# gravity, self-gravity (multigrid: shear-periodic x1 + periodic x2 + slab-open x3),
+# and constant-beta cooling dU/dt = -U*Omega/beta.  Code units rho0 = H = Omega = 1
+# with SC14's fiducial constants: gamma = 5/3, Toomre Q0 = 1 initial equilibrium,
+# cs(0) = 2.12625, G = 0.3384 (four_pi_G = 4.25231).
+#
+# Box [-32H,32H]^2 x [-6H,6H] at 256 x 256 x 48 (4 cells/H, SC14 standard
+# resolution), 16^3 cubic MeshBlocks (multigrid requirement; the middle z-row of
+# blocks spans exactly |z| < 2H for optional midplane refinement studies).
+#
+# Expected behavior (SC14 sec. 3.1.1, Fig. 2): violent cooling collapse for the
+# first ~10/Omega, vertical rebound with ~10% mass loss through the z boundaries,
+# relaxation by t ~ 50/Omega into steady gravito-turbulence with Q ~ 1.33,
+# alpha_grav ~ 3.9e-2, alpha_Reynolds ~ 1.9e-2 (eq. 19), alpha' ~ 4.2e-2 ~
+# 4/(9*gamma*(gamma-1))/beta (eq. 21), rms dv ~ 1.8 H*Omega.
+#
+# History columns (user_hist, see src/pgen/fluids/gravito_turb.cpp):
+#   mass, rho_cs, rho_wgrv, rho_wrey, rho_prs, wgrv, wrey, rho_cs2, rho_dv2, eint
+#   Q      = (rho_cs/mass)*omega0/(pi*G*mass/(Lx*Ly))
+#   alpha  = (rho_wgrv + rho_wrey)/rho_prs          (SC14 eq. 19)
+#   alpha' = (2/3)*(wgrv + wrey)/rho_cs2            (SC14 eq. 20;
+#            rho_cs2 = gamma*int P absorbs eq. 20's 1/gamma)
+#   rms dv = sqrt(rho_dv2/mass)
+
+<comment>
+problem   = SC14 gravito-turbulence (beta = 10)
+
+<job>
+basename  = GravitoTurb
+
+<mesh>
+nghost    = 4         # EVEN: mesh.cpp:266 rejects odd nghost for any SMR/AMR run,
+                      # and restart files store ghost zones so it cannot change at
+                      # restart.  Matches the anchor's mesh/nghost=4 override.
+nx1       = 256       # Number of cells in X1-direction
+x1min     = -32.0     # minimum value of X1
+x1max     = 32.0      # maximum value of X1
+ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
+ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
+
+nx2       = 256       # Number of cells in X2-direction
+x2min     = -32.0     # minimum value of X2
+x2max     = 32.0      # maximum value of X2
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 48        # Number of cells in X3-direction
+x3min     = -6.0      # minimum value of X3
+x3max     = 6.0       # maximum value of X3
+ix3_bc    = diode     # no-inflow outflow (plain outflow feeds a gravity-driven
+ox3_bc    = diode     # inflow runaway through the z faces; SC14's "outflow" intent)
+
+<meshblock>
+nx1       = 16        # cubic MeshBlocks (multigrid requirement); 32^3 does not tile
+nx2       = 16        # 256x256x48, so standard resolution is stuck with 16^3 and
+nx3       = 16        # pays 3.4x ghost overhead at nghost=4 (2.6x at nghost=3)
+
+# Dormant AMR configuration: refinement=none, so this file is a no-op drop-in for the
+# uniform anchor; the beta=3 restart flips it with mesh_refinement/refinement=adaptive
+# on the command line.  The blocks must EXIST for that override to resolve.
+<mesh_refinement>
+refinement = none     # anchor: uniform; beta=3 restart: adaptive (via CLI)
+max_nmb_per_rank = 64 # headroom for the block count to grow under AMR
+num_levels = 4        # 4 -> 8 -> 16 -> 32 cells/H (the hi-res input needs only 3
+                      # levels because it starts at 8 cells/H)
+refinement_interval = 5
+
+<amr_criterion0>
+method    = min_max
+variable  = hydro_w_d
+value_max = 5.0       # refine blocks containing rho > 5 rho0.  The hi-res input uses
+                      # 10.0, but the standard-resolution beta=3 run peaked at only
+                      # rho = 11.2 rho0, so a threshold of 10 would barely ever fire.
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integrator
+cfl_number = 0.3      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = -1       # cycle limit
+tlim       = 300.0    # time limit (300/Omega, SC14 standard duration)
+ndiag      = 100      # cycles between diagnostic output
+
+<hydro>
+eos         = ideal   # EOS type
+gamma       = 1.6666666666666667
+reconstruct = plm     # spatial reconstruction method
+rsolver     = hllc    # Riemann-solver to be used
+dfloor      = 1.0e-4  # density floor (SC14: 1e-4 rho0)
+pfloor      = 1.0e-10 # pressure floor (halo shocks; SC14 used Athena's default floors)
+
+<shearing_box>
+qshear    = 1.5       # shear rate parameter q
+omega0    = 1.0       # rotation frequency
+stratified = true     # vertical tidal gravity -Omega^2 z
+orbital_advection = true
+
+<gravity>
+solver    = multigrid # fft | multigrid
+four_pi_G = 4.25231   # = 4*pi*0.3384 (SC14 fiducial G)
+mg_bc     = slab      # slab-open (vacuum) x3 boundaries
+vert_bc   = open      # FFT solver only (solver=fft cross-checks; ignored by MG)
+mg_remap  = ppmx      # shear ghost + slab plane remap order
+threshold = -1.0      # FIXED iteration count, not the stagnation rule: 6
+niteration = 6        # warm-started V-cycles reach defect ~5e-7 (far below the
+                      # ~1e-4 discretization error) at ~1/3 the cost; the
+                      # validated 2026-08 b10 run used threshold=0.0 -- results
+                      # are insensitive (solver tolerance << physics)
+full_multigrid = false  # iterative mode: warm-start from the previous potential
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+beta_cooling = true
+bcool_beta   = 10.0   # beta = Omega*t_cool
+thermal_cooling = false  # SC14 "b" runs: t_cool = tcool_b*(rho/P)^3 (set
+tcool_b      = 200.0     # beta_cooling=false when enabling)
+cool_eps     = 0.02      # dt <= cool_eps*t_cool
+
+<problem>
+pgen_name = gravito_turb
+user_hist = true
+rho0      = 1.0
+cs0       = 2.12625   # midplane sound speed (Q0 = 1 fiducial)
+dfloor_ic = 1.0e-4    # initial-condition halo floor
+pert_amp  = 0.1       # velocity perturbations up to pert_amp*cs0 ...
+pert_zmax = 2.0       # ... for |z| < pert_zmax
+pert_seed = 1
+
+<output1>
+file_type = hst
+dt        = 0.25
+
+<output2>
+file_type = bin
+variable  = hydro_w
+dt        = 10.0
+
+<output3>
+file_type = bin
+variable  = grav_phi
+dt        = 10.0
+
+<output4>
+file_type = rst
+dt        = 50.0
