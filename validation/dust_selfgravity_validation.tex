@@ -19,10 +19,10 @@
 \title{Dust Particles and Gas$+$Dust Self-Gravity\\
        in the AthenaK Shearing Box:\\
        I.\ The Dust-Module Merge (Phase 4a),\\
-       the Shear-Periodic Deposit Fold and the Ideal-Gas\\
-       Energy Update (Phase 4b, i--ii)}
+       the Shear-Periodic Deposit Fold, the Ideal-Gas Energy Update\\
+       and the Particle Timestep under Shear (Phase 4b, i--iii)}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}}
-\date{September 3, 2026}
+\date{September 3--4, 2026}
 
 \begin{document}
 \maketitle
@@ -89,6 +89,20 @@ of the dissipated energy at that step, first order in $\Delta t$; and on the 3D
 shear-periodic NSH state the heating rate matches the analytic dissipation to $1.5\%$,
 $0.7\%$, $0.4\%$ as the step is halved twice, with the equilibrium itself at round-off
 in both modes.
+
+\textbf{Phase 4b (iii)} drops the background shear from the particle transport limit
+and replaces it by a MeshBlock-crossing guard on the total velocity. In an $L_x = 8$
+shear-periodic box the ten-orbit NSH run takes 4588 cycles instead of 24043
+($5.2\times$; the step is now the gas limit), at round-off in every drift velocity,
+serially, at 4 ranks and under PC2; the guard reproduces its formula to four digits
+when its safety fraction is varied, and with thin MeshBlocks it keeps a run clean that
+aborts on the first cycle without it. A structured run is rank-independent to
+$10^{-14}$ at the larger step. The scan the larger step made necessary shows the IMEX
+coupling's own truncation error at $\Delta t/t_{s,\min} = 1.4$: $1\%$ in the gas
+kinetic energy in the quiet phase, $26\%$ during the run's streaming burst, converging
+at second order --- an error the legacy limit had been hiding in wide boxes by forcing
+$\Delta t \approx t_{s,\min}/4$ --- while PC2 at its \code{rk2} step sits within $2\%$
+of the converged value.
 \end{abstract}
 
 \tableofcontents
@@ -180,6 +194,22 @@ athena -i inputs/tests/mg_poisson_shear_bndry.athinput problem/profile=shwave pr
 # integrator twin (gas only, uniform grid)
 athena -i inputs/shearing_box/gravito_turb_amr_test.athinput mesh_refinement/refinement=none \
        time/tlim=3.0 [time/integrator=imex2+ time/cfl_number=0.3]
+\end{lstlisting}
+
+\noindent Phase 4b (iii) (\S\ref{sec:phase4b3}; the wide box is the tracked 3D input with
+$x_1 \in [-4,4]$ at the same cell size):
+\begin{lstlisting}
+WIDE="mesh/nx1=64 mesh/x1min=-4.0 mesh/x1max=4.0 meshblock/nx1=32"
+IN=inputs/dust/dust_nsh_shear3d.athinput
+athena -i $IN $WIDE dust/dt_transport=full            # legacy limit, 10 orbits
+athena -i $IN $WIDE dust/dt_transport=relative        # default; also mpirun -np 4, and
+                                                      # dust/coupling=pc2 time/integrator=rk2 time/cfl_number=0.3
+# structured state, one orbit, both limits, serial and 4 ranks, IMEX and PC2
+athena -i $IN $WIDE problem/mass_mod_amp=0.5 problem/check_equilibrium=false \
+       time/tlim=6.283185307179586 dust/dt_transport={full,relative}
+# guard scaling (three cycles) and the thin-block abort demonstration (one orbit)
+athena -i $IN $WIDE dust/dt_block_safety={0.1,0.2,0.4} time/nlim=3 time/ndiag=1
+athena -i $IN $WIDE meshblock/nx2=4 dust/dt_block_safety={0.5,4.0} time/tlim=6.283185307179586
 \end{lstlisting}
 
 Each dust problem generator writes a \file{<basename>-errs.dat} line per run; the
@@ -711,6 +741,138 @@ multiply-adds differently), and the 4-rank drifting-particle test reproduces the
 reference $1.158578\times10^{-5}$ with the now four-channel exchange.
 
 %=========================================================================================
+\section{Phase 4b (iii): the particle timestep under shear}
+\label{sec:phase4b3}
+
+Mechanism: implementation document \S7. The transport limit is now the peculiar
+velocity per cell (\code{dust/dt\_transport = relative}, default) with a guard that no
+particle crosses more than \code{dt\_block\_safety} $= 0.5$ of a MeshBlock per stage on
+the total velocity $v_y - q\Om x$; \code{dt\_transport = full} is the legacy limit. Data:
+\file{run/dust4b/dt/}; figure \ref{fig:dt}.
+
+\subsection{Regression at the old step}
+
+The 2D damping ladder is bit-identical to Phase 4a (cycle counts 81, 161, 321, 642 and
+every error digit): the guard is inert without shear. In the $L_x = 1$ box of the
+tracked 3D input both particle limits lie above the gas limit
+($1.37\times10^{-2}$ from $c_s$ and $\Delta x_2 = 1/32$): legacy $2.1\times10^{-2}$,
+new guard $1.9\times10^{-1}$. The two modes therefore take the same 4588 steps and
+produce identical error lines ($1.8\times10^{-16}$), PC2 its usual 6882 steps at
+$1.2\times10^{-15}$ --- which is also why the penalty had never shown in this test.
+
+\subsection{The wide box}
+
+The same input with $x_1 \in [-4,4]$ at the same cell size ($64\times32\times8$,
+blocks $32\times16\times8$, $\max|q\Om x| = 5.9$), ten orbits, uniform NSH state:
+
+\begin{center}
+\small
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+run & limit & $\Delta t$ & cycles & CPU s & max NSH deviation \\
+\midrule
+IMEX, serial & \code{full} (legacy) & $2.60\times10^{-3}$ & 24043 & 455 & $8.8\times10^{-16}$ \\
+IMEX, serial & \code{relative} & $1.37\times10^{-2}$ & 4588 & 94 & $1.3\times10^{-15}$ \\
+IMEX, 4 ranks & \code{relative} & $1.37\times10^{-2}$ & 4588 & 30 & $1.1\times10^{-16}$ \\
+PC2/\code{rk2}, serial & \code{relative} & $9.13\times10^{-3}$ & 6882 & 99 & $1.2\times10^{-15}$ \\
+IMEX ideal gas, 2 orbits & \code{relative} & $1.37\times10^{-2}$ & 1082 & --- & $5.4\times10^{-15}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The legacy step is $0.5\,\Delta x_2/5.9$; the new step is the gas limit, the particle
+guard standing at $(0.5/1.707)\cdot 0.5/5.9 = 2.5\times10^{-2}$ above it. Every particle
+now hops MeshBlocks in $y$ routinely (up to $4.4$ cells per stage) and crosses the
+shear-periodic face with multi-cell azimuthal offsets; ten orbits pass without a halo
+violation, at round-off, on one rank and on four.
+
+\paragraph{The guard.} Lowering \code{dt\_block\_safety} until the guard is the active
+limit reproduces its formula
+$s/\beta_{\max}\cdot L^{\rm mb}_y/\max|v_y - q\Om x|$ with $\beta_{\max} = 1.707$,
+$L^{\rm mb}_y = 0.5$ and $\max|v_y - q\Om x| = 1.5\cdot 3.9375 + 0.027$:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+$s$ & $0.1$ & $0.2$ & $0.4$ \\
+\midrule
+formula & $4.937\times10^{-3}$ & $9.873\times10^{-3}$ & $1.975\times10^{-2}$ \\
+measured $\Delta t$ & $4.936\times10^{-3}$ & $9.873\times10^{-3}$ & $1.370\times10^{-2}$ (gas cap) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+That the guard is needed, and not merely correct, is shown with thin MeshBlocks
+(\code{meshblock/nx2 = 4}, $L^{\rm mb}_y = 0.125$): at the gas step a particle near the
+radial edge moves $1.707 \cdot 0.0137 \cdot 5.9 = 0.14$ per stage, more than a block.
+With the guard the step drops to $6.12\times10^{-3}$ and an orbit (1023 cycles) runs
+clean; with it disabled (\code{dt\_block\_safety = 4}, warned) the run aborts on the
+first cycle with the PM halo violation for a particle at $x = -3.81$, exactly the
+failure mode of \S7.2 of the implementation document.
+
+\subsection{The structured run, and what the larger step costs}
+
+The azimuthally modulated state of \S\ref{sec:phase4b1} (\code{mass\_mod\_amp = 0.5},
+back-reaction, one orbit) in the wide box. Rank independence first: the serial and
+4-rank runs at the new step agree to $10^{-14}$ in every gas history column and to
+$5\times10^{-14}$ in the species velocity sums, the same round-off as before at five
+times the step.
+
+Between the two limits the histories differ visibly, and the difference is worth
+understanding rather than tabulating: for IMEX the gas $x$-kinetic energy at
+$\Delta t = 1.37\times10^{-2}$ differs from the legacy-step run by $5\%$ at $t = 0.5$,
+$1\%$ at $t = 3$ and $21\%$ at $t = 6.28$, where the run goes through a streaming
+burst (figure \ref{fig:dt}, middle); for PC2 at its $9.1\times10^{-3}$ the
+corresponding number is $1.5\%$. The step scan below (\code{<time>/dtmax}, the
+scratch input \file{run/dust4b/nsh3d\_dtmax.athinput}) shows what this is:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+ & \multicolumn{4}{c}{IMEX, $\Delta t =$} & \\
+gas $x$-KE & $1.37\times10^{-2}$ & $6.85\times10^{-3}$ & $3.43\times10^{-3}$ & $1.71\times10^{-3}$ & orders \\
+\midrule
+$t = 3$ & $1.40011\times10^{-4}$ & $1.38681\times10^{-4}$ & $1.38473\times10^{-4}$ & $1.38435\times10^{-4}$ & $2.7$, $2.5$ \\
+$t = 6.28$ & $2.6477\times10^{-4}$ & $2.2227\times10^{-4}$ & $2.1152\times10^{-4}$ & $2.0752\times10^{-4}$ & $2.0$, $1.4$ \\
+\midrule
+ & \multicolumn{3}{c}{PC2, $\Delta t =$} & & \\
+ & $9.1\times10^{-3}$ & $4.55\times10^{-3}$ & $2.28\times10^{-3}$ & & \\
+\midrule
+$t = 3$ & $1.38623\times10^{-4}$ & $1.38550\times10^{-4}$ & $1.38496\times10^{-4}$ & & \\
+$t = 6.28$ & $2.0991\times10^{-4}$ & $2.0835\times10^{-4}$ & $2.0658\times10^{-4}$ & & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The IMEX sequence converges (successive differences fall by $4$--$6\times$ per halving;
+the order drops toward the end of the burst, where the state changes fastest), so the
+$21\%$ is the IMEX coupling's truncation error at $\Delta t/t_{s,1} = 1.4$ --- the
+stiffest species is under-resolved in time --- and not an effect of the transport rule:
+the legacy limit had been supplying, by accident and only in wide boxes, a step of
+$t_{s,1}/4$. PC2 is closer to the converged value at every step (its
+$9.1\times10^{-3}$ run is within $2\%$ of the extrapolated IMEX limit, IMEX's own
+$2.6\times10^{-3}$ run within $1.5\%$), consistent with the second-merge finding that
+PC2 is the production coupling in the resolved regime. The \code{gamma\_switch} is
+inert here (it keys on the \emph{largest} stopping time, $t_{s,3} = 1$). The practical
+rule: with \code{coupling = imex} and species stiffer than the gas step, cap the step
+with \code{<time>/dtmax} at a fraction of $t_{s,\min}$ if their dynamics matter;
+under PC2 the \code{rk2} step is adequate.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/dust4b_dt.png}
+\caption{Phase 4b (iii). Left: the timestep of the wide-box NSH run under the legacy
+limit and the new default, IMEX and PC2. Middle: gas $x$-kinetic energy of the
+structured run over one orbit under both limits; the burst near $t = 5.5$ is where the
+IMEX truncation error at $\Delta t = 1.4\,t_{s,1}$ is largest. Right: relative
+differences of that history --- new versus legacy step (truncation) and serial versus
+4 ranks (round-off).}
+\label{fig:dt}
+\end{figure}
+
+%=========================================================================================
 \section{Summary}
 \label{sec:summary}
 
@@ -732,8 +894,11 @@ and shown to matter at the percent level on structured states. Phase 4b (ii) mak
 back-reaction usable with an ideal gas: the energy bookkeeping is exact per kick, the
 residuals are the RK combination gap (a percent of the dissipated energy at a step
 equal to the stiffest stopping time, converging), and the optional frictional heating
-reproduces the analytic dissipation rate to first order. Still open in 4b: a particle
-timestep that does not pay the full-shear-velocity penalty in wide boxes, tested on the
-NSH state under the relaxed step.
+reproduces the analytic dissipation rate to first order. Phase 4b (iii) closes the
+third: the particle step no longer pays the full-shear-velocity penalty --- $5.2\times$
+fewer cycles in an $L_x = 8$ box, with the equilibrium, rank independence and the
+MeshBlock guard each certified --- and the scan it prompted fixes the operating rule for
+stiff species under IMEX (cap the step at a fraction of $t_{s,\min}$, or use PC2).
+Phase 4b is complete; Phase 4c adds the dust to the Poisson source.
 
 \end{document}

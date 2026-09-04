@@ -32,11 +32,12 @@
        in the AthenaK Shearing Box\\[0.4em]
        \large \textsc{Implementation Document}\\
        \large Phase 4a: the dust-module merge; Phase 4b (i): the shear-periodic
-       deposit fold; (ii): the ideal-gas energy update}
+       deposit fold; (ii): the ideal-gas energy update; (iii): the particle
+       timestep under shear}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}\\
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
-        \code{78320aee} (second merge)}
-\date{September 3, 2026}
+        \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6}}
+\date{September 3--4, 2026}
 
 \begin{document}
 \maketitle
@@ -87,6 +88,13 @@ helper that, for an ideal gas, books the matching kinetic-energy change so the i
 energy is untouched, and a flagged option deposits the frictional dissipation of each
 particle kick as heat. The residual energy errors are the convexity gap of the
 low-storage RK combination, first order in the timestep, and are quantified.
+\textbf{Phase 4b (iii)} removes the last of the three Phase-4b gaps: the particle
+transport timestep no longer resolves the background shear $-\qom x$ cell by cell (a
+$1/L_x$ penalty the orbitally advected gas does not pay) but limits the peculiar
+velocity per cell and the \emph{total} transport velocity per MeshBlock --- the latter
+being what the single-hop particle migration and the one-layer deposit halo actually
+require --- with the bound made exact for the low-storage tableaus through their largest
+stage fraction. In an $L_x = 8$ box the step grows $5.3\times$ to the gas limit.
 
 The document also records, for the phases that follow, the integration map derived
 from the code survey: where the gravity solve is called relative to the dust task
@@ -172,12 +180,16 @@ Commit & Phase & Content \\
 \code{78320aee} & 4a & Second merge, \code{dust/dust} at \code{1f3e1ed9}: the fork's own
                        rank-packed deposit exchange (taken), PC2/hybrid coupling, PM
                        optimizations; three conflicts (\S\ref{sec:merge2}) \\
-\code{(4b-i)} & 4b (i) & \fn{MeshBoundaryValuesDep::FoldShearDeposit}, the $x_1$-buffer skip,
+\code{6c0cafef} & 4b (i) & \fn{MeshBoundaryValuesDep::FoldShearDeposit}, the $x_1$-buffer skip,
                   the dust hooks, the \code{dust\_deposit\_shear} test generator, the
                   3D shear-periodic NSH input, the NSH mass modulation \\
-(next) & 4b (ii) & \fn{GasKick}, the four kick sites, the heat channel of the
+\code{489c656c} & 4b (ii) & \fn{GasKick}, the four kick sites, the heat channel of the
                   back-reaction deposit, \code{<dust>/drag\_heating}, the isothermal
                   guard removed, ideal-gas initialization of \code{dust\_nsh} \\
+\code{375643e6} & 4b (iii) & \fn{DustGasDrag::ComputeNewTimeStep}: cell limit on the peculiar
+                  velocity, MeshBlock guard on the total velocity;
+                  \code{<dust>/dt\_transport}, \code{dt\_block\_safety};
+                  \code{DUST\_DT\_SUMMARY} \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -419,7 +431,8 @@ never feel it.
 $\min_p \min_i \Delta x_i/|v_{{\rm transport},i}|$ times \code{<dust>/dt\_cfl}
 (default $0.5$), where in a 3D shearing box $v_{{\rm transport},y} = v_y - \qom x$
 (\file{:120}). In a wide box this is the same penalty the gas pays without orbital
-advection ($\sim 5\times$ at SC14 size). Phase 4b relaxes it (\S\ref{sec:next}).
+advection ($\sim 5\times$ at SC14 size). Phase 4b (iii) relaxes it
+(\S\ref{sec:phase4b3}).
 
 \subsection{Guards and parameters}
 
@@ -806,6 +819,132 @@ generator gained the ideal-gas initialization it lacked (uniform \code{<problem>
 input.
 
 %=========================================================================================
+\section{Phase 4b (iii): the particle timestep under shear}
+\label{sec:phase4b3}
+
+\subsection{The problem}
+
+The inherited transport limit (\S\ref{sec:dt}) is $\Delta t \le c_{\rm p}\,\min_p
+\Delta x_2/|v_y - \qom x|$ with $c_{\rm p} = $ \code{dt\_cfl} $= 0.5$: one cell of the
+\emph{total} azimuthal motion per step. The background shear is a smooth translation
+the drift integrates exactly ($y \leftarrow y + \Delta t\,(v_y - \qom x)$ is linear in
+$x$), not a signal the mesh has to resolve; the gas, orbitally advected, is limited by
+its peculiar velocity only. In the $L_x = 1$ test boxes the two limits happen to
+coincide with the sound-speed limit, which is why the penalty never showed. In an
+$L_x = 8$ box with the NSH input's $\Delta x_2 = 1/32$ the particle limit is
+$0.5\cdot(1/32)/(1.5\cdot 4) = 2.6\times10^{-3}$ against a gas limit of
+$1.37\times10^{-2}$: a factor $5.3$, growing with $L_x$.
+
+\subsection{What the limit is actually for}
+
+Two mechanisms depend on how far a particle moves in one stage, and neither is a
+cell:
+
+\begin{enumerate}\itemsep3pt
+\item \textbf{The deposit halo.} The TSC stencil reaches one cell beyond the particle,
+      and \code{MeshBoundaryValuesDep} exchanges one ghost layer. Both are satisfied
+      whenever the particle lies \emph{inside its owning block} at deposit time ---
+      which is what the per-stage migration establishes: after
+      \fn{ParticlesBoundaryValues::SetNewPrtclGID} every particle carries the
+      \code{gid} of the block that contains it. The halo-violation abort in
+      \fn{DepositDrag} (\file{dust/dust\_pm.cpp}) is precisely the detector of a failed
+      migration.
+\item \textbf{The migration.} \fn{SetNewPrtclGID} forms the integer offset of the
+      particle from its block, $i_x = \lfloor (x - x_{\min} + L_x^{\rm mb})/L_x^{\rm mb}
+      \rfloor - 1$ and likewise in $y$, $z$, and indexes the neighbor table with
+      \fn{NeighborIndex}$(i_x,i_y,i_z,\ldots)$. The table covers faces, edges and
+      corners: offsets in $\{-1,0,1\}$. A particle that traverses a whole MeshBlock in
+      one stage produces $|i_y| = 2$, an out-of-range neighbor slot, and a wrong or
+      invalid destination. The one exception is a crossing of the shear-periodic
+      $x_1$ mesh boundary, routed by the $(y,z)$ shear maps of Phase 4a for any
+      azimuthal offset.
+\end{enumerate}
+
+So the hard requirement is \emph{less than one MeshBlock per stage}, in every
+direction, on the total transport velocity; the cell-per-step limit on the peculiar
+velocity stays for accuracy, as for the gas.
+
+\subsection{The rule}
+
+\fn{DustGasDrag::ComputeNewTimeStep} (\file{dust/dust\_newdt.cpp}) now reduces two
+minima over the particles in one kernel and takes the smaller:
+\begin{align}
+\Delta t_{\rm cell}  &= c_{\rm p}\,\min_p \min_i \frac{\Delta x_i}{|v_i^{\rm cell}|},
+   & v_y^{\rm cell} &= \begin{cases} v_y & \text{\code{dt\_transport = relative}}\\
+                                      v_y - \qom x & \text{\code{full}} \end{cases}\\
+\Delta t_{\rm block} &= \frac{s}{\beta_{\max}}\,\min_p \min_i
+   \frac{L_i^{\rm mb}}{|v_i^{\rm full}|},
+   & \beta_{\max} &= \max_{\rm stages} |\beta_s|,
+\end{align}
+with $v^{\rm full}_y = v_y - \qom x$ in the 3D shearing box (and $v^{\rm full} = v$
+otherwise), $L_i^{\rm mb}$ the block extent, and $s = $ \code{<dust>/dt\_block\_safety}
+(default $0.5$). The factor $\beta_{\max}$ is what makes $s$ the literal fraction of a
+block crossed per stage. In a low-storage stage the position is combined as
+$y \leftarrow \gamma_0 y + \gamma_1 y_1 + \beta_s\Delta t\,\dot y$ with
+$\gamma_0 + \gamma_1 = 1$, so the displacement from the position the stage started
+with is $\gamma_1(y_1 - y) + \beta_s\Delta t\,\dot y$; for the tableaus in use the
+register term never adds to the drift term in magnitude, and the per-stage
+displacement is bounded by $\beta_{\max}\Delta t\,|\dot y|$:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+integrator & stage displacements $/\,(\Delta t\,|\dot y|)$ & $\beta_{\max}$ & bound used \\
+\midrule
+\code{imex2+}, $\gamma = 1 + 1/\sqrt2$ & $1.707,\ 0.707$ & $1.707$ & $1.707$ \\
+\code{imex2+}, $\gamma = 1/2$ (switch) & $0.5,\ 0.5$ & $1.0$ & $1.0$ \\
+\code{rk2} & $1.0,\ 0$ & $1.0$ & $1.0$ \\
+\code{rk3} & $1.0,\ 0.5,\ 0.5$ & $1.0$ & $1.0$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The kernel reads \code{pdrive->beta[]} over \code{nexp\_stages}, so the $\gamma$-switch
+is covered without a table. The premise $\gamma_0 + \gamma_1 = 1$ with non-negative
+weights holds for every tableau the module's integrator guard admits (\code{imex2+} for
+\code{coupling = imex}, \code{rk2} for \code{pc2}/\code{hybrid}) and for \code{rk3};
+\code{rk4} has $\gamma_0 < 0$ and would need its own bound, but cannot be selected. Note the pre-existing asymmetry the
+cell limit carries under \code{imex2+}: $c_{\rm p} = 0.5$ is applied to $\Delta t$, while
+stage 1 advances $\gamma\Delta t = 1.71\Delta t$, i.e.\ $0.85$ cells per stage; it is
+unchanged here and harmless (nothing in the module needs less than a block).
+
+\subsection{Parameters and diagnostics}
+
+\code{<dust>/dt\_transport = relative|full} (default \code{relative}; \code{full} is
+the legacy limit, bit-identical to Phase 4b (ii)) and \code{<dust>/dt\_block\_safety}
+(default $0.5$; a value $\ge 1$ is accepted with a warning for the diagnostic run of
+validation \S7 that shows the halo abort the guard prevents; the constructor prints
+which limit is in force in a 3D shearing box). The guard is always on, in all three
+directions and in every geometry; outside a shearing box it is inert in practice
+(the cell limit is stricter by $N_i^{\rm mb}$). The destructor prints
+\code{DUST\_DT\_SUMMARY block\_guard\_cycles=$n$}, the number of cycles in which the
+block guard was below the cell limit \emph{on rank 0} --- a rank-local count that says
+which of the two particle limits was the active one, not whether the particles limited
+the run at all (the gas usually does once the shear is out). The two 3D
+shear-periodic inputs carry both keys so they can be varied from the command line
+(\S\ref{sec:params}).
+
+\subsection{What the larger step exposes}
+
+Once the shear is out of the limit, the step in a wide box is the gas step, and for
+species with $t_s$ below it the IMEX coupling runs in its stiff regime. The validation
+scan (\S7 there) shows this is a plain, converging truncation error --- second order,
+$1\%$ in the quiet phase and $26\%$ during a streaming burst at $\Delta t/t_{s,\min}
+= 1.4$ --- that the legacy limit had been masking in wide boxes only. The operating
+rule that follows is recorded in the validation document; it does not change the
+timestep code, which now limits what must be limited and nothing else.
+
+\subsection{What does not change}
+
+The push, the deposits, the fold and the migration are untouched: a larger step simply
+means that particles now hop MeshBlocks routinely in $y$ (up to $s\,N_2^{\rm mb}$ cells
+per stage) and cross the shear-periodic face with multi-cell azimuthal offsets, both
+paths that existed and were exercised before at one cell per step. The split-BE branch
+of the hybrid coupling keeps its later timestep task (\fn{NewTimeStep2}), which calls
+the same routine.
+
+%=========================================================================================
 \section{What the next phases must add}
 \label{sec:next}
 
@@ -819,11 +958,9 @@ The survey established these gaps; they are listed in the order they bite.
       reserve; the field remap is exact for constants and second/third order otherwise,
       and it costs one small collective per fold.
 \item \textbf{Ideal-gas back-reaction (4b).} \textbf{Done}, \S\ref{sec:phase4b2}.
-\item \textbf{Particle timestep under shear (4b).} Limit on $v_y$, not $v_y - \qom x$,
-      with a guard that the per-stage azimuthal jump stays below a MeshBlock width
-      (migration is position-based and finds the destination by $(y,z)$ lookup, so
-      multi-cell jumps are legal). Otherwise every dust run in a wide box pays the
-      non-FARGO factor.
+\item \textbf{Particle timestep under shear (4b).} \textbf{Done},
+      \S\ref{sec:phase4b3}: limit on $v_y$, with a MeshBlock guard on the total
+      velocity.
 \item \textbf{Dust self-gravity (4c).} A plain mass deposit $\sum_j m_j W_{jk}/V$ into
       a new \code{rho\_dust} (with the additive exchange of item 1), added at the three
       reads of \S\ref{sec:map}; the $\mathbf g$ field, its exchange, and the gather in
@@ -882,7 +1019,11 @@ boundaries, or shear-periodic $x_1$ in 3D. Any EOS (the isothermal requirement f
 \code{dust\_to\_gas} & 0.01 & total dust-to-gas ratio for the default mass initializer \\
 \code{back\_reaction} & true & deposit the drag reaction onto the gas \\
 \code{deposit} & tsc & \code{ngp} / \code{cic} / \code{tsc} assignment and gather kernel \\
-\code{dt\_cfl} & 0.5 & particle transport CFL factor \\
+\code{dt\_cfl} & 0.5 & particle transport CFL factor (cell-crossing limit) \\
+\code{dt\_transport} & relative & \code{relative}: the cell limit uses the peculiar
+  $v_y$; \code{full}: the legacy $v_y - \qom x$ (\S\ref{sec:phase4b3}) \\
+\code{dt\_block\_safety} & 0.5 & fraction of a MeshBlock a particle may cross per
+  stage on the total velocity ($\ge 1$: guard off, warns; diagnostic) \\
 \code{gamma\_switch} & false & Krapp et al.\ eq.~18: $\gamma \to 1/2$ when
   $\Delta t > \max t_s$ \\
 \code{stopping\_time\_mode} & species\_fixed & or \code{particle\_static}, \code{dynamic} \\
