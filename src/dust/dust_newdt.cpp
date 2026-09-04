@@ -99,11 +99,29 @@ void DustGasDrag::RefreshStoppingTimeMaximum() {
 
 //----------------------------------------------------------------------------------------
 //! \fn DustGasDrag::NewTimeStep
-//! \brief Computes the minimum particle transport timestep min(dx/|v_transport|) over
-//! all particles. In the 3D shearing box the azimuthal transport velocity includes the
-//! background shear (particles are not orbital-advected): vy_transport = vy - q*Omega*x.
-//! The particle CFL number dt_cfl is folded in here since Mesh::NewTimeStep applies no
-//! CFL factor to ppart->dtnew.
+//! \brief Computes the particle transport timestep as the minimum of two limits, since
+//! Mesh::NewTimeStep applies no CFL factor of its own to ppart->dtnew.
+//!
+//! (a) cell-crossing limit  dt_cfl*min(dx/|v|).  In the 3D shearing box the azimuthal
+//!     velocity used here is selected by <dust>/dt_transport.  The background shear
+//!     -q*Omega*x is a smooth, exactly integrated translation, not a signal that has to
+//!     be resolved on the mesh: with dt_transport = relative (default) it is dropped, so
+//!     particles are limited by their peculiar motion exactly as the orbitally advected
+//!     gas is.  dt_transport = full restores the legacy limit dx2/|vy - q*Omega*x|,
+//!     which shrinks like 1/Lx in a wide box.
+//!
+//! (b) MeshBlock guard  (dt_block_safety/max_s beta_s)*min(L_block/|v_transport|), always
+//!     evaluated with the FULL transport velocity.  ParticlesBoundaryValues::SetNewGID
+//!     resolves a single neighbour hop per stage (the offsets ix,iy,iz it forms are
+//!     assumed to lie in {-1,0,1}), and the PM deposit stencil must land inside the one
+//!     ghost layer that MeshBoundaryValuesDep exchanges.  Both hold as long as no
+//!     particle traverses a whole MeshBlock in one stage.  For the low-storage tableaus
+//!     used here (gam0+gam1 = 1) the displacement of a particle from the block it
+//!     entered a stage in is bounded by max_s(beta_s)*dt*|v_transport|, so dividing by
+//!     that factor makes dt_block_safety the literal fraction of a block crossed per
+//!     stage.  Particles leaving the mesh through a shear-periodic x1 face are exempt
+//!     from the single-hop rule (they are routed by the (y,z) shear maps), but the guard
+//!     is applied uniformly.
 
 TaskStatus DustGasDrag::NewTimeStep(Driver *pdrive, int stage) {
   if (coupling == DustCoupling::hybrid && hybrid_mode == HybridMode::split_be) {
@@ -130,22 +148,42 @@ TaskStatus DustGasDrag::ComputeNewTimeStep(Driver *pdrive, int stage) {
   auto gids = pmy_pack->gids;
   bool three_d = pmy_pack->pmesh->three_d;
   bool shear3d = is_shearing_box && three_d;
+  // legacy limit: the cell-crossing limit sees the background shear too
+  bool shear_cell = shear3d && (dt_transport == DustDtTransport::full);
   Real qo = qshear*omega0;
 
-  Real dtp = std::numeric_limits<float>::max();
+  // largest fractional step of any explicit stage; bounds the per-stage displacement
+  Real beta_max = 0.0;
+  for (int s=0; s<(pdrive->nexp_stages); ++s) {
+    beta_max = std::max(beta_max, fabs(pdrive->beta[s]));
+  }
+  if (!(beta_max > 0.0)) {beta_max = 1.0;}
+
+  Real dtp = std::numeric_limits<float>::max();   // (a) cell-crossing limit
+  Real dtb = std::numeric_limits<float>::max();   // (b) MeshBlock-crossing guard
   Kokkos::parallel_reduce("dust_newdt",Kokkos::RangePolicy<>(DevExeSpace(), 0, npart),
-  KOKKOS_LAMBDA(const int &p, Real &min_dt) {
+  KOKKOS_LAMBDA(const int &p, Real &min_dt, Real &min_dtb) {
     int m = pi(PGID,p) - gids;
-    Real vy = pr(IPVY,p);
-    if (shear3d) {vy -= qo*pr(IPX,p);}
+    Real vy_full = pr(IPVY,p);
+    if (shear3d) {vy_full -= qo*pr(IPX,p);}
+    Real vy = shear_cell ? vy_full : pr(IPVY,p);
     min_dt = fmin(mbsize.d_view(m).dx1/fmax(fabs(pr(IPVX,p)), 1.0e-30), min_dt);
     min_dt = fmin(mbsize.d_view(m).dx2/fmax(fabs(vy), 1.0e-30), min_dt);
+    min_dtb = fmin((mbsize.d_view(m).x1max - mbsize.d_view(m).x1min)
+                   /fmax(fabs(pr(IPVX,p)), 1.0e-30), min_dtb);
+    min_dtb = fmin((mbsize.d_view(m).x2max - mbsize.d_view(m).x2min)
+                   /fmax(fabs(vy_full), 1.0e-30), min_dtb);
     if (three_d) {
       min_dt = fmin(mbsize.d_view(m).dx3/fmax(fabs(pr(IPVZ,p)), 1.0e-30), min_dt);
+      min_dtb = fmin((mbsize.d_view(m).x3max - mbsize.d_view(m).x3min)
+                     /fmax(fabs(pr(IPVZ,p)), 1.0e-30), min_dtb);
     }
-  }, Kokkos::Min<Real>(dtp));
+  }, Kokkos::Min<Real>(dtp), Kokkos::Min<Real>(dtb));
 
-  ppar->dtnew = dt_cfl*dtp;
+  Real dt_cell  = dt_cfl*dtp;
+  Real dt_guard = (dt_block_safety/beta_max)*dtb;
+  if (dt_guard < dt_cell) {++dt_guard_count;}
+  ppar->dtnew = std::min(dt_cell, dt_guard);
   return TaskStatus::complete;
 }
 

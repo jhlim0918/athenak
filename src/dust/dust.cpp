@@ -158,6 +158,36 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   dt_cfl        = pin->GetOrAddReal("dust","dt_cfl",0.5);
   dust_to_gas   = pin->GetOrAddReal("dust","dust_to_gas",0.01);
 
+  // particle transport timestep: which azimuthal velocity sets the cell-crossing limit,
+  // and how much of a MeshBlock a particle may cross in one stage (see DustDtTransport)
+  {
+    std::string dtt = pin->GetOrAddString("dust","dt_transport","relative");
+    if (dtt.compare("relative") == 0) {
+      dt_transport = DustDtTransport::relative;
+    } else if (dtt.compare("full") == 0) {
+      dt_transport = DustDtTransport::full;
+    } else {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "<dust>/dt_transport = '" << dtt
+                << "' not implemented. Valid choices are [relative,full]." << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+  }
+  dt_block_safety = pin->GetOrAddReal("dust","dt_block_safety",0.5);
+  if (!(dt_block_safety > 0.0)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+              << "<dust>/dt_block_safety = " << dt_block_safety << " must be positive"
+              << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  if (dt_block_safety >= 1.0 && global_variable::my_rank == 0) {
+    std::cout << "# WARNING (dust): <dust>/dt_block_safety = " << dt_block_safety
+              << " >= 1 lets a particle cross a whole MeshBlock in one stage, which the "
+              << "single-hop particle migration cannot resolve; expect the PM halo "
+              << "abort once the shear is fast enough.  Diagnostic use only."
+              << std::endl;
+  }
+
   hybrid_enter_zeta = pin->GetOrAddReal("dust", "hybrid_enter_zeta", 0.5);
   hybrid_enter_chi  = pin->GetOrAddReal("dust", "hybrid_enter_chi", 0.5);
   hybrid_exit_zeta  = pin->GetOrAddReal("dust", "hybrid_exit_zeta", 0.25);
@@ -340,6 +370,18 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
               << "the exact-transpose shear deposit is not implemented" << std::endl;
     std::exit(EXIT_FAILURE);
   }
+  if (is_shearing_box && pmy_pack->pmesh->three_d &&
+      global_variable::my_rank == 0) {
+    if (dt_transport == DustDtTransport::relative) {
+      std::cout << "# dust: particle transport timestep uses the shear-subtracted "
+                << "azimuthal velocity; the background shear is limited instead to "
+                << dt_block_safety << " of a MeshBlock width per stage "
+                << "(<dust>/dt_transport = relative)" << std::endl;
+    } else {
+      std::cout << "# dust: particle transport timestep uses the full azimuthal "
+                << "velocity v_y - q*Omega*x (<dust>/dt_transport = full)" << std::endl;
+    }
+  }
 
   // (3) allocate deposited fields (with ghost zones) ------------------------------------
   auto &indcs = pmy_pack->pmesh->mb_indcs;
@@ -384,6 +426,13 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
 // destructor
 
 DustGasDrag::~DustGasDrag() {
+  if (global_variable::my_rank == 0 && dt_guard_count > 0) {
+    // rank-local count: the guard may bind on another rank without appearing here, and
+    // the timestep actually taken is the global minimum over ranks
+    std::cout << "# DUST_DT_SUMMARY block_guard_cycles=" << dt_guard_count
+              << " (rank 0; <dust>/dt_block_safety = " << dt_block_safety << ")"
+              << std::endl;
+  }
   if (global_variable::my_rank == 0 && coupling == DustCoupling::hybrid) {
     unsigned long long total = hybrid_pc2_cycles + hybrid_split_be_cycles;
     double pc2_fraction = (total > 0) ?

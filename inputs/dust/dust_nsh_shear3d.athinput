@@ -83,6 +83,8 @@ back_reaction = true      # dust drags gas (PMBR)
 deposit       = tsc       # particle-mesh deposit scheme
 gamma_switch  = false     # fixed gamma = 1+1/sqrt(2)
 dt_cfl        = 0.5       # particle transport CFL number
+dt_transport  = relative  # relative | full: azimuthal velocity of the cell limit
+dt_block_safety = 0.5     # fraction of a MeshBlock a particle may cross per stage
 
 <problem>
 mass_mod_amp = 0.0        # >0: azimuthal mass modulation (structured, rank-independent IC)

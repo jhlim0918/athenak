@@ -53,6 +53,15 @@ enum class DustDragSolver {local=0, applya=1, dc1=2, dc2=3, pcg=4, adaptive=5};
 // to the hybrid task path with PC2 forced for every cycle. Input coupling=hybrid can use
 // PC2 while drag and feedback are resolved and split backward-Euler otherwise.
 enum class DustCoupling {imex=0, hybrid=1};
+
+//----------------------------------------------------------------------------------------
+//! \brief Velocity used for the particle transport timestep in the 3D shearing box.
+//! full     = dx2/|v_y - q*Omega*x| (legacy): one cell per step of the *total* azimuthal
+//!            transport, so the timestep collapses like 1/Lx in a wide box.
+//! relative = dx2/|v_y| : the background shear is excluded, mirroring the orbital
+//!            advection of the gas.  The MeshBlock-width guard below keeps the residual
+//!            shear displacement addressable by the (single-hop) particle migration.
+enum class DustDtTransport {full=0, relative=1};
 enum class HybridMode {pc2=0, split_be=1};
 enum class HybridForceMode {automatic=0, pc2=1, split_be=2};
 
@@ -168,6 +177,9 @@ class DustGasDrag {
   bool is_stratified;        // vertical gravity (3D shearing box only)
   Real qshear, omega0;       // shearing box parameters (0 if no shearing box)
   Real dt_cfl;               // particle CFL number for transport timestep
+  DustDtTransport dt_transport;  // azimuthal velocity used for the cell-crossing limit
+  Real dt_block_safety;      // fraction of a MeshBlock crossed per stage (guard)
+  unsigned long long dt_guard_count = 0;   // cycles where the block guard set dtnew
   Real taus_max;             // largest stopping time over all species
   Real taus_min;             // smallest stopping time over all species
   Real dust_to_gas;          // total dust/gas mass ratio for default mass normalization
