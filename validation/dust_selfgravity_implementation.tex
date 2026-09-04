@@ -33,11 +33,12 @@
        \large \textsc{Implementation Document}\\
        \large Phase 4a: the dust-module merge; Phase 4b (i): the shear-periodic
        deposit fold; (ii): the ideal-gas energy update; (iii): the particle
-       timestep under shear; Phase 4c: dust self-gravity}
+       timestep under shear; Phase 4c: dust self-gravity; Phase 4d: the vertical
+       policy, restart, diagnostics}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}\\
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6},
-        \code{9a96f9f3}}
+        \code{9a96f9f3}, \code{d39858ac}}
 \date{September 3--5, 2026}
 
 \begin{document}
@@ -106,8 +107,17 @@ onto the particles with the deposit kernel. Because scatter and gather share one
 and the gradient is the adjoint of the symmetric Laplacian, the coupling conserves the
 total gas$+$dust momentum to round-off by construction. Two limitations surfaced on the
 way and are recorded: the multigrid needs cubic cells and more than one MeshBlock across
-each periodic direction, and 3D dust runs with TSC deposits develop a numerical
-instability once $c_s\Delta t/\Delta z \gtrsim 0.35$.
+each periodic direction, and 3D runs on cubic cells grow a grid-scale mode once
+$c_s\Delta t/\Delta z \gtrsim 0.35$.
+\textbf{Phase 4d} closes the dust track's remaining gaps. The instability just named is
+identified --- by its eigenmode and by a seeded gas-only run --- as the shearing-box
+hydro scheme's own 3D checkerboard mode at Courant numbers above $\sim0.35$, not a
+property of the dust coupling, which merely seeded it; the rule \code{cfl} $\le 0.3$ in
+3D is a hydro rule the gravito-turbulence runs already follow. Particles crossing a
+physical vertical face are removed with their mass accounted (the Athena-C
+\code{zbc\_out = 1} policy); particle arrays are written to and read from restart files;
+the module's own particle-mesh density is an output variable; and the SC14 history
+gains the dust's mass, momenta, kinetic energy, Reynolds stress and escaped mass.
 
 The document also records, for the phases that follow, the integration map derived
 from the code survey: where the gravity solve is called relative to the dust task
@@ -207,6 +217,10 @@ Commit & Phase & Content \\
               source read of both solvers; the dormant-stage solve skip; the force gather
               in \fn{ExplicitPush}; \code{Particles::dtnew} initialized; the twin and
               orbit generators, three inputs, NSH momentum history columns \\
+\code{d39858ac} & 4d & escape marking in \fn{SetNewPrtclGID}, \fn{Particles::RemoveDead}, the
+              \fn{RemoveEscaped} tasks; particle restart (writer step 3/5, reader);
+              \code{dust\_dpm} output; SC14 history dust columns; the seeded gas-only
+              diagnostic (\code{<problem>/gas\_vpert}); \code{dust\_grav\_orbit} \code{vz0} \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -1089,6 +1103,79 @@ carries it); the mechanism --- an aliasing of the three-cell deposit with the ve
 sound crossing is the natural suspect --- is a Phase-4d item.
 
 %=========================================================================================
+\section{Phase 4d: the instability identified, the vertical policy, restart, diagnostics}
+\label{sec:phase4d}
+
+\subsection{The instability of \S\ref{sec:phase4c} is the hydro scheme's}
+
+Two diagnostics settle what the scan of \S\ref{sec:phase4c} could not. First, the
+eigenmode: binary outputs of the unstable $32^3$ dust run (validation \S9) show the
+growing perturbation in the \emph{gas} velocity and density at the grid Nyquist in all
+three directions, $(k_x,k_y,k_z) \approx (16,\pm15,\pm15)$ of 32 --- a 3D checkerboard
+--- while the NGP-binned dust density stays flat until particles cross cells. Re-read
+with that mode's frequency, $\omega = 2c_s\sqrt{\sum_i \Delta x_i^{-2}}$, every row of
+the scan falls on one line, $\omega\Delta t \gtrsim 1.2$--$1.3$, including the
+$\Delta z$ dependence. Second, the decisive test: the same box with \emph{no particles},
+its gas velocities seeded with $10^{-10}$ white noise (\code{<problem>/gas\_vpert} of the
+NSH generator), grows the same mode at \code{cfl} $0.45$ and $0.40$ under both
+\code{imex2+} and \code{rk2}, and damps it at $0.30$ and at $n_z = 8$. A uniform state
+has no perturbation to grow, whatever the scheme's stability --- which is why the
+gas-only NSH ``held to round-off'' and the dust run, whose deposit round-off seeds every
+mode, did not. TSC seeded it where CIC and NGP happened not to; the drift made the seed
+non-symmetric. The instability is the shearing-box hydro's (HLLE, PLM, orbital
+advection) 3D checkerboard Courant limit on cubic cells, and the operating rule
+\code{cfl\_number} $\le 0.3$ in 3D is a hydro rule the SC14 gravito-turbulence runs
+already obey. The Phase-4c wording ``TSC drag-coupling instability'' is superseded.
+
+\subsection{Vertical policy: outflow removal}
+
+The Athena-C reference (\file{par\_strat3d.c}, \code{zbc\_out = 1}) treats the vertical
+faces as outflow for particles: a particle that crosses one is gone. Implemented in
+three parts. \fn{ParticlesBoundaryValues::SetNewPrtclGID} (\file{bvals\_part.cpp})
+tests, before the neighbour lookup, whether a crossing particle has left the mesh
+through a \emph{physical} face --- neither periodic, shear-periodic nor internal, from
+\code{mesh\_bcs} --- and marks it dead with \code{PGID} $= -1$ instead of routing it.
+\fn{Particles::RemoveDead} (\file{particles.cpp}) compacts the arrays (an exclusive scan
+over the survivors into fresh arrays) and refreshes the Mesh's per-rank and total
+particle counts; it is collective under MPI (an \code{Allgather}), so every rank calls
+it whenever a migration ran. The dust tasks \fn{RemoveEscaped} / \fn{RemoveEscaped2}
+follow the two migrations' receives in the task graph, and the drag deposit and the
+back-reaction commit now depend on them; they sum the removed mass first, and the
+destructor prints \code{DUST\_ESCAPE\_SUMMARY removed=$n$ mass=$m$} (reduced over
+ranks). Ghost deposits beyond a physical face are discarded as before, and the density
+and force ghosts there are as in \S\ref{sec:phase4c}. With every face periodic the
+marking never fires and the existing runs are bit-identical.
+
+\subsection{Particle restart}
+
+The restart file gains two pieces. In the writer's serial header (step 3, after the
+turbulence RNG state) the root writes the per-rank particle counts and the two array
+widths; their $(n_{\rm ranks}+2)$ integers are added to the header size the parallel
+offsets are computed from. After all MeshBlock data (a new step 5) each rank writes its
+particle arrays at an offset that follows the lower ranks' blocks (shared file) or its
+own MeshBlock data (one file per rank), every value as a \code{Real} in variable-major
+order --- the integer properties are small, and a device-independent layout matters more
+than the bytes. The reader mirrors both: the counts reset the Mesh's bookkeeping and the
+array sizes before the MeshBlock reads (the constructor had sized them from
+\code{<particles>/ppc}), the arrays are read after them, and the problem generator is
+then called with \code{restart = true} as before. The dust generators already return
+early on restart after enrolling their history functions; the stopping-time contract is
+re-checked at the first \fn{GammaSwitch} from the restored \code{IPTS}.
+
+\subsection{Diagnostics}
+
+\code{dust\_dpm} is a new output variable (slot 155): the dust density as the module
+deposits it --- its kernel, the additive exchange and the shear fold --- obtained from
+\fn{AssembleDustDensityNow()} (the synchronous assembly of \S\ref{sec:phase4c}, now
+available in every dust run: \code{rho\_dust} and its exchange objects are allocated
+unconditionally). \code{dust\_d} remains the NGP binning of upstream. The SC14 history
+(\fn{GravitoTurbHistory}) gains seven columns when a dust module exists: the dust mass,
+the three momenta (shear-relative velocities, as the particles carry them), the kinetic
+energy, the Reynolds stress $\sum m v_x v_y$ and the cumulative escaped mass; the
+gravitational-stress columns already measure the total potential. The NSH history's
+mass-weighted momenta are from Phase 4c.
+
+%=========================================================================================
 \section{What the next phases must add}
 \label{sec:next}
 
@@ -1106,18 +1193,14 @@ The survey established these gaps; they are listed in the order they bite.
       \S\ref{sec:phase4b3}: limit on $v_y$, with a MeshBlock guard on the total
       velocity.
 \item \textbf{Dust self-gravity (4c).} \textbf{Done}, \S\ref{sec:phase4c}, both
-      solvers. Open from it: the TSC drag-coupling instability at
-      $c_s\Delta t/\Delta z \gtrsim 0.35$ (understand, then lift the \code{cfl} rule).
-\item \textbf{Particle restart (4d).} \file{outputs/restart.cpp} ignores the particle
-      arrays; long cluster runs are restart chains.
-\item \textbf{Diagnostics (4d).} \code{dust\_d} is an NGP binning while the physics
-      deposit is TSC; \code{pvtk} omits stopping time and mass; the SC14 history's
-      gravitational stress becomes a \emph{total}-gravity stress once dust contributes
-      to $\Phi$ and needs its own dust columns; a Roche-density / Hill-radius clump
-      finder does not exist.
-\item \textbf{Vertical boundary policy (4c/4d).} Particles reaching the open (diode)
-      $z$ faces and deposits landing in their ghost zones: the Athena-C reference
-      silently discards both; decide explicitly and count the mass.
+      solvers. The instability it exposed is the hydro scheme's 3D checkerboard mode
+      (\S\ref{sec:phase4d}); \code{cfl} $\le 0.3$ in 3D.
+\item \textbf{Particle restart (4d).} \textbf{Done}, \S\ref{sec:phase4d}.
+\item \textbf{Diagnostics (4d).} \textbf{Done} in part, \S\ref{sec:phase4d}:
+      \code{dust\_dpm} and the SC14 dust history columns. Still open: \code{pvtk} omits
+      stopping time and mass; a Roche-density / Hill-radius clump finder does not exist.
+\item \textbf{Vertical boundary policy (4c/4d).} \textbf{Done}, \S\ref{sec:phase4d}:
+      outflow removal with the mass accounted.
 \item \textbf{Refinement (Phase 5).} Dust is fatal on \code{multilevel} in three
       places, and upstream particles have no remesh handling at all (\code{PGID} goes
       stale after the first regrid; nothing in \file{mesh\_refinement.cpp} touches

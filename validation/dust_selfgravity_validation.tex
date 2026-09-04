@@ -21,7 +21,8 @@
        I.\ The Dust-Module Merge (Phase 4a),\\
        the Shear-Periodic Deposit Fold, the Ideal-Gas Energy Update\\
        and the Particle Timestep under Shear (Phase 4b, i--iii),\\
-       and Dust Self-Gravity (Phase 4c)}
+       Dust Self-Gravity (Phase 4c), and the Vertical Policy, Restart\\
+       and Diagnostics (Phase 4d)}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}}
 \date{September 3--5, 2026}
 
@@ -119,8 +120,17 @@ $5\times10^{-5}$, the shear-periodic NSH equilibrium holds to round-off with the
 the source, and a structured gravitating run is rank-independent to $10^{-14}$. Three
 findings are recorded: an uninitialized upstream particle timestep (fixed), the
 multigrid's need for cubic cells and multi-block periodic directions, and a numerical
-instability of the TSC drag coupling in 3D boxes at $c_s\Delta t/\Delta z \gtrsim 0.35$
-(an operating rule for now, an item for Phase 4d).
+instability in 3D boxes at $c_s\Delta t/\Delta z \gtrsim 0.35$, at first attributed to
+the TSC drag coupling.
+
+\textbf{Phase 4d} identifies that instability: its eigenmode is the 3D grid checkerboard
+of the gas, and a gas-only run seeded with $10^{-10}$ noise grows it at \code{cfl} $0.45$
+and $0.40$ under both integrators and damps it at $0.30$ --- the shearing-box hydro's own
+Courant limit on cubic cells, which the dust merely seeded. Particles crossing the
+vertical faces are removed with their mass accounted (64 of 64 in the escape test,
+serially and on 2 ranks), particle restart reproduces an uninterrupted run to every
+digit (serially and on 4 ranks), and the new \code{dust\_dpm} output reproduces the twin
+profile exactly and the uniform lattice to round-off on 4 ranks.
 \end{abstract}
 
 \tableofcontents
@@ -228,6 +238,17 @@ athena -i $IN $WIDE problem/mass_mod_amp=0.5 problem/check_equilibrium=false \
 # guard scaling (three cycles) and the thin-block abort demonstration (one orbit)
 athena -i $IN $WIDE dust/dt_block_safety={0.1,0.2,0.4} time/nlim=3 time/ndiag=1
 athena -i $IN $WIDE meshblock/nx2=4 dust/dt_block_safety={0.5,4.0} time/tlim=6.283185307179586
+\end{lstlisting}
+
+\noindent Phase 4d (\S\ref{sec:phase4d}):
+\begin{lstlisting}
+# the instability: gas only, seeded (the tracked 3D NSH input without its <particles>/<dust> blocks)
+athena -i nsh_gasonly.athinput mesh/nx3=32 meshblock/nx3=32 problem/gas_vpert=1e-10 \
+       problem/check_equilibrium=false time/cfl_number={0.45,0.40,0.30} [time/integrator=rk2]
+# escape, restart, dust_dpm
+athena -i inputs/dust/dust_grav_orbit.athinput problem/vz0=0.3 dust/gravity_force=false time/tlim=3
+athena -i nsh_rst.athinput; athena -r nsh3d.00001.rst          # structured NSH, dumps every 3.0
+athena -i <input with an <output> block variable = dust_dpm>
 \end{lstlisting}
 
 \noindent Phase 4c (\S\ref{sec:phase4c}):
@@ -1091,6 +1112,84 @@ approximation would sit at the dashed line, the NGP kernel at the triangle.}
 \end{figure}
 
 %=========================================================================================
+\section{Phase 4d: the instability identified, the vertical policy, restart, diagnostics}
+\label{sec:phase4d}
+
+Mechanism: implementation document \S9. Data: \file{run/dust4d/} (README); figure
+\ref{fig:cb}.
+
+\subsection{The instability is the hydro scheme's}
+
+Binary outputs of the unstable $32^3$ dust run of \S\ref{sec:phase4c} (\code{cfl}
+$0.45$, every $0.2$ in time) give the growing mode directly: the power of the gas $v_z$,
+$v_x$ and $\rho$ concentrates at $(k_x,k_y,k_z) \approx (16,\pm15,\pm15)$ of 32 from
+$t = 1.2$ on, growing as $e^{35t}$ between $t = 1.2$ and $2.0$ (figure \ref{fig:cb},
+right). The same box with no particles, gas velocities seeded with $10^{-10}$ white
+noise (the NSH generator's new \code{<problem>/gas\_vpert}), one orbit:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+gas only, $32^3$, seeded & $t = 0.5$ & $t = 2$ & $t = 4$ & end \\
+\midrule
+\code{imex2+}, \code{cfl} $0.45$ & $1.8\times10^{-9}$ & $1.8\times10^{-5}$ & $4.0\times10^{-5}$ & $1.7\times10^{-5}$ \\
+\code{rk2}, \code{cfl} $0.45$ & $1.8\times10^{-9}$ & $3.5\times10^{-5}$ & $4.8\times10^{-5}$ & $3.1\times10^{-5}$ \\
+\code{rk2}, \code{cfl} $0.40$ & $2.5\times10^{-17}$ & $1.2\times10^{-5}$ & $8.2\times10^{-6}$ & $5.6\times10^{-6}$ \\
+\code{imex2+}, \code{cfl} $0.30$ & $4.6\times10^{-24}$ & $1.6\times10^{-24}$ & $5.8\times10^{-25}$ & $4.7\times10^{-25}$ \\
+\code{rk2}, \code{cfl} $0.30$ & $4.8\times10^{-24}$ & $1.6\times10^{-24}$ & $5.9\times10^{-25}$ & $4.7\times10^{-25}$ \\
+\code{imex2+}, \code{cfl} $0.45$, $n_z = 8$ & $7.3\times10^{-24}$ & $1.6\times10^{-24}$ & $1.9\times10^{-25}$ & $6.3\times10^{-26}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+(vertical kinetic energy; the seed is $\sim10^{-20}$). With no dust in the box the
+mode grows at \code{cfl} $0.45$ and $0.40$ under both integrators, to the same
+saturation the dust runs reached, and decays at $0.30$ and on the coarse-$z$ mesh: the
+instability is the 3D shearing-box hydro's, with the dust's deposit round-off as the
+seed that the exactly uniform gas-only NSH never had. Every stable/unstable entry of the
+Phase-4c scan is reproduced by the checkerboard frequency
+$\omega = 2c_s\sqrt{\sum\Delta x_i^{-2}}$ with $\omega\Delta t \approx 1.2$--$1.3$ as the
+threshold. The rule \code{cfl} $\le 0.3$ in 3D stands, as a hydro rule.
+
+\subsection{Vertical outflow policy}
+
+\code{dust\_grav\_orbit} with \code{problem/vz0 = 0.3}, no gravitational force, in the
+diode-faced slab box: 64 particles launched at $v_z = 0.3$ from $z_0 = 0.03$ reach the
+face at $t \approx 1.6$; the history's particle count drops from 64 to 0 between
+$t = 1.51$ and $1.85$, \code{DUST\_ESCAPE\_SUMMARY removed=64 mass=64}, and the run
+continues to $t = 3$ with no particles and no abort --- serially, and on 2 ranks where
+the two species leave through opposite faces from different ranks. With every face
+periodic the marking never fires: the 2D damping ladder (81 cycles,
+$1.352906\times10^{-7}$) and the narrow 3D NSH orbit (459 cycles,
+$9.393528\times10^{-16}$) are bit-identical.
+
+\subsection{Particle restart}
+
+The structured 3D NSH box (\file{run/dust4d/rst/nsh\_rst.athinput}: mass modulation
+$0.5$, one orbit, restart dumps every $3.0$): the run restarted from the $t = 3$ dump
+reproduces the uninterrupted run's gas and dust histories to every digit over the 33
+common rows, serially and on 4 ranks.
+
+\subsection{The \code{dust\_dpm} output}
+
+On the sin3 twin with $f = 1$ and NGP deposits, \code{dust\_dpm} plus the (floored) gas
+density equals the gas-only reference density to $0.0$; with TSC the two differ by the
+filter ($3.6\times10^{-3}$ maximum), with the mean exactly $2$ in both. On the 3D
+shear-periodic NSH lattice ($\epsilon = 1$) the output is $1.000000000000000$ in every
+cell, serially and on 4 ranks --- the additive exchange and the fold are in it.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/dust4d_checkerboard.png}
+\caption{Phase 4d. Left: the gas-only $32^3$ box seeded at $10^{-10}$: the vertical
+kinetic energy grows at \code{cfl} $\ge 0.4$ under both integrators and decays at $0.3$
+and at $n_z = 8$. Right: the rms gas $v_z$ of the unstable dust run from its binary
+outputs, with the $e^{35t}$ growth of the checkerboard mode.}
+\label{fig:cb}
+\end{figure}
+
+%=========================================================================================
 \section{Summary}
 \label{sec:summary}
 
@@ -1124,8 +1223,13 @@ order and conserves the total momentum to round-off by construction; test partic
 orbit in a self-gravitating slab with the exact anharmonic period; and the shear-periodic
 machinery (fold, ghost fill, remap) carries the dust density and the force without
 disturbing an equilibrium. The dust track now has every ingredient of the target
-problem except the vertical boundary policy and the diagnostics of Phase 4d --- and one
-open numerical question, the TSC drag-coupling instability at $c_s\Delta t/\Delta z
-\gtrsim 0.35$, held off by a Courant rule until it is understood.
+problem except the vertical boundary policy and the diagnostics of Phase 4d.
+
+Phase 4d supplies those and closes the one open numerical question: the instability is
+the hydro scheme's 3D checkerboard mode at \code{cfl} $\gtrsim 0.4$, not the dust
+coupling's, so the Courant rule is understood; particles leave through the vertical
+faces with their mass accounted; restart chains carry the particles exactly; and the
+module's own dust density and the SC14 dust history columns are available. The dust
+track is ready for the science box.
 
 \end{document}
