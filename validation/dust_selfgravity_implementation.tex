@@ -33,11 +33,12 @@
        \large \textsc{Implementation Document}\\
        \large Phase 4a: the dust-module merge; Phase 4b (i): the shear-periodic
        deposit fold; (ii): the ideal-gas energy update; (iii): the particle
-       timestep under shear}
+       timestep under shear; Phase 4c: dust self-gravity}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}\\
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
-        \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6}}
-\date{September 3--4, 2026}
+        \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6},
+        \code{9a96f9f3}}
+\date{September 3--5, 2026}
 
 \begin{document}
 \maketitle
@@ -95,6 +96,18 @@ velocity per cell and the \emph{total} transport velocity per MeshBlock --- the 
 being what the single-hop particle migration and the one-layer deposit halo actually
 require --- with the bound made exact for the low-storage tableaus through their largest
 stage fraction. In an $L_x = 8$ box the step grows $5.3\times$ to the gas limit.
+\textbf{Phase 4c} adds the dust to the Poisson equation and the potential to the
+particles. The particle-mesh dust density is deposited before each stage's solve,
+exchanged additively (with the shear fold) and then copied into its ghost layer, and
+registered with the gravity module as an \emph{extra density} that both solvers add to
+the gas density at their single source read; after the solve the force $-\nabla\phi$ is
+formed on the mesh, exchanged like the module's provisional gas velocity and gathered
+onto the particles with the deposit kernel. Because scatter and gather share one kernel
+and the gradient is the adjoint of the symmetric Laplacian, the coupling conserves the
+total gas$+$dust momentum to round-off by construction. Two limitations surfaced on the
+way and are recorded: the multigrid needs cubic cells and more than one MeshBlock across
+each periodic direction, and 3D dust runs with TSC deposits develop a numerical
+instability once $c_s\Delta t/\Delta z \gtrsim 0.35$.
 
 The document also records, for the phases that follow, the integration map derived
 from the code survey: where the gravity solve is called relative to the dust task
@@ -190,6 +203,10 @@ Commit & Phase & Content \\
                   velocity, MeshBlock guard on the total velocity;
                   \code{<dust>/dt\_transport}, \code{dt\_block\_safety};
                   \code{DUST\_DT\_SUMMARY} \\
+\code{9a96f9f3} & 4c & \file{dust/dust\_gravity.cpp}; \fn{Gravity::RegisterExtraDensity} and the
+              source read of both solvers; the dormant-stage solve skip; the force gather
+              in \fn{ExplicitPush}; \code{Particles::dtnew} initialized; the twin and
+              orbit generators, three inputs, NSH momentum history columns \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -945,6 +962,133 @@ of the hybrid coupling keeps its later timestep task (\fn{NewTimeStep2}), which 
 the same routine.
 
 %=========================================================================================
+\section{Phase 4c: dust self-gravity}
+\label{sec:phase4c}
+
+\subsection{Design, as built}
+
+The design of \S\ref{sec:design} is implemented without change of plan: one Poisson
+solve per stage on the \emph{total} density, the gas feeling the total potential through
+its existing source term, the particles through a mesh force gathered with the deposit
+kernel. The pieces, in the order they run each active stage (figure of \S\ref{sec:map}):
+
+\begin{enumerate}\itemsep3pt
+\item \textbf{Deposit} (\fn{DustGasDrag::DepositMass}, \file{dust/dust\_gravity.cpp}),
+      in the \code{before\_stagen} list: $\rho_d = \sum_p m_p W(\mathbf x_p)/V$ with the
+      module's PM kernel, at the pre-stage positions --- the same time level as the gas
+      density $u_0$ the solve reads. Particles sit inside their owning blocks (last
+      stage's migration), so the stencil reaches at most one ghost layer.
+\item \textbf{Additive exchange and fold}: \code{MeshBoundaryValuesDep} (one variable)
+      sums the ghost deposits into the neighbours and \fn{FoldShearDeposit} takes them
+      across the shear-periodic faces exactly as for the drag deposits
+      (\S\ref{sec:phase4b1}).
+\item \textbf{Ghost fill}: a copy exchange (\code{MeshBoundaryValuesCC}, one variable)
+      with the shear remap (\code{ShearingBoxCC}) fills the ghost layers of $\rho_d$ from
+      the neighbours' active cells, because \fn{Multigrid::LoadSource} loads the active
+      zone \emph{plus one ghost layer} of its source (\file{multigrid.cpp:290}), which for
+      the gas is valid by the hydro boundary fill. The shear offset uses the module's
+      \fn{ShearOffset()} $= \qom L_x t$, the same instant the multigrid freezes its own
+      phase at (\file{mg\_gravity.cpp:325}).
+\item \textbf{Registration}: \fn{Gravity::RegisterExtraDensity($\rho_d$)} (once, in the
+      dust constructor; \code{pgrav} is built before \code{pdust}). \fn{Gravity::Solve}
+      then forms $\rho_{\rm tot} = u_0(\code{IDN}) + \rho_d$ over every cell into its own
+      array, and the three readers of \S\ref{sec:map} --- \fn{LoadSource}, the slab-plane
+      gather (\fn{ComputeSlabPlanes}, which gained an index argument) and the FFT
+      \fn{GatherDensity} --- read \fn{SourceArray()(m,\,SourceIndex(),\,k,j,i)}: the gas
+      array at \code{IDN} when nothing is registered, the total at index 0 otherwise.
+      Neither solver has any dust-specific code.
+\item \textbf{The solve}, called by the driver between the two lists, unchanged ---
+      except that with the dust module present it is \emph{skipped on the dormant
+      imex2+ assembly stage} (\file{driver.cpp}): the module deposits nothing there, so
+      the density would be stale, and nothing consumes $\phi$ ($\beta_3 = 0$). Gas-only
+      runs keep their stage-3 solve, so their histories are unchanged.
+\item \textbf{Force} (\fn{ComputeForceField}), first in the \code{stagen} list:
+      $\mathbf g = -\nabla\phi$ by centred differences on the active zone ($\phi$ is
+      valid on the active zone plus one ghost layer for both solvers), with a
+      zero-gradient fill of the ghost layers at physical (non-periodic) faces; then a
+      copy exchange (three variables) and the shear remap, the pattern of the module's
+      $u^*$ field.
+\item \textbf{Gather}, in \fn{ExplicitPush}: the IMEX branch gathers $\mathbf g$ at the
+      pre-stage position with the deposit kernel and adds it to the explicit force
+      next to the Coriolis terms; the PC2 branch gathers it at the midpoint position
+      with the weights it already has for $u^*$ and adds $h\mathbf g$ to the right-hand
+      side of its implicit-midpoint velocity solve, as it does the vertical tide.
+\end{enumerate}
+
+The gas needs nothing new: \code{<hydro\_srcterms>/self\_gravity} applies
+$-\rho\nabla\phi$ with the same centred gradient. The drag back-reaction deposits only
+the drag kick, so there is no double count of gravity.
+
+\subsection{Momentum conservation, exact by construction}
+
+With one kernel $W$ for scatter and gather, the total force on the dust is
+$\sum_p m_p\sum_c W_{pc}\mathbf g_c = \sum_c \rho_{d,c}V\mathbf g_c$, and the total on the
+gas is $\sum_c \rho_{g,c}V\mathbf g_c$; their sum is
+$\sum_c \rho_{{\rm tot},c}\,V\,\mathbf g_c$. In the periodic solve
+$\rho_{\rm tot} \propto L\phi$ with $L$ the symmetric seven-point Laplacian and
+$\mathbf g$ the antisymmetric centred difference, so
+$\sum_i (L\phi)_i(\phi_{i+1} - \phi_{i-1}) = 0$ identically: the coupling exchanges
+momentum between gas and dust without creating any, to the tolerance the solver
+reaches. The validation document measures $10^{-13}$ (\S8 there) for NGP and TSC alike.
+This is the reason for insisting on one kernel and on the mesh gradient rather than a
+direct particle--particle or particle--potential interpolation.
+
+\subsection{Synchronous entry points}
+
+Problem generators that call the solve outside the time loop use
+\fn{AssembleGravitySourceNow()} and \fn{ComputeGravForceNow()}, which run the same
+deposit, exchanges, fold and force with spin-waited receives (the idiom of the coupled
+drag solvers' \fn{Complete*Exchange}). The static twin tests are built on them.
+
+\subsection{Parameters, guards, boundaries}
+
+\code{<dust>/gravity} (default: true when a \code{<gravity>} block exists),
+\code{gravity\_source} (the dust in the Poisson source) and \code{gravity\_force} (the
+particles feel $\phi$); test particles in a gas potential are
+\code{gravity\_source = false}. Dust gravity needs a 3D mesh. The boundary guard of the
+module now admits physical (non-periodic) $x_3$ faces in 3D with a warning: ghost
+deposits beyond such a face have no receiver and are discarded, the density ghosts
+there are zero and the force ghosts zero-gradient, and a particle that leaves through
+the face is not routed --- the deposit halo check aborts on it. The vertical policy
+(removal or reflection, and the mass account) remains the Phase-4d item it was.
+
+\subsection{What was found on the way}
+
+\paragraph{\code{Particles::dtnew} uninitialized.} The upstream defect of the survey
+(\S\ref{sec:next}, last item) bit: the constructor never sets \code{dtnew}, the dust
+generators each set it by hand, a new generator that did not saw \fn{Mesh::NewTimeStep}
+read garbage before the first cycle, and the $2\times$ growth rule then held
+$\Delta t = 0$ forever. Fixed at the source: the constructor initializes it to the
+float maximum, and \fn{Driver::Initialize} computes the dust transport limit from the
+initial state as it does for the fluids. The existing runs are bit-identical.
+
+\paragraph{Multigrid geometry.} The multigrid requires \emph{cubic cells}
+($\Delta x = \Delta y = \Delta z$: its smoother is the isotropic seven-point operator)
+and, with periodic directions, \emph{more than one MeshBlock across each} (a block that
+is its own neighbour breaks the level-boundary exchange); the slab-open sheet test
+gives errors of $10^{2}$--$10^{3}$ otherwise and $4\times10^{-11}$ on $32\times32\times64$
+cells in a $0.5\times0.5\times1$ box. The FFT solver has neither restriction. Both
+Phase-4c dynamic inputs are shaped accordingly; the requirement belongs in the
+multigrid document.
+
+\paragraph{A numerical instability of the drag coupling.} The 3D NSH lattice, exact to
+round-off for ten orbits at $32\times32\times8$ (Phase 4b), grows a round-off
+perturbation by $1.6\times$ per step at $32\times32\times32$ ($\Delta z = \Delta x$) and
+at $32\times32\times24$, but not at $32\times32\times16$ or $32\times32\times64$
+(validation \S8, table). The scan localizes it: it needs the drift ($\eta v_K \ne 0$),
+the TSC kernel (CIC and NGP are stable at the same step) and $c_s\Delta t/\Delta z
+\gtrsim 0.35$ evaluated with the \emph{cycle} step --- \code{imex2+} at
+\code{cfl\_number} $0.35$ is stable and $0.40$ is not, \code{rk2}/PC2 at $0.30$ is
+stable and $0.45$ is not, so it is not the stage Courant number of the gas --- and it
+does not need the stiff species. The growth rate ($\sim 35\,\Omega$) rules out the
+streaming instability, which is also absent with CIC. It is a property of the inherited
+coupling, not of the gravity, and Phase 4b never met it because every 3D box so far had
+$\Delta z \ge 2\Delta x$. The operating rule until it is understood:
+\code{cfl\_number} $\le 0.3$ in boxes with $\Delta z \le \Delta x$ (the gravity NSH input
+carries it); the mechanism --- an aliasing of the three-cell deposit with the vertical
+sound crossing is the natural suspect --- is a Phase-4d item.
+
+%=========================================================================================
 \section{What the next phases must add}
 \label{sec:next}
 
@@ -961,11 +1105,9 @@ The survey established these gaps; they are listed in the order they bite.
 \item \textbf{Particle timestep under shear (4b).} \textbf{Done},
       \S\ref{sec:phase4b3}: limit on $v_y$, with a MeshBlock guard on the total
       velocity.
-\item \textbf{Dust self-gravity (4c).} A plain mass deposit $\sum_j m_j W_{jk}/V$ into
-      a new \code{rho\_dust} (with the additive exchange of item 1), added at the three
-      reads of \S\ref{sec:map}; the $\mathbf g$ field, its exchange, and the gather in
-      \fn{ExplicitPush}; skip the dormant-stage solve. The FFT solver is extended too so
-      it remains the oracle (decided).
+\item \textbf{Dust self-gravity (4c).} \textbf{Done}, \S\ref{sec:phase4c}, both
+      solvers. Open from it: the TSC drag-coupling instability at
+      $c_s\Delta t/\Delta z \gtrsim 0.35$ (understand, then lift the \code{cfl} rule).
 \item \textbf{Particle restart (4d).} \file{outputs/restart.cpp} ignores the particle
       arrays; long cluster runs are restart chains.
 \item \textbf{Diagnostics (4d).} \code{dust\_d} is an NGP binning while the physics
@@ -981,9 +1123,8 @@ The survey established these gaps; they are listed in the order they bite.
       stale after the first regrid; nothing in \file{mesh\_refinement.cpp} touches
       particles). Needs the deposit exchange across levels and a particle
       redistribution hook next to \fn{ShearingBox::ReinitAfterMeshUpdate}.
-\item \textbf{Upstream defect.} \code{Particles::dtnew} is never assigned on the
-      cosmic-ray path yet is read by \fn{Mesh::NewTimeStep}; the dust module sets it,
-      plain particle runs do not.
+\item \textbf{Upstream defect.} \code{Particles::dtnew} was never assigned by the
+      constructor; \textbf{fixed} in Phase 4c (\S\ref{sec:phase4c}).
 \end{enumerate}
 
 %=========================================================================================
@@ -1024,6 +1165,9 @@ boundaries, or shear-periodic $x_1$ in 3D. Any EOS (the isothermal requirement f
   $v_y$; \code{full}: the legacy $v_y - \qom x$ (\S\ref{sec:phase4b3}) \\
 \code{dt\_block\_safety} & 0.5 & fraction of a MeshBlock a particle may cross per
   stage on the total velocity ($\ge 1$: guard off, warns; diagnostic) \\
+\code{gravity} & (\code{<gravity>} present) & dust takes part in self-gravity (3D only) \\
+\code{gravity\_source} & true & the PM dust density joins the Poisson source \\
+\code{gravity\_force} & true & particles feel $-\nabla\phi$ of the total potential \\
 \code{gamma\_switch} & false & Krapp et al.\ eq.~18: $\gamma \to 1/2$ when
   $\Delta t > \max t_s$ \\
 \code{stopping\_time\_mode} & species\_fixed & or \code{particle\_static}, \code{dynamic} \\

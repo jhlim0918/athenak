@@ -20,9 +20,10 @@
        in the AthenaK Shearing Box:\\
        I.\ The Dust-Module Merge (Phase 4a),\\
        the Shear-Periodic Deposit Fold, the Ideal-Gas Energy Update\\
-       and the Particle Timestep under Shear (Phase 4b, i--iii)}
+       and the Particle Timestep under Shear (Phase 4b, i--iii),\\
+       and Dust Self-Gravity (Phase 4c)}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}}
-\date{September 3--4, 2026}
+\date{September 3--5, 2026}
 
 \begin{document}
 \maketitle
@@ -103,6 +104,23 @@ kinetic energy in the quiet phase, $26\%$ during the run's streaming burst, conv
 at second order --- an error the legacy limit had been hiding in wide boxes by forcing
 $\Delta t \approx t_{s,\min}/4$ --- while PC2 at its \code{rk2} step sits within $2\%$
 of the converged value.
+
+\textbf{Phase 4c} puts the dust into the Poisson equation and the potential onto the
+particles. A \emph{twin} construction certifies the source: with one particle per cell
+carrying a fraction of a known density profile and NGP deposits, the multigrid and FFT
+solves reproduce the gas-only Tomida--Stone error ($3.014475\times10^{-5}$) and the
+slab-open sheet error ($1.203474\times10^{-12}$) to every digit, serially and on 4
+ranks, IMEX and PC2; the force gathered at the particles converges to the analytic
+acceleration at second order (NGP $2.0\times10^{-4}$, TSC $2.0\times10^{-3}$ at $128^3$);
+and the net force on gas plus dust vanishes to $10^{-13}$ for both kernels, the
+momentum antisymmetry the shared-kernel design guarantees. Dynamically, test particles
+in a self-gravitating isothermal slab oscillate with the exact anharmonic period to
+$5\times10^{-5}$, the shear-periodic NSH equilibrium holds to round-off with the dust in
+the source, and a structured gravitating run is rank-independent to $10^{-14}$. Three
+findings are recorded: an uninitialized upstream particle timestep (fixed), the
+multigrid's need for cubic cells and multi-block periodic directions, and a numerical
+instability of the TSC drag coupling in 3D boxes at $c_s\Delta t/\Delta z \gtrsim 0.35$
+(an operating rule for now, an item for Phase 4d).
 \end{abstract}
 
 \tableofcontents
@@ -210,6 +228,22 @@ athena -i $IN $WIDE problem/mass_mod_amp=0.5 problem/check_equilibrium=false \
 # guard scaling (three cycles) and the thin-block abort demonstration (one orbit)
 athena -i $IN $WIDE dust/dt_block_safety={0.1,0.2,0.4} time/nlim=3 time/ndiag=1
 athena -i $IN $WIDE meshblock/nx2=4 dust/dt_block_safety={0.5,4.0} time/tlim=6.283185307179586
+\end{lstlisting}
+
+\noindent Phase 4c (\S\ref{sec:phase4c}):
+\begin{lstlisting}
+# static twins (nlim = 0): gas-only reference, then the dust carrying the profile
+athena -i inputs/dust/dust_poisson_twin.athinput problem/dust_frac=0.0 dust/gravity=false
+athena -i inputs/dust/dust_poisson_twin.athinput problem/dust_frac={1.0,0.5} dust/deposit={ngp,tsc} \
+       [gravity/solver=fft] [dust/coupling=pc2 time/integrator=rk2] [mesh/nx*=32|128 meshblock/nx*=16|32]
+athena -i inputs/dust/dust_poisson_twin.athinput problem/profile=modes problem/dust_part=blob   # momentum
+athena -i inputs/dust/dust_poisson_twin_slab.athinput problem/dust_frac={0.0,0.5,1.0} [problem/dust_gas_floor=0]
+# test particles in the self-gravitating slab, five periods; scan time/dtmax
+athena -i inputs/dust/dust_grav_orbit.athinput [time/dtmax=0.05|0.025|0.0125] [dust/coupling=pc2 ...]
+# NSH with gravity: uniform lattice (equilibrium), structured state at rest (four_pi_G = 2)
+athena -i inputs/dust/dust_nsh_shear3d_grav.athinput time/tlim=6.283185307179586
+athena -i inputs/dust/dust_nsh_shear3d_grav.athinput time/tlim=6.283185307179586 problem/mass_mod_amp=0.5 \
+       problem/check_equilibrium=false problem/etavk=0.0 hydro_srcterms/const_accel_val=0.0 gravity/four_pi_G=2.0
 \end{lstlisting}
 
 Each dust problem generator writes a \file{<basename>-errs.dat} line per run; the
@@ -873,6 +907,190 @@ differences of that history --- new versus legacy step (truncation) and serial v
 \end{figure}
 
 %=========================================================================================
+\section{Phase 4c: dust self-gravity}
+\label{sec:phase4c}
+
+Mechanism: implementation document \S8. The particle-mesh dust density is added to the
+Poisson source, the mesh force $-\nabla\phi$ is gathered onto the particles with the
+deposit kernel, both solvers, the shear fold included. Data: \file{run/dust4c/}
+(README); figure \ref{fig:grav}.
+
+\subsection{The twin construction}
+
+A density profile with a known potential is split between the two components: one dust
+particle per cell at the cell centres carries a fraction $f$ of the profile as mass
+($m_p = f\rho V$), the gas keeps $(1-f)\rho$ (\code{<problem>/dust\_frac} of the
+\code{fft\_poisson} generator, \file{inputs/dust/dust\_poisson\_twin.athinput}). With NGP
+deposits the particle-mesh density is the profile to round-off, so every metric of the
+gas-only test must be reproduced exactly; with TSC the dust part is the
+$[\tfrac18,\tfrac34,\tfrac18]^3$-filtered profile.
+
+\begin{center}
+\small
+\begin{tabular}{@{}llccc@{}}
+\toprule
+profile, solver & dust & Laplacian residual & analytic error & force error \\
+\midrule
+sin3 (TS23 4.1), MG $64^3$ & none (reference) & $2.7\times10^{-13}$ & rms $3.014475\times10^{-5}$ & --- \\
+ & NGP, $f = 1$ & $1.6\times10^{-13}$ & $3.014475\times10^{-5}$ & $8.004\times10^{-4}$ \\
+ & NGP, $f = 0.5$ & $2.7\times10^{-13}$ & $3.014475\times10^{-5}$ & $8.004\times10^{-4}$ \\
+ & NGP, $f = 1$, 4 ranks & $1.6\times10^{-13}$ & $3.014475\times10^{-5}$ & $8.004\times10^{-4}$ \\
+ & NGP, $f = 1$, PC2 & --- & $3.014475\times10^{-5}$ & $8.004\times10^{-4}$ \\
+ & TSC, $f = 1$ (serial, 4 ranks) & $5.1\times10^{-13}$ & $1.052781\times10^{-4}$ & $7.970\times10^{-3}$ \\
+sin3, FFT $64^3$ & none / NGP $f = 1$ & $7.7 / 1.1\times10^{-14}$ & $3.014475\times10^{-5}$ & --- / $8.004\times10^{-4}$ \\
+sheet, MG slab $64^3$ & none (reference) & $1.4\times10^{-12}$ & max $1.203474\times10^{-12}$ & \\
+ & NGP, $f = 0.5$ (serial, 4 ranks) & $1.4\times10^{-12}$ & $1.203474\times10^{-12}$ & \\
+ & NGP, $f = 1$, gas floor $10^{-10}$ / $0$ & & $8.9\times10^{-8}$ / $1.203474\times10^{-12}$ & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The source is exact: every NGP twin reproduces the reference to the last printed digit,
+on both solvers, on 4 ranks (the additive exchange of the dust density across rank
+boundaries, and the slab Dirichlet planes gathered from the total density), and under
+the PC2 coupling. The one non-zero NGP entry is the gas density floor of the $f = 1$
+slab run --- the sheet test is absolute (no gauge), and a uniform $10^{-10}$ adds a
+parabolic potential at $10^{-7}$ of the sheet mode; with the floor at zero the digits
+return. The TSC twin's analytic error is the filter's, and its residual --- the solve
+against its own (filtered) source --- is at round-off.
+
+\paragraph{The force.} The acceleration gathered at the particles against the analytic
+$-\nabla\phi$ of the sin3 potential, maximum relative error over all particles:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+cells per side & 32 & 64 & 128 & orders \\
+\midrule
+NGP & $3.169\times10^{-3}$ & $8.004\times10^{-4}$ & $2.006\times10^{-4}$ & $1.99$, $2.00$ \\
+TSC & $3.115\times10^{-2}$ & $7.970\times10^{-3}$ & $2.004\times10^{-3}$ & $1.97$, $1.99$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+NGP at cell centres returns the cell's centred-difference gradient, and its error is
+that operator's $O(\Delta x^2)$ truncation; TSC applies the three-cell filter twice
+(deposit and gather), ten times the error at the same order.
+
+\paragraph{Momentum.} With the dust carrying the Gaussian blob and the gas the modes of
+the \code{modes} profile (\code{dust\_part = blob}), the two components have different
+shapes and exert a net force on each other. The sum of the net force on the gas
+($\sum\rho_g\mathbf g V$, the gas source term's own operator) and on the dust
+($\sum_p m_p\mathbf g(\mathbf x_p)$, the gather), relative to the net dust force:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+$|\mathbf F_g + \mathbf F_d| / |\mathbf F_d|$ & 32 & 64 & 128 \\
+\midrule
+NGP & $6.5\times10^{-14}$ & $2.7\times10^{-13}$ & $6.8\times10^{-13}$ \\
+TSC & $8.4\times10^{-14}$ & $8.3\times10^{-14}$ & $4.7\times10^{-13}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Round-off, not truncation, for both kernels: the identity of implementation \S8.2 (one
+kernel for scatter and gather, an antisymmetric gradient of a symmetric Laplacian's
+solution) holds discretely, to the solver's convergence.
+
+\subsection{Test particles in a self-gravitating slab}
+
+\file{inputs/dust/dust\_grav\_orbit.athinput} (generator \code{dust\_grav\_orbit}): an
+isothermal gas slab $\rho_0\,{\rm sech}^2(z/h)$, $h = c_s/\sqrt{2\pi G\rho_0} = 0.141$
+($9$ cells), in hydrostatic equilibrium under its own gravity (multigrid, slab-open
+faces, \code{diode} hydro boundaries so nothing falls in), $32\times32\times64$ cells at
+$\Delta = 1/64$; 64 test particles (not in the source, no drag on the gas, stopping time
+$10^{10}$) released at rest at $z_0 = 0.21\,h$. The exact period at this amplitude, from
+the quadrature of $\phi = 2c_s^2\ln\cosh(z/h)$, is $T = 6.31832$; the harmonic period
+$2\pi/\sqrt{4\pi G\rho_0} = 6.28319$ is $0.56\%$ shorter. Period from the sign changes
+of $\langle v_z\rangle$ over five periods:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+ & IMEX $\Delta t = 0.070$ & $0.050$ & $0.025$ & $0.0125$ & PC2 $0.045$ \\
+\midrule
+$T/T_{\rm exact} - 1$ & $+8.1\times10^{-4}$ & $-2.5\times10^{-4}$ & $+4.8\times10^{-5}$ & $+1.2\times10^{-4}$ & $+8.0\times10^{-5}$ \\
+amplitude after 5 periods & $+1.4\%$ & $-0.36\%$ & $-0.37\%$ & $-0.37\%$ & $-0.42\%$ \\
+spread of $z$ over particles & $2\times10^{-5}$ & $2\times10^{-9}$ & $2\times10^{-9}$ & $2\times10^{-9}$ & $2\times10^{-9}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The anharmonic correction is resolved, the period converges to the exact value to a
+floor of $\sim10^{-4}$ set by the slab's own slow evolution (its $\langle\rho z^2\rangle$
+drifts by $-0.23\%$ over the run, and the amplitude follows it), and all 64 particles,
+scattered over the $(x,y)$ plane, trace one trajectory to $10^{-9}$ --- the force field
+of a $z$-only potential has no $(x,y)$ imprint through the TSC gather. With NGP the
+period is $5.6\%$ long: the piecewise-constant force of the nearest cell, the reason TSC
+is the default.
+
+\subsection{The NSH state with gravity}
+
+\file{inputs/dust/dust\_nsh\_shear3d\_grav.athinput} adds a periodic multigrid solve to
+the 3D shear-periodic NSH box (reshaped to $32\times32\times16$ in $L_z = 0.5$: cubic
+cells and $16^3$ blocks). The uniform lattice with the dust in the source and the
+particles feeling $\phi$ holds its equilibrium to $2.5\times10^{-16}$ over an orbit
+(gravity inert: $2.3\times10^{-16}$) --- a uniform total density is a constant potential
+through the fold, the ghost fill and the shear remap of both the density and the force.
+The structured state (mass modulation $0.5$, no drift, $4\pi G = 2$) moves only through
+gravity: the gas $x$-kinetic energy rises to $5\times10^{-5}$ at $t = 1.2$ as the pattern
+is sheared apart; serial and 4-rank runs agree in every kinetic-energy column to
+$10^{-14}$, multigrid and FFT to $2\times10^{-4}$ while the force is real ($t < 2.4$),
+IMEX and PC2 to $1.6\%$ at the peak. The net momenta of this state vanish by symmetry
+(a sinusoidal pattern), which is why the antisymmetry is measured statically above.
+
+\subsection{Regression, and what was found}
+
+Without a \code{<gravity>} block nothing new executes: the 2D damping line and the
+one-orbit wide structured history of Phase 4b (iii) are bit-identical (cycle counts and
+every digit), before and after the \code{Particles::dtnew} fix.
+
+\paragraph{The drag-coupling instability.} Setting up the gravity box exposed that the
+3D NSH lattice, round-off-exact at $32\times32\times8$, is not at $32\times32\times32$:
+the vertical kinetic energy grows from $10^{-37}$ at $t = 0.6$ to $10^{-5}$ at $t = 2.4$
+($1.6\times$ per step), and the equilibrium errors reach $10^{-6}$ by one orbit. The
+variants at $n_z = 32$ (\file{run/dust4c/inst/}):
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+stable to round-off & unstable & \\
+\midrule
+$n_z = 16$; $n_z = 64$; $L_z = 2$ ($\Delta z = 2\Delta x$) & $n_z = 24$, $32$ ($\Delta z \le \Delta x$) & geometry \\
+CIC, NGP deposits & TSC & kernel \\
+\code{imex2+} at \code{cfl} $0.225$, $0.30$, $0.35$ & \code{cfl} $0.40$, $0.45$ & step \\
+PC2/\code{rk2} at \code{cfl} $0.30$ & \code{cfl} $0.45$, $0.55$ & step \\
+$\eta v_K = 0$ (exactly zero) & drift on; also with $t_{s,1} = 0.1$; also without back-reaction & physics \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The threshold is $c_s\Delta t/\Delta z \approx 0.35$ with the \emph{cycle} step, the same
+for both integrators (so it is not the gas Courant condition of a stage), and it needs
+the TSC kernel and the drift. A growth rate of $35\,\Omega$ and the stability of CIC at
+the same step rule out the streaming instability. This is a property of the inherited
+drag coupling that the Phase-4b boxes ($\Delta z \ge 2\Delta x$) never reached; its
+mechanism is a Phase-4d item. The operating rule meanwhile --- \code{cfl\_number} $\le
+0.3$ where $\Delta z \le \Delta x$ --- is written into the gravity NSH input, and every
+Phase-4c result above was obtained under it.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/dust4c_gravity.png}
+\caption{Phase 4c. Left: the force gathered at the particles against the analytic
+acceleration of the triple-sine potential, NGP and TSC, second order. Middle: the mean
+height of the 64 test particles in the isothermal slab at $\Delta t = 0.025$, with the
+exact half-periods marked. Right: the period error against the step; the harmonic
+approximation would sit at the dashed line, the NGP kernel at the triangle.}
+\label{fig:grav}
+\end{figure}
+
+%=========================================================================================
 \section{Summary}
 \label{sec:summary}
 
@@ -899,6 +1117,15 @@ third: the particle step no longer pays the full-shear-velocity penalty --- $5.2
 fewer cycles in an $L_x = 8$ box, with the equilibrium, rank independence and the
 MeshBlock guard each certified --- and the scan it prompted fixes the operating rule for
 stiff species under IMEX (cap the step at a fraction of $t_{s,\min}$, or use PC2).
-Phase 4b is complete; Phase 4c adds the dust to the Poisson source.
+
+Phase 4c delivers gas$+$dust self-gravity: the source is certified exact by twin
+construction on both solvers, serially and on 4 ranks; the force converges at second
+order and conserves the total momentum to round-off by construction; test particles
+orbit in a self-gravitating slab with the exact anharmonic period; and the shear-periodic
+machinery (fold, ghost fill, remap) carries the dust density and the force without
+disturbing an equilibrium. The dust track now has every ingredient of the target
+problem except the vertical boundary policy and the diagnostics of Phase 4d --- and one
+open numerical question, the TSC drag-coupling instability at $c_s\Delta t/\Delta z
+\gtrsim 0.35$, held off by a Courant rule until it is understood.
 
 \end{document}
