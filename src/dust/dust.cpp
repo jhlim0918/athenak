@@ -117,11 +117,12 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
                 << "any x3" << std::endl;
       std::exit(EXIT_FAILURE);
     }
+    physical_faces = !x3_periodic;
     if (!x3_periodic && global_variable::my_rank == 0) {
-      std::cout << "# WARNING (dust): physical x3 boundaries: ghost deposits beyond the "
-                << "x3 faces are discarded and particles must not reach them (a "
-                << "particle leaving through an x3 face aborts at the next deposit)"
-                << std::endl;
+      std::cout << "# dust: physical x3 boundaries: ghost deposits beyond the x3 faces "
+                << "are discarded and a particle crossing an x3 face is removed "
+                << "(outflow, Athena-C zbc_out = 1); removed mass is accounted in "
+                << "DUST_ESCAPE_SUMMARY" << std::endl;
     }
   }
   // y-remap order of the shear-periodic fold of ghost deposits across the radial faces
@@ -440,8 +441,9 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells1 = indcs.nx1 + 2*(indcs.ng);
   int ncells2 = (indcs.nx2 > 1)? (indcs.nx2 + 2*(indcs.ng)) : 1;
   int ncells3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*(indcs.ng)) : 1;
+  // the PM dust density is always available (the dust_dpm output, the Poisson source)
+  Kokkos::realloc(rho_dust, nmb, 1, ncells3, ncells2, ncells1);
   if (gravity) {
-    Kokkos::realloc(rho_dust, nmb, 1, ncells3, ncells2, ncells1);
     Kokkos::realloc(gforce,   nmb, 3, ncells3, ncells2, ncells1);
   }
   Kokkos::realloc(qdep,  nmb, 5, ncells3, ncells2, ncells1);
@@ -477,12 +479,12 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   }
   // self-gravity: the dust density (additive exchange + copy exchange of its ghost
   // layer, both with the shear remap) and the force field (copy exchange)
+  pbval_rd = new MeshBoundaryValuesDep(pmy_pack, pin);
+  pbval_rd->InitializeBuffers(1);
+  pbval_rc = new MeshBoundaryValuesCC(pmy_pack, pin, false);
+  pbval_rc->InitializeBuffers(1);
+  if (shear_x1) {psbox_rc = new ShearingBoxCC(pmy_pack, pin, 1);}
   if (gravity && gravity_source) {
-    pbval_rd = new MeshBoundaryValuesDep(pmy_pack, pin);
-    pbval_rd->InitializeBuffers(1);
-    pbval_rc = new MeshBoundaryValuesCC(pmy_pack, pin, false);
-    pbval_rc->InitializeBuffers(1);
-    if (shear_x1) {psbox_rc = new ShearingBoxCC(pmy_pack, pin, 1);}
     pmy_pack->pgrav->RegisterExtraDensity(rho_dust);
   }
   if (gravity && gravity_force) {
@@ -496,6 +498,18 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
 // destructor
 
 DustGasDrag::~DustGasDrag() {
+  if (physical_faces) {
+    unsigned long long ntot = escaped_count;
+    Real mtot = escaped_mass;
+#if MPI_PARALLEL_ENABLED
+    MPI_Allreduce(MPI_IN_PLACE, &ntot, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &mtot, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    if (global_variable::my_rank == 0) {
+      std::cout << std::setprecision(14) << "# DUST_ESCAPE_SUMMARY removed=" << ntot
+                << " mass=" << mtot << std::endl;
+    }
+  }
   if (global_variable::my_rank == 0 && dt_guard_count > 0) {
     // rank-local count: the guard may bind on another rank without appearing here, and
     // the timestep actually taken is the global minimum over ranks

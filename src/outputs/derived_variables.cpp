@@ -29,6 +29,7 @@
 #include "radiation/radiation.hpp"
 #include "radiation/radiation_tetrad.hpp"
 #include "particles/particles.hpp"
+#include "dust/dust.hpp"
 #include "outputs.hpp"
 #include "utils/current.hpp"
 
@@ -1284,6 +1285,19 @@ void BaseTypeOutput::ComputeDerivedVariable(std::string name, Mesh *pm) {
   // raw prtcl_d counter this is a physical density: it uses the particle masses (IPM)
   // and divides by the cell volume, and the accumulation is atomic (safe on threaded
   // and GPU backends).
+  // particle-mesh dust density with the module's kernel and exchanges (dust track 4d)
+  if (name.compare("dust_dpm") == 0) {
+    Kokkos::realloc(derived_var, nmb_alloc, 1, n3, n2, n1);
+    auto ddens = derived_var;
+    dust::DustGasDrag *pdust = pm->pmb_pack->pdust;
+    pdust->AssembleDustDensityNow();
+    auto &rhod = pdust->rho_dust;
+    par_for("ddens_pm", DevExeSpace(), 0, (nmb-1), ks, ke, js, je, is, ie,
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      ddens(m,0,k,j,i) = rhod(m,0,k,j,i);
+    });
+  }
+
   if (name.compare("dust_d") == 0) {
     Kokkos::realloc(derived_var, nmb_alloc, 1, n3, n2, n1);
     auto ddens = derived_var;

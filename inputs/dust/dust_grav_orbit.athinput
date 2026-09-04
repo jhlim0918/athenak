@@ -86,6 +86,7 @@ dt_cfl        = 0.5
 pgen_name = dust_grav_orbit
 rho0      = 1.0
 z0        = 0.03          # z0/h = 0.21
+vz0       = 0.0           # initial vertical velocity (escape test: particles leave via the faces)
 floor     = 1.0e-6
 user_hist = true
 

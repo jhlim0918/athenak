@@ -48,7 +48,7 @@ nx3       = 16        # cubic (multigrid requirement)
 <time>
 evolution  = dynamic  # dynamic/kinematic/static
 integrator = imex2+   # time integration algorithm (required for dust)
-cfl_number = 0.3      # dz = dx here: TSC dust runs need c_s*dt/dz <~ 0.35 (Phase 4c finding)
+cfl_number = 0.3      # 3D cubic cells: the shearing-box hydro's checkerboard mode grows at cfl >~ 0.4
 nlim       = -1       # cycle limit
 tlim       = 62.831853071795864   # 10 orbits (10 * 2*pi/omega0)
 ndiag      = 1000     # cycles between diagnostic output

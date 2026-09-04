@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
+#include <vector>
 #include <sstream>
 #include <string>
 #include <utility> // make_pair
@@ -27,6 +28,7 @@
 #include "coordinates/adm.hpp"
 #include "z4c/compact_object_tracker.hpp"
 #include "z4c/z4c.hpp"
+#include "particles/particles.hpp"
 #include "radiation/radiation.hpp"
 #include "srcterms/turb_driver.hpp"
 //#include "outputs.hpp"
@@ -148,6 +150,7 @@ void RestartOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   TurbulenceDriver* pturb=pm->pmb_pack->pturb;
   z4c::Z4c* pz4c = pm->pmb_pack->pz4c;
   adm::ADM* padm = pm->pmb_pack->padm;
+  particles::Particles* ppart = pm->pmb_pack->ppart;
   int nhydro=0, nmhd=0, nrad=0, nforce=3, nz4c=0, nadm=0, nco=0;
   if (phydro != nullptr) {
     nhydro = phydro->nhydro + phydro->nscalars;
@@ -262,6 +265,14 @@ void RestartOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
       resfile.Write_any_type(&(pturb->rstate), sizeof(RNG_State), "byte",
                              single_file_per_rank);
     }
+    // particles (dust track, Phase 4d): the per-rank counts and the array widths; the
+    // arrays themselves follow the MeshBlock data (step 5)
+    if (ppart != nullptr) {
+      resfile.Write_any_type(pm->nprtcl_eachrank, global_variable::nranks*sizeof(int),
+                             "byte", single_file_per_rank);
+      int nri[2] = {ppart->nrdata, ppart->nidata};
+      resfile.Write_any_type(nri, 2*sizeof(int), "byte", single_file_per_rank);
+    }
   }
 
   //--- STEP 4.  All ranks write data over all MeshBlocks (5D arrays) in parallel
@@ -303,6 +314,7 @@ void RestartOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   IOWrapperSizeT step3size = 3*nco*sizeof(Real);
   if (pz4c != nullptr) step3size += sizeof(Real);
   if (pturb != nullptr) step3size += sizeof(RNG_State);
+  if (ppart != nullptr) step3size += (global_variable::nranks + 2)*sizeof(int);
 
   // write cell-centered variables in parallel
   IOWrapperSizeT offset_myrank = (step1size + step2size + step3size
@@ -624,6 +636,44 @@ void RestartOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   }
 
   // close file, clean up
+  //--- STEP 5.  Particle arrays (dust track, Phase 4d), after all MeshBlock data: each
+  // rank's block follows those of the lower ranks (shared file) or its own MeshBlock data
+  // (one file per rank).  Every value is stored as a Real (the integer properties are
+  // small), in variable-major order, so the layout does not depend on the device.
+  if (ppart != nullptr) {
+    int npart = ppart->nprtcl_thispack;
+    int nrd = ppart->nrdata, nid = ppart->nidata;
+    IOWrapperSizeT pcount = static_cast<IOWrapperSizeT>(nrd + nid);
+    IOWrapperSizeT pbase = step1size + step2size + step3size + sizeof(IOWrapperSizeT);
+    if (single_file_per_rank) {
+      pbase += data_size*static_cast<IOWrapperSizeT>(pm->nmb_thisrank);
+    } else {
+      pbase += data_size*static_cast<IOWrapperSizeT>(pm->nmb_total);
+      for (int r=0; r<global_variable::my_rank; ++r) {
+        pbase += pcount*static_cast<IOWrapperSizeT>(pm->nprtcl_eachrank[r])*sizeof(Real);
+      }
+    }
+    if (npart > 0) {
+      auto hr = Kokkos::create_mirror_view_and_copy(HostMemSpace(), ppart->prtcl_rdata);
+      auto hi = Kokkos::create_mirror_view_and_copy(HostMemSpace(), ppart->prtcl_idata);
+      std::vector<Real> buf(pcount*npart);
+      for (int n=0; n<nrd; ++n) {
+        for (int q=0; q<npart; ++q) {buf[n*npart + q] = hr(n,q);}
+      }
+      for (int n=0; n<nid; ++n) {
+        for (int q=0; q<npart; ++q) {buf[(nrd+n)*npart + q] = static_cast<Real>(hi(n,q));}
+      }
+      IOWrapperSizeT cnt = pcount*npart;
+      if (resfile.Write_any_type_at(buf.data(), cnt, pbase, "Real",
+                                    single_file_per_rank) != cnt) {
+        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "particle data not written correctly to rst file, "
+                  << "restart file is broken." << std::endl;
+        exit(EXIT_FAILURE);
+      }
+    }
+  }
+
   resfile.Close(single_file_per_rank);
 
   return;

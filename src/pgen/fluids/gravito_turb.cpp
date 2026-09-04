@@ -57,6 +57,8 @@
 #include "gravity/mg_gravity.hpp"
 #include "shearing_box/shearing_box.hpp"
 #include "srcterms/srcterms.hpp"
+#include "particles/particles.hpp"
+#include "dust/dust.hpp"
 #include "pgen/pgen.hpp"
 
 // User-defined history function
@@ -283,6 +285,20 @@ void GravitoTurbHistory(HistoryData *pdata, Mesh *pm) {
   pdata->label[7] = "rho_cs2";
   pdata->label[8] = "rho_dv2";
   pdata->label[9] = "eint";
+  // dust track (Phase 4d): the particles' mass, momenta (shear-relative), kinetic energy,
+  // Reynolds stress and the mass removed through the vertical faces
+  dust::DustGasDrag *pdust = pm->pmb_pack->pdust;
+  const bool has_dust = (pdust != nullptr);
+  if (has_dust) {
+    pdata->nhist = 17;
+    pdata->label[10] = "d_mass";
+    pdata->label[11] = "d_px";
+    pdata->label[12] = "d_py";
+    pdata->label[13] = "d_pz";
+    pdata->label[14] = "d_ke";
+    pdata->label[15] = "d_wrey";
+    pdata->label[16] = "d_escaped";
+  }
 
   auto &indcs = pm->pmb_pack->pmesh->mb_indcs;
   int is = indcs.is, nx1 = indcs.nx1;
@@ -354,6 +370,33 @@ void GravitoTurbHistory(HistoryData *pdata, Mesh *pm) {
   }
   for (int n=pdata->nhist; n<NHISTORY_VARIABLES; ++n) {
     pdata->hdata[n] = 0.0;
+  }
+  if (has_dust) {
+    particles::Particles *ppar = pm->pmb_pack->ppart;
+    auto &pr = ppar->prtcl_rdata;
+    int npart = ppar->nprtcl_thispack;
+    Real dm = 0.0, dpx = 0.0, dpy = 0.0, dpz = 0.0, dke = 0.0, dwr = 0.0;
+    Kokkos::parallel_reduce("GTurbDustHist",
+        Kokkos::RangePolicy<>(DevExeSpace(), 0, npart),
+    KOKKOS_LAMBDA(const int &p, Real &m_, Real &px_, Real &py_, Real &pz_, Real &ke_,
+                  Real &wr_) {
+      Real mp = pr(IPM,p);
+      Real vx = pr(IPVX,p), vy = pr(IPVY,p), vz = pr(IPVZ,p);
+      m_ += mp;
+      px_ += mp*vx;
+      py_ += mp*vy;
+      pz_ += mp*vz;
+      ke_ += 0.5*mp*(vx*vx + vy*vy + vz*vz);
+      wr_ += mp*vx*vy;
+    }, Kokkos::Sum<Real>(dm), Kokkos::Sum<Real>(dpx), Kokkos::Sum<Real>(dpy),
+       Kokkos::Sum<Real>(dpz), Kokkos::Sum<Real>(dke), Kokkos::Sum<Real>(dwr));
+    pdata->hdata[10] = dm;
+    pdata->hdata[11] = dpx;
+    pdata->hdata[12] = dpy;
+    pdata->hdata[13] = dpz;
+    pdata->hdata[14] = dke;
+    pdata->hdata[15] = dwr;
+    pdata->hdata[16] = pdust->escaped_mass;
   }
   return;
 }

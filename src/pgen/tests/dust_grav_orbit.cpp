@@ -81,6 +81,7 @@ void ProblemGenerator::DustGravOrbit(ParameterInput *pin, const bool restart) {
   Real rho0 = pin->GetOrAddReal("problem", "rho0", 1.0);
   Real z0 = pin->GetOrAddReal("problem", "z0", 0.05);
   Real floor = pin->GetOrAddReal("problem", "floor", 1.0e-6);
+  Real vz0 = pin->GetOrAddReal("problem", "vz0", 0.0);   // initial v_z (escape tests)
   Real cs = pin->GetReal("hydro", "iso_sound_speed");
   Real h = cs/std::sqrt(0.5*four_pi_G*rho0);     // 2 pi G rho0 = four_pi_G rho0 / 2
   Real omega_z = std::sqrt(four_pi_G*rho0);      // small-amplitude vertical frequency
@@ -144,8 +145,9 @@ void ProblemGenerator::DustGravOrbit(ParameterInput *pin, const bool restart) {
   }
   if (ncand_host == 0 && npart > 0) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "rank " << global_variable::my_rank << " owns particles but no MeshBlock "
-              << "containing +z0 or -z0; use fewer ranks or a decomposition split in x,y"
+              << "rank " << global_variable::my_rank << " owns particles but no "
+              << "MeshBlock containing +z0 or -z0; use fewer ranks or a decomposition "
+              << "split in x,y"
               << std::endl;
     std::exit(EXIT_FAILURE);
   }
@@ -182,7 +184,8 @@ void ProblemGenerator::DustGravOrbit(ParameterInput *pin, const bool restart) {
     pi(PSP,p) = species;
     pr(IPTS,p) = taus_.d_view(species);
     pr(IPM,p) = 1.0;
-    pr(IPVX,p) = 0.0; pr(IPVY,p) = 0.0; pr(IPVZ,p) = 0.0;
+    pr(IPVX,p) = 0.0; pr(IPVY,p) = 0.0;
+    pr(IPVZ,p) = (species == 0) ? vz0 : -vz0;   // mirrored with the orbit
     pr(IPRX,p) = 0.0; pr(IPRY,p) = 0.0; pr(IPRZ,p) = 0.0;
   });
   return;

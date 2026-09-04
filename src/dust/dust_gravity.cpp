@@ -259,12 +259,11 @@ TaskStatus DustGasDrag::RecvGravForceShr(Driver *pdrive, int stage) {
 }
 
 //----------------------------------------------------------------------------------------
-//! \fn DustGasDrag::AssembleGravitySourceNow / ComputeGravForceNow
+//! \fn DustGasDrag::AssembleDustDensityNow / ComputeGravForceNow
 //! \brief Synchronous versions of the two task chains for problem generators that call
 //! the Poisson solve outside the time loop (static solves, initial diagnostics).
 
-void DustGasDrag::AssembleGravitySourceNow() {
-  if (!gravity || !gravity_source) {return;}
+void DustGasDrag::AssembleDustDensityNow() {
   Real time = pmy_pack->pmesh->time;
   DepositMass();
   RequireDone(pbval_rd->InitRecv(1), "density InitRecv");

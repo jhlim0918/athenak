@@ -85,8 +85,9 @@ void DustGasDrag::AssembleDustGasDragTasks(
   id.p_irecv   = tl["stagen"]->AddTask(&DustGasDrag::InitParticleRecv, this, id.p_cnt);
   id.p_sendp   = tl["stagen"]->AddTask(&DustGasDrag::SendParticles, this, id.p_irecv);
   id.p_recvp   = tl["stagen"]->AddTask(&DustGasDrag::RecvParticles, this, id.p_sendp);
+  id.p_remove  = tl["stagen"]->AddTask(&DustGasDrag::RemoveEscaped, this, id.p_recvp);
   // implicit drag solve
-  id.scat      = tl["stagen"]->AddTask(&DustGasDrag::DepositDrag, this, id.p_recvp);
+  id.scat      = tl["stagen"]->AddTask(&DustGasDrag::DepositDrag, this, id.p_remove);
   id.sendd     = tl["stagen"]->AddTask(&DustGasDrag::SendDepQP, this, id.scat);
   id.recvd     = tl["stagen"]->AddTask(&DustGasDrag::RecvDepQP, this, id.sendd);
   // shear-periodic x1: fold the y-remapped ghost deposits of the face blocks (no-op
@@ -112,10 +113,11 @@ void DustGasDrag::AssembleDustGasDragTasks(
   id.p2_irecv  = tl["stagen"]->AddTask(&DustGasDrag::InitParticleRecv2, this, id.p2_cnt);
   id.p2_sendp  = tl["stagen"]->AddTask(&DustGasDrag::SendParticles2, this, id.p2_irecv);
   id.p2_recvp  = tl["stagen"]->AddTask(&DustGasDrag::RecvParticles2, this, id.p2_sendp);
+  id.p2_remove = tl["stagen"]->AddTask(&DustGasDrag::RemoveEscaped2, this, id.p2_recvp);
   id.sendbr    = tl["stagen"]->AddTask(&DustGasDrag::SendPMBR, this, id.gkp);
   id.recvbr    = tl["stagen"]->AddTask(&DustGasDrag::RecvPMBR, this, id.sendbr);
   id.foldbr    = tl["stagen"]->AddTask(&DustGasDrag::FoldPMBR, this, id.recvbr);
-  TaskID commit_ready = (id.foldbr | id.p2_recvp);
+  TaskID commit_ready = (id.foldbr | id.p2_remove);
   id.apply     = tl["stagen"]->AddTask(&DustGasDrag::ApplyPMBR, this, commit_ready);
   // standard hydro tail (boundary comms, BCs, cons-to-prim, timestep)
   id.h_sendu_oa  = tl["stagen"]->AddTask(&Hydro::SendU_OA, phyd, id.apply);
@@ -171,6 +173,46 @@ TaskStatus DustGasDrag::SendParticles(Driver *pdrive, int stage) {
 TaskStatus DustGasDrag::RecvParticles(Driver *pdrive, int stage) {
   if (!FirstMigrationActive(pdrive, stage)) {return TaskStatus::complete;}
   return pmy_pack->ppart->RecvP(pdrive, stage);
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn DustGasDrag::RemoveEscaped
+//! \brief Removes the particles that left the mesh through a physical face during this
+//! stage's migration (Athena-C zbc_out = 1: they never return), accounting their mass.
+//! Collective under MPI, so it runs on every rank whenever the migration ran.
+
+void DustGasDrag::RemoveEscapedNow() {
+  particles::Particles *ppar = pmy_pack->ppart;
+  auto &pr = ppar->prtcl_rdata;
+  auto &pi = ppar->prtcl_idata;
+  int npart = ppar->nprtcl_thispack;
+  Real mdead = 0.0;
+  if (npart > 0) {
+    Kokkos::parallel_reduce("dust_escaped_mass",
+    Kokkos::RangePolicy<>(DevExeSpace(), 0, npart),
+    KOKKOS_LAMBDA(const int p, Real &m) {
+      if (pi(PGID,p) < 0) {m += pr(IPM,p);}
+    }, Kokkos::Sum<Real>(mdead));
+  }
+  int nrem = ppar->RemoveDead();
+  escaped_count += static_cast<unsigned long long>(nrem);
+  escaped_mass += mdead;
+}
+
+TaskStatus DustGasDrag::RemoveEscaped(Driver *pdrive, int stage) {
+  if (!physical_faces || !FirstMigrationActive(pdrive, stage)) {
+    return TaskStatus::complete;
+  }
+  RemoveEscapedNow();
+  return TaskStatus::complete;
+}
+
+TaskStatus DustGasDrag::RemoveEscaped2(Driver *pdrive, int stage) {
+  if (!physical_faces || !SecondMigrationActive(pdrive, stage)) {
+    return TaskStatus::complete;
+  }
+  RemoveEscapedNow();
+  return TaskStatus::complete;
 }
 
 TaskStatus DustGasDrag::UpdateParticleGIDs2(Driver *pdrive, int stage) {

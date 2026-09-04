@@ -291,12 +291,26 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
   int n3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*ng) : 1;
   int nmb = pmbp->nmb_thispack;
   auto &u0 = pmbp->phydro->u0;
+  // optional white-noise seed of the gas velocities (stability diagnostics: a uniform
+  // state has no perturbation to grow, whatever the scheme's stability)
+  Real gas_vpert = pin->GetOrAddReal("problem","gas_vpert",0.0);
+  auto gids_ = pmbp->gids;
   par_for("nsh_gas", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n2-1),0,(n1-1),
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    Real px = 0.0, py = 0.0, pz = 0.0;
+    if (gas_vpert != 0.0) {
+      std::uint64_t key = (static_cast<std::uint64_t>(gids_ + m) << 48)
+                        ^ (static_cast<std::uint64_t>(k) << 32)
+                        ^ (static_cast<std::uint64_t>(j) << 16)
+                        ^ static_cast<std::uint64_t>(i);
+      px = gas_vpert*(2.0*HashUniform01(key) - 1.0);
+      py = gas_vpert*(2.0*HashUniform01(key + UINT64_C(0x9e3779b97f4a7c15)) - 1.0);
+      pz = gas_vpert*(2.0*HashUniform01(key + UINT64_C(0x632be59bd9b4e019)) - 1.0);
+    }
     u0(m,IDN,k,j,i) = rho0;
-    u0(m,IM1,k,j,i) = rho0*ugx;
-    u0(m,IM2,k,j,i) = three_d ? rho0*ugp : 0.0;
-    u0(m,IM3,k,j,i) = three_d ? 0.0 : rho0*ugp;
+    u0(m,IM1,k,j,i) = rho0*(ugx + px);
+    u0(m,IM2,k,j,i) = three_d ? rho0*(ugp + py) : rho0*pz;
+    u0(m,IM3,k,j,i) = three_d ? rho0*pz : rho0*(ugp + py);
     if (is_ideal) {
       u0(m,IEN,k,j,i) = pgas/gm1 + 0.5*rho0*(SQR(ugx) + SQR(ugp));
     }

@@ -258,7 +258,7 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
         u0(m,IDN,k,j,i) = fmax((1.0 - f)*u0(m,IDN,k,j,i), rfloor);
       }
     });
-    pmbp->pdust->AssembleGravitySourceNow();
+    pmbp->pdust->AssembleDustDensityNow();
   }
   // the Poisson source as the solver sees it (gas, or gas + dust once registered)
   auto src = pmbp->pgrav->SourceArray();

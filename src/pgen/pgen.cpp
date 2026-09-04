@@ -9,6 +9,8 @@
 //! reads data from restart file, as well as re-initializing problem-specific data.
 
 #include <iostream>
+#include <cmath>
+#include <vector>
 #include <string>
 #include <utility>
 #include <algorithm>
@@ -27,6 +29,7 @@
 #include "z4c/z4c.hpp"
 #include "radiation/radiation.hpp"
 #include "srcterms/turb_driver.hpp"
+#include "particles/particles.hpp"
 #include "pgen.hpp"
 
 
@@ -202,6 +205,45 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
     }
 #endif
     std::memcpy(&(pturb->rstate), &(rng_data[0]), sizeof(RNG_State));
+  }
+
+  // particles (dust track, Phase 4d): per-rank counts and array widths (step 3 of the
+  // writer); the Mesh counts and the array sizes are reset to the file's
+  particles::Particles *ppart = pm->pmb_pack->ppart;
+  if (ppart != nullptr) {
+    int nranks = global_variable::nranks;
+    std::vector<int> pcnt(nranks + 2, 0);
+    if (global_variable::my_rank == 0 || single_file_per_rank) {
+      IOWrapperSizeT nb = (nranks + 2)*sizeof(int);
+      if (resfile.Read_bytes(pcnt.data(), 1, nb, single_file_per_rank) != nb) {
+        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "particle count data size read from restart file is "
+                  << "incorrect, restart file is broken." << std::endl;
+        exit(EXIT_FAILURE);
+      }
+    }
+#if MPI_PARALLEL_ENABLED
+    if (!single_file_per_rank) {
+      MPI_Bcast(pcnt.data(), (nranks + 2)*sizeof(int), MPI_CHAR, 0, MPI_COMM_WORLD);
+    }
+#endif
+    if (pcnt[nranks] != ppart->nrdata || pcnt[nranks+1] != ppart->nidata) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "particle array widths in the restart file ("
+                << pcnt[nranks] << "," << pcnt[nranks+1] << ") differ from the build's ("
+                << ppart->nrdata << "," << ppart->nidata << ")" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    pm->nprtcl_total = 0;
+    for (int r=0; r<nranks; ++r) {
+      pm->nprtcl_eachrank[r] = pcnt[r];
+      pm->nprtcl_total += pcnt[r];
+    }
+    pm->nprtcl_thisrank = pcnt[global_variable::my_rank];
+    ppart->nprtcl_thispack = pm->nprtcl_thisrank;
+    int np_alloc = std::max(ppart->nprtcl_thispack, 1);
+    Kokkos::realloc(ppart->prtcl_rdata, ppart->nrdata, np_alloc);
+    Kokkos::realloc(ppart->prtcl_idata, ppart->nidata, np_alloc);
   }
 
   // root process reads size of CC and FC data arrays from restart file
@@ -625,6 +667,44 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
                       Kokkos::ALL, Kokkos::ALL, Kokkos::ALL), ccin);
     offset_myrank += nout1*nout2*nout3*nadm*sizeof(Real);   // adm u_adm
     myoffset = offset_myrank;
+  }
+
+  // particle arrays (step 5 of the writer), after all MeshBlock data
+  if (ppart != nullptr) {
+    int npart = ppart->nprtcl_thispack;
+    int nrd = ppart->nrdata, nid = ppart->nidata;
+    IOWrapperSizeT pcount = static_cast<IOWrapperSizeT>(nrd + nid);
+    IOWrapperSizeT pbase = headeroffset;
+    if (single_file_per_rank) {
+      pbase += data_size*static_cast<IOWrapperSizeT>(pm->nmb_thisrank);
+    } else {
+      pbase += data_size*static_cast<IOWrapperSizeT>(pm->nmb_total);
+      for (int r=0; r<global_variable::my_rank; ++r) {
+        pbase += pcount*static_cast<IOWrapperSizeT>(pm->nprtcl_eachrank[r])*sizeof(Real);
+      }
+    }
+    if (npart > 0) {
+      std::vector<Real> buf(pcount*npart);
+      IOWrapperSizeT cnt = pcount*npart;
+      if (resfile.Read_Reals_at(buf.data(), cnt, pbase, single_file_per_rank) != cnt) {
+        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "particle data not read correctly from rst file, "
+                  << "restart file is broken." << std::endl;
+        exit(EXIT_FAILURE);
+      }
+      auto hr = Kokkos::create_mirror_view(ppart->prtcl_rdata);
+      auto hi = Kokkos::create_mirror_view(ppart->prtcl_idata);
+      for (int n=0; n<nrd; ++n) {
+        for (int q=0; q<npart; ++q) {hr(n,q) = buf[n*npart + q];}
+      }
+      for (int n=0; n<nid; ++n) {
+        for (int q=0; q<npart; ++q) {
+          hi(n,q) = static_cast<int>(std::lround(buf[(nrd+n)*npart + q]));
+        }
+      }
+      Kokkos::deep_copy(ppart->prtcl_rdata, hr);
+      Kokkos::deep_copy(ppart->prtcl_idata, hi);
+    }
   }
 
   // call problem generator again to re-initialize data, fn ptrs, as needed

@@ -109,6 +109,7 @@ struct DustGasDragTaskIDs {
   TaskID h_bcs, h_prol, h_c2p, h_newdt, newdt, newdt2;
   // "after_stagen" tasks
   TaskID h_csend, h_crecv, p_csend, p_crecv, cleard;
+  TaskID p_remove, p2_remove;
   // self-gravity (Phase 4c): dust density into the Poisson source, force on particles
   TaskID gdep, gsend, grecv, gfold, gsendc, grecvc, gsends, grecvs;
   TaskID gforce, gsendf, grecvf, gsendfs, grecvfs;
@@ -183,6 +184,9 @@ class DustGasDrag {
   DustDtTransport dt_transport;  // azimuthal velocity used for the cell-crossing limit
   Real dt_block_safety;      // fraction of a MeshBlock crossed per stage (guard)
   unsigned long long dt_guard_count = 0;   // cycles where the block guard set dtnew
+  bool physical_faces = false;      // some mesh face is non-periodic: particles can leave
+  unsigned long long escaped_count = 0;    // particles removed through physical faces
+  Real escaped_mass = 0.0;                 // their total mass (this rank)
   Real taus_max;             // largest stopping time over all species
   Real taus_min;             // smallest stopping time over all species
   Real dust_to_gas;          // total dust/gas mass ratio for default mass normalization
@@ -288,6 +292,9 @@ class DustGasDrag {
   TaskStatus InitParticleRecv2(Driver *pdrive, int stage);
   TaskStatus SendParticles2(Driver *pdrive, int stage);
   TaskStatus RecvParticles2(Driver *pdrive, int stage);
+  TaskStatus RemoveEscaped(Driver *pdrive, int stage);   // after the first migration
+  TaskStatus RemoveEscaped2(Driver *pdrive, int stage);  // after the second migration
+  void RemoveEscapedNow();
   TaskStatus AddDragHistoryGas(Driver *pdrive, int stage); // u0 += a_twid*dt*R_g
   TaskStatus DepositDrag(Driver *pdrive, int stage);       // scatter Q,P
   TaskStatus SendDepQP(Driver *pdrive, int stage);
@@ -342,7 +349,7 @@ class DustGasDrag {
   TaskStatus RecvGravForceShr(Driver *pdrive, int stage);
   void DepositMass();                // the deposit kernel (rho_dust, active + ghosts)
   void ComputeForceField();          // gforce on active cells from phi
-  void AssembleGravitySourceNow();   // synchronous deposit + exchanges (static solves)
+  void AssembleDustDensityNow();   // synchronous deposit + exchanges (static solves)
   void ComputeGravForceNow();        // synchronous force field + exchanges
   // ...in "after_stagen" list
   TaskStatus ClearParticleSend(Driver *pdrive, int stage);

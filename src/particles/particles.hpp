@@ -82,6 +82,9 @@ class Particles {
   TaskStatus RecvP(Driver *pdriver, int stage);
   TaskStatus ClearSend(Driver *pdriver, int stage);
   TaskStatus ClearRecv(Driver *pdriver, int stage);
+  // compact out particles marked dead (PGID < 0) and refresh the Mesh particle counts;
+  // returns the number removed on this rank (collective under MPI)
+  int RemoveDead();
 
  private:
   MeshBlockPack* pmy_pack;  // ptr to MeshBlockPack containing this Particles

@@ -78,6 +78,21 @@ TaskStatus ParticlesBoundaryValues::SetNewPrtclGID() {
   const int nmbx2 = nmb_sp_x2, nmbx3 = nmb_sp_x3;
   auto &sgid = sgid_map;
   auto &srnk = srank_map;
+  // physical (non-periodic) mesh faces: a particle crossing one leaves the mesh and is
+  // marked dead (PGID = -1) for Particles::RemoveDead -- the "outflow" particle boundary
+  // of the Athena-C reference (par_strat3d zbc_out = 1); such faces have no neighbour
+  // slot to route to
+  auto &mbcs = pmy_part->pmy_pack->pmesh->mesh_bcs;
+  auto phys = [](BoundaryFlag f) {
+    return (f != BoundaryFlag::periodic) && (f != BoundaryFlag::shear_periodic) &&
+           (f != BoundaryFlag::block);
+  };
+  const bool phys_ix1 = phys(mbcs[BoundaryFace::inner_x1]);
+  const bool phys_ox1 = phys(mbcs[BoundaryFace::outer_x1]);
+  const bool phys_ix2 = phys(mbcs[BoundaryFace::inner_x2]);
+  const bool phys_ox2 = phys(mbcs[BoundaryFace::outer_x2]);
+  const bool phys_ix3 = phys(mbcs[BoundaryFace::inner_x3]);
+  const bool phys_ox3 = phys(mbcs[BoundaryFace::outer_x3]);
 
 #if MPI_PARALLEL_ENABLED
   // Keep a worst-case-capacity send list, but allocate only when the local particle
@@ -122,7 +137,14 @@ TaskStatus ParticlesBoundaryValues::SetNewPrtclGID() {
     if ((abs(ix) + abs(iy) + abs(iz)) != 0) {
       bool cross_in  = shear_x1 && (x1 < meshsize.x1min);
       bool cross_out = shear_x1 && (x1 > meshsize.x1max);
-      if (cross_in || cross_out) {
+      bool escaped = (phys_ix1 && x1 < meshsize.x1min) || (phys_ox1 && x1 > meshsize.x1max)
+                  || (multi_d && ((phys_ix2 && x2 < meshsize.x2min) ||
+                                  (phys_ox2 && x2 > meshsize.x2max)))
+                  || (three_d && ((phys_ix3 && x3 < meshsize.x3min) ||
+                                  (phys_ox3 && x3 > meshsize.x3max)));
+      if (escaped) {
+        pi(PGID,p) = -1;
+      } else if (cross_in || cross_out) {
         // shear-periodic radial crossing: wrap x, shift y azimuthally by the (folded)
         // shear offset with no velocity change (velocities are shear-relative), wrap
         // y/z periodically, then route to the boundary MeshBlock at the new (y,z).
