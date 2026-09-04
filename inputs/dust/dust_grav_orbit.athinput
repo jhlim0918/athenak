@@ -1,0 +1,95 @@
+# AthenaK input file: test particles oscillating in a self-gravitating isothermal gas
+# slab (dust track, Phase 4c; pgen dust_grav_orbit).  Gas: rho0 sech^2(z/h) with
+# h = c_s/sqrt(2 pi G rho0) in hydrostatic equilibrium under its own gravity
+# (mg_bc = slab).  Particles: at rest at height z0, test particles (no drag on the gas,
+# stopping time 1e10, not in the Poisson source), all on the same orbit.  Small-amplitude
+# period 2 pi/sqrt(4 pi G rho0) = 2 pi here; the exact period at finite z0/h is computed
+# in the analysis script from the energy quadrature.  Scan <time>/dtmax for the temporal
+# order.  The multigrid needs cubic cells AND more than one MeshBlock across each periodic
+# direction (32x32x64 in a 0.5x0.5x1 box, 16^3 blocks); the FFT solver has no such limits.  History: zsum vzsum z2sum np gas_rz2 (divide sums by np).
+
+<comment>
+problem   = test particles in a self-gravitating isothermal slab
+
+<job>
+basename  = orbit
+
+<mesh>
+nghost    = 2
+nx1       = 32        # cubic CELLS (dx = 1/64 in all directions): a multigrid requirement
+x1min     = -0.25
+x1max     = 0.25
+ix1_bc    = periodic
+ox1_bc    = periodic
+nx2       = 32
+x2min     = -0.25
+x2max     = 0.25
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 64
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = diode     # no-inflow outflow: plain outflow lets boundary gas fall in
+ox3_bc    = diode
+
+<meshblock>
+nx1       = 16        # cubic MeshBlocks (multigrid requirement)
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic
+integrator = imex2+   # coupling = imex; use rk2 with coupling = pc2
+cfl_number = 0.45
+dtmax      = 1.0      # cap for the temporal-order scan
+nlim       = -1
+tlim       = 31.4159265358979   # five harmonic periods
+ndiag      = 500
+
+<hydro>
+eos         = isothermal
+reconstruct = plm
+rsolver     = hlle
+iso_sound_speed = 0.1   # h = 0.1/sqrt(0.5) = 0.1414
+
+<gravity>
+solver    = multigrid
+four_pi_G = 1.0
+mg_bc     = slab
+threshold = -1.0
+niteration = 12
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 0.0009765625 # 64 particles in the 32x32x64 box (1/1024)
+
+<dust>
+coupling      = imex
+nspecies      = 2         # species 1 = -z0 mirror orbit on ranks without +z0 blocks
+taus_1        = 1.0e10    # test particles: drag negligible
+taus_2        = 1.0e10
+back_reaction = false
+deposit       = tsc
+gravity       = true
+gravity_source = false    # test particles: the gas alone sources phi
+gravity_force  = true
+dt_cfl        = 0.5
+
+<problem>
+pgen_name = dust_grav_orbit
+rho0      = 1.0
+z0        = 0.03          # z0/h = 0.21
+floor     = 1.0e-6
+user_hist = true
+
+<output1>
+file_type  = hst
+dt         = 0.05
+data_format = %.14e

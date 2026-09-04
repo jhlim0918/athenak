@@ -204,7 +204,9 @@ void FFTGravitySolver::Solve(Driver *pdriver, int stage) {
 //! \brief copy active-zone density from all MeshBlocks into the global array
 
 void FFTGravitySolver::GatherDensity(Real four_pi_G) {
-  auto u0 = (pmy_pack->pmhd != nullptr) ? pmy_pack->pmhd->u0 : pmy_pack->phydro->u0;
+  // gas density, or gas + registered extra density (Gravity::SourceArray, dust track)
+  auto u0 = pmy_pack->pgrav->SourceArray();
+  const int isrc = pmy_pack->pgrav->SourceIndex();
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int is = indcs.is, ie = indcs.ie;
   int js = indcs.js, je = indcs.je;
@@ -215,7 +217,7 @@ void FFTGravitySolver::GatherDensity(Real four_pi_G) {
   par_for("fftg_gather", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
   KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
     rbuf(goffs(m,2)+(k-ks), goffs(m,1)+(j-js), goffs(m,0)+(i-is)) =
-        four_pi_G*u0(m,IDN,k,j,i);
+        four_pi_G*u0(m,isrc,k,j,i);
   });
 }
 

@@ -109,6 +109,9 @@ struct DustGasDragTaskIDs {
   TaskID h_bcs, h_prol, h_c2p, h_newdt, newdt, newdt2;
   // "after_stagen" tasks
   TaskID h_csend, h_crecv, p_csend, p_crecv, cleard;
+  // self-gravity (Phase 4c): dust density into the Poisson source, force on particles
+  TaskID gdep, gsend, grecv, gfold, gsendc, grecvc, gsends, grecvs;
+  TaskID gforce, gsendf, grecvf, gsendfs, grecvfs;
 };
 
 namespace dust {
@@ -189,6 +192,9 @@ class DustGasDrag {
   bool shear_fold;           // false = diagnostic: skip the fold (unsheared x1 deposits)
   bool gas_ideal;            // ideal-gas EOS: drag kicks carry an energy update
   bool drag_heating;         // ideal gas: deposit the frictional dissipation as heat
+  bool gravity;              // dust takes part in self-gravity (<gravity> block, 3D)
+  bool gravity_source;       // the PM dust density is added to the Poisson source
+  bool gravity_force;        // particles feel -grad(phi) of the total potential
   DustStoppingTimeMode stopping_time_mode;
   DustDragSolver drag_solver;
   DustCoupling coupling;
@@ -210,6 +216,8 @@ class DustGasDrag {
   DvceArray5D<Real> qdep;    // [0]=Q, [1-3]=P/predictor impulse, [4]=feedback rate
   DvceArray5D<Real> ustar;   // nvar=3: provisional drag-corrected gas velocity u*
   DvceArray5D<Real> dmom;    // nvar=4: PMBR momentum deposit [0-2] and frictional heat
+  DvceArray5D<Real> rho_dust;   // nvar=1: PM dust mass density (Poisson source, 4c)
+  DvceArray5D<Real> gforce;     // nvar=3: -grad(phi) on the mesh, ghost-filled (4c)
                              // [3] (ideal gas with drag_heating); becomes R_g after apply
   DvceArray5D<Real> cdummy;  // 1-element dummy coarse array for ustar copy exchange
   DvceArray5D<Real> solver_r;   // coupled-solver residual
@@ -221,6 +229,11 @@ class DustGasDrag {
   MeshBoundaryValuesDep *pbval_dm;  // additive exchange of PMBR ghost deposits
   MeshBoundaryValuesCC  *pbval_us;  // copy exchange to fill u* ghost zones
   ShearingBoxCC *psbox_us = nullptr;  // shear-periodic remap of u* x1 ghost zones (3D)
+  MeshBoundaryValuesDep *pbval_rd = nullptr;  // additive exchange of rho_dust deposits
+  MeshBoundaryValuesCC  *pbval_rc = nullptr;  // copy exchange filling rho_dust ghosts
+  ShearingBoxCC *psbox_rc = nullptr;          // shear remap of the rho_dust x1 ghosts
+  MeshBoundaryValuesCC  *pbval_g = nullptr;   // copy exchange filling gforce ghosts
+  ShearingBoxCC *psbox_g = nullptr;           // shear remap of the gforce x1 ghosts
   MeshBoundaryValuesCC *pbval_solver_copy = nullptr;
   MeshBoundaryValuesDep *pbval_solver_add = nullptr;
 
@@ -311,6 +324,26 @@ class DustGasDrag {
   TaskStatus NewTimeStep(Driver *pdrive, int stage);
   TaskStatus NewTimeStep2(Driver *pdrive, int stage);
   TaskStatus ComputeNewTimeStep(Driver *pdrive, int stage);
+  // ...self-gravity (Phase 4c, dust_gravity.cpp): "before_stagen" deposit + exchanges,
+  // then the driver's Poisson solve, then in "stagen" the force field + exchanges
+  bool GravityStage(Driver *pdrive, int stage) const;
+  TaskStatus DepositGravity(Driver *pdrive, int stage);    // rho_dust = sum m W / V
+  TaskStatus SendRhoDust(Driver *pdrive, int stage);
+  TaskStatus RecvRhoDust(Driver *pdrive, int stage);
+  TaskStatus FoldRhoDust(Driver *pdrive, int stage);
+  TaskStatus SendRhoDustCopy(Driver *pdrive, int stage);
+  TaskStatus RecvRhoDustCopy(Driver *pdrive, int stage);
+  TaskStatus SendRhoDustShr(Driver *pdrive, int stage);
+  TaskStatus RecvRhoDustShr(Driver *pdrive, int stage);
+  TaskStatus ComputeGravForce(Driver *pdrive, int stage);  // gforce = -grad(phi)
+  TaskStatus SendGravForce(Driver *pdrive, int stage);
+  TaskStatus RecvGravForce(Driver *pdrive, int stage);
+  TaskStatus SendGravForceShr(Driver *pdrive, int stage);
+  TaskStatus RecvGravForceShr(Driver *pdrive, int stage);
+  void DepositMass();                // the deposit kernel (rho_dust, active + ghosts)
+  void ComputeForceField();          // gforce on active cells from phi
+  void AssembleGravitySourceNow();   // synchronous deposit + exchanges (static solves)
+  void ComputeGravForceNow();        // synchronous force field + exchanges
   // ...in "after_stagen" list
   TaskStatus ClearParticleSend(Driver *pdrive, int stage);
   TaskStatus ClearParticleRecv(Driver *pdrive, int stage);

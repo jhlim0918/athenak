@@ -1,0 +1,92 @@
+# AthenaK input file: the DUST TWIN of the Tomida & Stone (2023) sec. 4.1 triple-sine
+# Poisson test (dust track, Phase 4c).  A fraction <problem>/dust_frac of the density
+# profile rho0 + A sin sin sin is carried by one dust particle per cell at the cell
+# centres (mass f*rho*V), the gas keeps the rest.  With <dust>/deposit = ngp the
+# particle-mesh dust density is the profile to round-off, so every metric the generator
+# prints (# FFT-POISSON ERRORS, # TS41-EPS) must equal the gas-only run's, and the force
+# gathered at the particles (# DUST-GRAVITY FORCE ERROR) is the centred-difference
+# truncation of the analytic acceleration.  With tsc the dust part of the source is the
+# TSC-filtered profile (a 27-point [1/8,3/4,1/8]^3 kernel).
+#   dust_frac = 0 with dust/gravity = false : the gas-only reference
+#   dust/deposit = ngp | tsc, dust_frac = 0.5 | 1, mpirun -np 4
+# Static: nlim = 0.  See validation/dust_selfgravity_validation.pdf (Phase 4c).
+
+<comment>
+problem   = dust twin of the TS23 sec. 4.1 triple-sine Poisson test
+
+<job>
+basename  = twin
+
+<mesh>
+nghost    = 2
+nx1       = 64
+x1min     = -0.5
+x1max     = 0.5
+ix1_bc    = periodic
+ox1_bc    = periodic
+nx2       = 64
+x2min     = -0.5
+x2max     = 0.5
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 64
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 32
+nx2       = 32
+nx3       = 32
+
+<time>
+evolution  = dynamic
+integrator = imex2+   # required by the dust module (coupling = imex)
+cfl_number = 0.2
+nlim       = 0        # static test: pgen-only, no evolution
+tlim       = 1.0
+ndiag      = 1
+
+<hydro>
+eos         = isothermal
+reconstruct = plm
+rsolver     = llf
+iso_sound_speed = 1.0
+
+<gravity>
+solver    = multigrid
+four_pi_G = 12.566370614359172   # 4*pi (G = 1)
+niteration = 12
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 1.0       # one particle per cell (lattice at the cell centres)
+
+<dust>
+coupling      = imex      # imex (imex2+) | pc2 (rk2)
+nspecies      = 1
+taus_1        = 1.0
+back_reaction = false
+deposit       = ngp       # ngp: exact twin; tsc: filtered source
+gravity       = true      # dust in the Poisson source and subject to -grad(phi)
+gravity_source = true
+gravity_force  = true
+dt_cfl        = 0.5
+
+<problem>
+pgen_name = fft_poisson
+profile   = sin3
+amp       = 1.0       # A
+rho0      = 2.0
+dust_frac = 1.0       # fraction of the profile carried by the particles
+dust_part = all       # all | blob (profile = modes): dust carries only the Gaussian blob
+dust_gas_floor = 1.0e-10  # gas density floor (x rho0) where the dust carries everything
+conv_niter = 0

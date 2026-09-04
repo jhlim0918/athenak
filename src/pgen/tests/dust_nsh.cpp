@@ -540,29 +540,37 @@ void DustNSHHistory(HistoryData *pdata, Mesh *pm) {
   particles::Particles *ppar = pm->pmb_pack->ppart;
   int nspec = pm->pmb_pack->pdust->nspecies;
   bool three_d = pm->three_d;
-  int nsout = std::min(nspec, NHISTORY_VARIABLES/3);
-  pdata->nhist = 3*nsout;
+  int nsout = std::min(nspec, NHISTORY_VARIABLES/5);
+  pdata->nhist = 5*nsout;
 
   auto &pr = ppar->prtcl_rdata;
   auto &pi = ppar->prtcl_idata;
   int npart = ppar->nprtcl_thispack;
   int ivazim = three_d ? IPVY : IPVZ;
   for (int s=0; s<nsout; ++s) {
-    pdata->label[3*s  ] = "vxsum_" + std::to_string(s+1);
-    pdata->label[3*s+1] = "vpsum_" + std::to_string(s+1);
-    pdata->label[3*s+2] = "np_" + std::to_string(s+1);
-    Real sx = 0.0, sp = 0.0, sn = 0.0;
+    pdata->label[5*s  ] = "vxsum_" + std::to_string(s+1);
+    pdata->label[5*s+1] = "vpsum_" + std::to_string(s+1);
+    pdata->label[5*s+2] = "np_" + std::to_string(s+1);
+    // mass-weighted sums: the species' momentum (Phase 4c momentum budgets)
+    pdata->label[5*s+3] = "pxsum_" + std::to_string(s+1);
+    pdata->label[5*s+4] = "ppsum_" + std::to_string(s+1);
+    Real sx = 0.0, sp = 0.0, sn = 0.0, smx = 0.0, smp = 0.0;
     Kokkos::parallel_reduce("nsh_hist",Kokkos::RangePolicy<>(DevExeSpace(),0,npart),
-    KOKKOS_LAMBDA(const int &p, Real &x_, Real &p_, Real &n_) {
+    KOKKOS_LAMBDA(const int &p, Real &x_, Real &p_, Real &n_, Real &mx_, Real &mp_) {
       if (pi(PSP,p) == s) {
         x_ += pr(IPVX,p);
         p_ += pr(ivazim,p);
         n_ += 1.0;
+        mx_ += pr(IPM,p)*pr(IPVX,p);
+        mp_ += pr(IPM,p)*pr(ivazim,p);
       }
-    }, Kokkos::Sum<Real>(sx), Kokkos::Sum<Real>(sp), Kokkos::Sum<Real>(sn));
-    pdata->hdata[3*s  ] = sx;
-    pdata->hdata[3*s+1] = sp;
-    pdata->hdata[3*s+2] = sn;
+    }, Kokkos::Sum<Real>(sx), Kokkos::Sum<Real>(sp), Kokkos::Sum<Real>(sn),
+       Kokkos::Sum<Real>(smx), Kokkos::Sum<Real>(smp));
+    pdata->hdata[5*s  ] = sx;
+    pdata->hdata[5*s+1] = sp;
+    pdata->hdata[5*s+2] = sn;
+    pdata->hdata[5*s+3] = smx;
+    pdata->hdata[5*s+4] = smp;
   }
   return;
 }

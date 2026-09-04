@@ -1,0 +1,99 @@
+# AthenaK input file: the DUST TWIN of the multigrid slab-open sheet test (dust track,
+# Phase 4c): inputs/tests/mg_poisson_slab.athinput with a fraction <problem>/dust_frac of
+# the density carried by one dust particle per cell (see dust_poisson_twin.athinput).
+# Exercises the dust density in the slab Dirichlet-plane gather and in the MG source
+# with a physical (non-periodic) x3 boundary.  With <dust>/deposit = ngp the
+# "# FFT-POISSON SHEET ERROR" line must equal the gas-only run's (dust_frac = 0,
+# dust/gravity = false).  Static: nlim = 0.
+
+<comment>
+problem   = Multigrid Poisson with slab-open x3 (sheet test)
+
+<job>
+basename  = twinslab
+
+<mesh>
+nghost    = 3         # Number of ghost cells
+nx1       = 64        # Number of cells in X1-direction
+x1min     = -0.5      # minimum value of X1
+x1max     = 0.5       # maximum value of X1
+ix1_bc    = periodic  # Inner-X1 boundary condition flag
+ox1_bc    = periodic  # Outer-X1 boundary condition flag
+
+nx2       = 64        # Number of cells in X2-direction
+x2min     = -0.5      # minimum value of X2
+x2max     = 0.5       # maximum value of X2
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 64        # Number of cells in X3-direction
+x3min     = -0.5      # minimum value of X3
+x3max     = 0.5       # maximum value of X3
+ix3_bc    = outflow   # Inner-X3 boundary condition flag
+ox3_bc    = outflow   # Outer-X3 boundary condition flag
+
+<meshblock>
+nx1       = 16        # cubic MeshBlocks (multigrid requirement)
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = imex2+   # required by the dust module (coupling = imex)
+cfl_number = 0.2      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = 0        # cycle limit (pgen-only test; no evolution)
+tlim       = 1.0      # time limit
+ndiag      = 1        # cycles between diagnostic output
+
+<hydro>
+eos         = isothermal  # EOS type
+reconstruct = plm         # spatial reconstruction method
+rsolver     = llf         # Riemann-solver to be used
+iso_sound_speed = 1.0
+
+<gravity>
+solver    = multigrid # fft | multigrid
+four_pi_G = 1.0
+mg_bc     = slab      # slab-open (vacuum) x3 boundaries
+vert_bc   = open      # used by the FFT solver when compare_fft=true
+threshold = 0.0       # 0.0 = automatic convergence control (stagnation exit)
+niteration = 20       # used when threshold = -1 (fixed V-cycle count)
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 1.0       # one particle per cell (lattice at the cell centres)
+
+<dust>
+coupling      = imex      # imex (imex2+) | pc2 (rk2)
+nspecies      = 1
+taus_1        = 1.0
+back_reaction = false
+deposit       = ngp       # ngp: exact twin; tsc: filtered source
+gravity       = true
+gravity_source = true
+gravity_force  = true
+dt_cfl        = 0.5
+
+<problem>
+dust_frac = 1.0           # fraction of the profile carried by the particles
+dust_gas_floor = 1.0e-10  # gas density floor (x rho0) where the dust carries everything
+pgen_name = fft_poisson   # problem generator name
+profile   = sheet         # uniform rho0 + one horizontal mode on layer sheet_k
+rho0      = 1.0
+amp       = 0.5
+time0     = 0.0
+n1        = 2
+n2        = 1
+n3        = 1
+sheet_k   = 32            # z-layer index of the mode (default nz/2)
+slab_h    = 0.05          # scale height for profile=slab (ln cosh comparison)
+blob_amp  = 1.0           # blob amplitude for profile=modes
+compare_fft = false
+

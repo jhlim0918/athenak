@@ -532,7 +532,8 @@ class MultigridDriver {
   MGSlabFFTPlans *slab_plans_ = nullptr;
   void AllocateSlabPlanes();             // pyramid + offset tables; PrepareForAMR-safe
   void CheckSlabBlockLevels();           // fatal unless x3-boundary blocks at root level
-  void ComputeSlabPlanes(const DvceArray5D<Real> &u0, Real four_pi_G, Real qomt);
+  void ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int ivar, Real four_pi_G,
+                         Real qomt);
   void FreeSlabPlanes();                 // release plans + pyramid (dtor)
 
   // Source masking (zero source outside mask_radius_)

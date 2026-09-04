@@ -227,8 +227,8 @@ void SlabRemapRow(TeamMember_t member, int scr_lvl, int ny, Real dx2, Real yshea
 //! \brief compute the Dirichlet face-value planes on both x3 faces from the current
 //! density and populate the whole plane pyramid (see file header for the method)
 
-void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, Real four_pi_G,
-                                        Real qomt) {
+void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int ivar,
+                                        Real four_pi_G, Real qomt) {
   auto &mindcs = pmy_mesh_->mesh_indcs;
   const int nx = mindcs.nx1, ny = mindcs.nx2, nz = mindcs.nx3;
   auto &msize = pmy_mesh_->mesh_size;
@@ -260,7 +260,7 @@ void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, Real four_p
       int gj = (goffs(m,1) + (j-js)) >> lev;
       int gk = (goffs(m,2) + (k-ks)) >> lev;
       Real w = 1.0/static_cast<Real>(1 << (3*lev));
-      Kokkos::atomic_add(&dens(gk,gj,gi), w*fpg*u0(m,IDN,k,j,i));
+      Kokkos::atomic_add(&dens(gk,gj,gi), w*fpg*u0(m,ivar,k,j,i));
     });
   }
 #if MPI_PARALLEL_ENABLED
@@ -423,8 +423,8 @@ void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, Real four_p
 
 #else  // !FFT_ENABLED
 
-void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, Real four_pi_G,
-                                        Real qomt) {
+void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int ivar,
+                                        Real four_pi_G, Real qomt) {
   std::cout << "### FATAL ERROR in MultigridDriver::ComputeSlabPlanes" << std::endl
             << "Slab-open x3 boundaries require a build with -D Athena_ENABLE_FFT=ON"
             << std::endl;

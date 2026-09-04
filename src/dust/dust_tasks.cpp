@@ -46,6 +46,17 @@ void DustGasDrag::AssembleDustGasDragTasks(
   // assemble "before_stagen" task list
   id.h_irecv = tl["before_stagen"]->AddTask(&Hydro::InitRecv, phyd, none);
   id.irecvd  = tl["before_stagen"]->AddTask(&DustGasDrag::InitRecvDep, this, none);
+  // self-gravity source (Phase 4c): the dust density must be complete, with its ghost
+  // layer, before the driver calls the Poisson solve between the two lists
+  auto &tlb = tl["before_stagen"];
+  id.gdep    = tlb->AddTask(&DustGasDrag::DepositGravity, this, id.irecvd);
+  id.gsend   = tlb->AddTask(&DustGasDrag::SendRhoDust, this, id.gdep);
+  id.grecv   = tlb->AddTask(&DustGasDrag::RecvRhoDust, this, id.gsend);
+  id.gfold   = tlb->AddTask(&DustGasDrag::FoldRhoDust, this, id.grecv);
+  id.gsendc  = tlb->AddTask(&DustGasDrag::SendRhoDustCopy, this, id.gfold);
+  id.grecvc  = tlb->AddTask(&DustGasDrag::RecvRhoDustCopy, this, id.gsendc);
+  id.gsends  = tlb->AddTask(&DustGasDrag::SendRhoDustShr, this, id.grecvc);
+  id.grecvs  = tlb->AddTask(&DustGasDrag::RecvRhoDustShr, this, id.gsends);
 
   // assemble "stagen" task list
   // register copies (replaces Hydro::CopyCons), then the explicit gas chain
@@ -59,7 +70,15 @@ void DustGasDrag::AssembleDustGasDragTasks(
   id.gatwid    = tl["stagen"]->AddTask(&DustGasDrag::AddDragHistoryGas, this,
                                        id.h_srctrms);
   // explicit particle push + per-stage migration; overlaps with the gas chain
-  id.push      = tl["stagen"]->AddTask(&DustGasDrag::ExplicitPush, this, id.first2);
+  // self-gravity force (Phase 4c): -grad(phi) of the solve just completed, ghost-filled
+  // for the gather in ExplicitPush
+  id.gforce    = tl["stagen"]->AddTask(&DustGasDrag::ComputeGravForce, this, none);
+  id.gsendf    = tl["stagen"]->AddTask(&DustGasDrag::SendGravForce, this, id.gforce);
+  id.grecvf    = tl["stagen"]->AddTask(&DustGasDrag::RecvGravForce, this, id.gsendf);
+  id.gsendfs   = tl["stagen"]->AddTask(&DustGasDrag::SendGravForceShr, this, id.grecvf);
+  id.grecvfs   = tl["stagen"]->AddTask(&DustGasDrag::RecvGravForceShr, this, id.gsendfs);
+  TaskID push_ready = (id.first2 | id.grecvfs);
+  id.push      = tl["stagen"]->AddTask(&DustGasDrag::ExplicitPush, this, push_ready);
   id.p_newgid  = tl["stagen"]->AddTask(&DustGasDrag::UpdateParticleGIDs, this, id.push);
   id.p_cnt     = tl["stagen"]->AddTask(&DustGasDrag::CountParticleSends, this,
                                         id.p_newgid);
@@ -223,6 +242,25 @@ TaskStatus DustGasDrag::InitRecvDep(Driver *pdrive, int stage) {
     // also computes the shear offset used by the u* remap this stage; the O(dt)
     // offset between stages is second-order consistent
     tstat = psbox_us->InitRecv(pmy_pack->pmesh->time);
+    if (tstat != TaskStatus::complete) return tstat;
+  }
+  if (gravity && gravity_source) {
+    tstat = pbval_rd->InitRecv(1);
+    if (tstat != TaskStatus::complete) return tstat;
+    tstat = pbval_rc->InitRecv(1);
+    if (tstat != TaskStatus::complete) return tstat;
+    if (psbox_rc != nullptr) {
+      tstat = psbox_rc->InitRecv(pmy_pack->pmesh->time);
+      if (tstat != TaskStatus::complete) return tstat;
+    }
+  }
+  if (gravity && gravity_force) {
+    tstat = pbval_g->InitRecv(3);
+    if (tstat != TaskStatus::complete) return tstat;
+    if (psbox_g != nullptr) {
+      tstat = psbox_g->InitRecv(pmy_pack->pmesh->time);
+      if (tstat != TaskStatus::complete) return tstat;
+    }
   }
   return tstat;
 }
@@ -363,6 +401,34 @@ TaskStatus DustGasDrag::ClearDep(Driver *pdrive, int stage) {
     tstat = psbox_us->ClearSend();
     if (tstat != TaskStatus::complete) return tstat;
     tstat = psbox_us->ClearRecv();
+    if (tstat != TaskStatus::complete) return tstat;
+  }
+  if (gravity && gravity_source) {
+    tstat = pbval_rd->ClearSend();
+    if (tstat != TaskStatus::complete) return tstat;
+    tstat = pbval_rd->ClearRecv();
+    if (tstat != TaskStatus::complete) return tstat;
+    tstat = pbval_rc->ClearSend();
+    if (tstat != TaskStatus::complete) return tstat;
+    tstat = pbval_rc->ClearRecv();
+    if (tstat != TaskStatus::complete) return tstat;
+    if (psbox_rc != nullptr) {
+      tstat = psbox_rc->ClearSend();
+      if (tstat != TaskStatus::complete) return tstat;
+      tstat = psbox_rc->ClearRecv();
+      if (tstat != TaskStatus::complete) return tstat;
+    }
+  }
+  if (gravity && gravity_force) {
+    tstat = pbval_g->ClearSend();
+    if (tstat != TaskStatus::complete) return tstat;
+    tstat = pbval_g->ClearRecv();
+    if (tstat != TaskStatus::complete) return tstat;
+    if (psbox_g != nullptr) {
+      tstat = psbox_g->ClearSend();
+      if (tstat != TaskStatus::complete) return tstat;
+      tstat = psbox_g->ClearRecv();
+    }
   }
   return tstat;
 }

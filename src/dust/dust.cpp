@@ -21,6 +21,7 @@
 #include "eos/eos.hpp"
 #include "hydro/hydro.hpp"
 #include "particles/particles.hpp"
+#include "gravity/gravity.hpp"
 #include "shearing_box/shearing_box.hpp"
 #include "dust.hpp"
 
@@ -98,12 +99,29 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   bool shear_x1 = (pmy_pack->pmesh->mesh_bcs[BoundaryFace::inner_x1] ==
                    BoundaryFlag::shear_periodic);
   if (!(pmy_pack->pmesh->strictly_periodic)) {
-    // only exception: 3D shearing box with shear-periodic x1 (and periodic x2/x3)
-    if (!(shear_x1 && pmy_pack->pmesh->three_d)) {
+    // exceptions: 3D shearing box with shear-periodic x1 (and periodic x2), and, in 3D,
+    // physical (non-periodic) x3 faces such as the outflow faces of a self-gravitating
+    // slab (Phase 4c).  Ghost deposits landing beyond a physical face have no receiver
+    // and are discarded; a particle that leaves the mesh through one is not routed
+    // (the deposit halo check aborts on it) -- the vertical policy is a later phase.
+    auto &bcs = pmy_pack->pmesh->mesh_bcs;
+    bool x1_ok = (bcs[BoundaryFace::inner_x1] == BoundaryFlag::periodic) || shear_x1;
+    bool x2_ok = (bcs[BoundaryFace::inner_x2] == BoundaryFlag::periodic) &&
+                 (bcs[BoundaryFace::outer_x2] == BoundaryFlag::periodic);
+    bool x3_periodic = (bcs[BoundaryFace::inner_x3] == BoundaryFlag::periodic) &&
+                       (bcs[BoundaryFace::outer_x3] == BoundaryFlag::periodic);
+    if (!(pmy_pack->pmesh->three_d && x1_ok && x2_ok)) {
       std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
                 << std::endl << "Dust drag requires periodic boundaries in all "
-                << "directions (or shear-periodic x1 in 3D)" << std::endl;
+                << "directions, or in 3D: periodic/shear-periodic x1, periodic x2 and "
+                << "any x3" << std::endl;
       std::exit(EXIT_FAILURE);
+    }
+    if (!x3_periodic && global_variable::my_rank == 0) {
+      std::cout << "# WARNING (dust): physical x3 boundaries: ghost deposits beyond the "
+                << "x3 faces are discarded and particles must not reach them (a "
+                << "particle leaving through an x3 face aborts at the next deposit)"
+                << std::endl;
     }
   }
   // y-remap order of the shear-periodic fold of ghost deposits across the radial faces
@@ -370,6 +388,39 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
               << "the exact-transpose shear deposit is not implemented" << std::endl;
     std::exit(EXIT_FAILURE);
   }
+  // (2c) self-gravity coupling (Phase 4c): the dust mass density joins the Poisson
+  // source and the particles feel the gradient of the total potential
+  {
+    bool have_grav = (pmy_pack->pgrav != nullptr);
+    gravity = pin->GetOrAddBoolean("dust","gravity",have_grav);
+    gravity_source = pin->GetOrAddBoolean("dust","gravity_source",true);
+    gravity_force  = pin->GetOrAddBoolean("dust","gravity_force",true);
+    if (gravity && !have_grav) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "<dust>/gravity = true requires a <gravity> block"
+                << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    if (gravity && !(pmy_pack->pmesh->three_d)) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "Dust self-gravity requires a 3D mesh" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    if (gravity && !gravity_source && !gravity_force) {gravity = false;}
+    if (global_variable::my_rank == 0) {
+      if (gravity) {
+        std::cout << "# dust: self-gravity coupling on: "
+                  << (gravity_source ? "dust density in the Poisson source" :
+                                       "dust NOT in the Poisson source")
+                  << ", particles " << (gravity_force ? "feel" : "do not feel")
+                  << " -grad(phi)" << std::endl;
+      } else if (have_grav) {
+        std::cout << "# dust: <gravity> present but <dust>/gravity = false: dust is "
+                  << "neither a source of nor subject to self-gravity"
+                  << std::endl;
+      }
+    }
+  }
   if (is_shearing_box && pmy_pack->pmesh->three_d &&
       global_variable::my_rank == 0) {
     if (dt_transport == DustDtTransport::relative) {
@@ -389,6 +440,10 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   int ncells1 = indcs.nx1 + 2*(indcs.ng);
   int ncells2 = (indcs.nx2 > 1)? (indcs.nx2 + 2*(indcs.ng)) : 1;
   int ncells3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*(indcs.ng)) : 1;
+  if (gravity) {
+    Kokkos::realloc(rho_dust, nmb, 1, ncells3, ncells2, ncells1);
+    Kokkos::realloc(gforce,   nmb, 3, ncells3, ncells2, ncells1);
+  }
   Kokkos::realloc(qdep,  nmb, 5, ncells3, ncells2, ncells1);
   Kokkos::realloc(ustar, nmb, 3, ncells3, ncells2, ncells1);
   Kokkos::realloc(dmom,  nmb, 4, ncells3, ncells2, ncells1);
@@ -419,6 +474,21 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   // shear-periodic remap of the u* radial ghost zones (3D shearing box only)
   if (shear_x1 && pmy_pack->pmesh->three_d) {
     psbox_us = new ShearingBoxCC(pmy_pack, pin, 3);
+  }
+  // self-gravity: the dust density (additive exchange + copy exchange of its ghost
+  // layer, both with the shear remap) and the force field (copy exchange)
+  if (gravity && gravity_source) {
+    pbval_rd = new MeshBoundaryValuesDep(pmy_pack, pin);
+    pbval_rd->InitializeBuffers(1);
+    pbval_rc = new MeshBoundaryValuesCC(pmy_pack, pin, false);
+    pbval_rc->InitializeBuffers(1);
+    if (shear_x1) {psbox_rc = new ShearingBoxCC(pmy_pack, pin, 1);}
+    pmy_pack->pgrav->RegisterExtraDensity(rho_dust);
+  }
+  if (gravity && gravity_force) {
+    pbval_g = new MeshBoundaryValuesCC(pmy_pack, pin, false);
+    pbval_g->InitializeBuffers(3);
+    if (shear_x1) {psbox_g = new ShearingBoxCC(pmy_pack, pin, 3);}
   }
 }
 
@@ -485,6 +555,11 @@ DustGasDrag::~DustGasDrag() {
   if (pbval_solver_copy != nullptr) delete pbval_solver_copy;
   if (pbval_solver_add != nullptr) delete pbval_solver_add;
   if (psbox_us != nullptr) {delete psbox_us;}
+  if (pbval_rd != nullptr) {delete pbval_rd;}
+  if (pbval_rc != nullptr) {delete pbval_rc;}
+  if (psbox_rc != nullptr) {delete psbox_rc;}
+  if (pbval_g  != nullptr) {delete pbval_g;}
+  if (psbox_g  != nullptr) {delete psbox_g;}
 }
 
 //----------------------------------------------------------------------------------------

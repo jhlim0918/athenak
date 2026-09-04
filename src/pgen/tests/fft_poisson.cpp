@@ -42,6 +42,8 @@
 #include "gravity/fft_gravity.hpp"
 #endif
 #include "pgen/pgen.hpp"
+#include "particles/particles.hpp"
+#include "dust/dust.hpp"
 
 //----------------------------------------------------------------------------------------
 //! \fn ProblemGenerator::FFTPoisson()
@@ -177,6 +179,91 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
     if (is_ideal) u0(m,IEN,k,j,i) = p0/gm1;
   });
 
+  // ---- dust twin (dust track, Phase 4c) ----------------------------------------------
+  // With <problem> dust_frac = f > 0, a fraction f of the density profile is carried by
+  // a lattice of dust particles (one per cell, at the cell centres, mass f*rho*V) and the
+  // gas keeps (1-f)*rho.  With <dust> deposit = ngp the particle-mesh density is the
+  // profile to round-off and every metric below must match the gas-only run; with tsc
+  // the dust part is the TSC-filtered profile.  The dust module assembles its density
+  // synchronously here (the solve is called outside the time loop).
+  Real dust_frac = pin->GetOrAddReal("problem", "dust_frac", 0.0);
+  bool dust_twin = (dust_frac > 0.0);
+  // dust_part = all (default): the dust carries the fraction f of the whole profile;
+  // blob (profile = modes only): the dust carries f times the Gaussian blob and the gas
+  // everything else, so that the two components have DIFFERENT shapes and exert a
+  // nonzero net force on each other -- the momentum-antisymmetry check below
+  std::string dust_part = pin->GetOrAddString("problem", "dust_part", "all");
+  bool dust_blob = (dust_part == "blob");
+  if (dust_blob && (slab || sin3 || shwave || sheet)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+              << std::endl << "<problem>/dust_part = blob needs profile = modes"
+              << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  if (dust_twin) {
+    if (pmbp->pdust == nullptr || pmbp->ppart == nullptr || !(pmbp->pdust->gravity)) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "<problem>/dust_frac > 0 requires <particles> and <dust> "
+                << "blocks with <dust>/gravity = true" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    particles::Particles *ppar = pmbp->ppart;
+    int npart = ppar->nprtcl_thispack;
+    int lnx1 = indcs.nx1, lnx2 = indcs.nx2, lnx3 = indcs.nx3;
+    int ncells = lnx1*lnx2*lnx3;
+    if (npart != nmb*ncells) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "the dust twin requires <particles>/ppc = 1 (one "
+                << "particle per cell)" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    auto &pr = ppar->prtcl_rdata;
+    auto &pi = ppar->prtcl_idata;
+    auto gids = pmbp->gids;
+    auto &taus_ = pmbp->pdust->taus;
+    Real f = dust_frac;
+    par_for("fftp_dust", DevExeSpace(), 0, (npart-1), KOKKOS_LAMBDA(const int p) {
+      int m = p/ncells;
+      int c = p - m*ncells;
+      int i = c % lnx1;
+      int j = (c/lnx1) % lnx2;
+      int k = c/(lnx1*lnx2);
+      pr(IPX,p) = CellCenterX(i, lnx1, size.d_view(m).x1min, size.d_view(m).x1max);
+      pr(IPY,p) = CellCenterX(j, lnx2, size.d_view(m).x2min, size.d_view(m).x2max);
+      pr(IPZ,p) = CellCenterX(k, lnx3, size.d_view(m).x3min, size.d_view(m).x3max);
+      pi(PGID,p) = gids + m;
+      pi(PSP,p) = 0;
+      pr(IPTS,p) = taus_.d_view(0);
+      Real vol = size.d_view(m).dx1*size.d_view(m).dx2*size.d_view(m).dx3;
+      if (dust_blob) {
+        Real r2 = SQR(pr(IPX,p) - xc) + SQR(pr(IPY,p) - yc) + SQR(pr(IPZ,p) - zc);
+        pr(IPM,p) = f*blob_amp*rho0*exp(-r2/SQR(blob_w))*vol;
+      } else {
+        pr(IPM,p) = f*u0(m,IDN,ks+k,js+j,is+i)*vol;
+      }
+      pr(IPVX,p) = 0.0; pr(IPVY,p) = 0.0; pr(IPVZ,p) = 0.0;
+      pr(IPRX,p) = 0.0; pr(IPRY,p) = 0.0; pr(IPRZ,p) = 0.0;
+    });
+    Real rfloor = pin->GetOrAddReal("problem", "dust_gas_floor", 1.0e-10)*rho0;
+    par_for("fftp_gas_scale", DevExeSpace(), 0, nmb-1, ks, ke, js, je, is, ie,
+    KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+      if (dust_blob) {
+        Real x = CellCenterX(i-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
+        Real y = CellCenterX(j-js, indcs.nx2, size.d_view(m).x2min, size.d_view(m).x2max);
+        Real z = CellCenterX(k-ks, indcs.nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+        Real r2 = SQR(x - xc) + SQR(y - yc) + SQR(z - zc);
+        Real blob = f*blob_amp*rho0*exp(-r2/SQR(blob_w));
+        u0(m,IDN,k,j,i) = fmax(u0(m,IDN,k,j,i) - blob, rfloor);
+      } else {
+        u0(m,IDN,k,j,i) = fmax((1.0 - f)*u0(m,IDN,k,j,i), rfloor);
+      }
+    });
+    pmbp->pdust->AssembleGravitySourceNow();
+  }
+  // the Poisson source as the solver sees it (gas, or gas + dust once registered)
+  auto src = pmbp->pgrav->SourceArray();
+  const int isrc = pmbp->pgrav->SourceIndex();
+
   // ---- per-iteration convergence study (Tomida & Stone 2023, sec. 4.1) ---------------
   // With <problem> conv_niter = N and solver=multigrid, run N successive V-cycle
   // iterations (in MGI mode each Solve() warm-starts from pgrav->phi, so N calls with
@@ -209,7 +296,7 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       int j = js + ((idx/ni) % nj);
       int k = ks + ((idx/(ni*nj)) % nk);
       int m = idx/(ni*nj*nk);
-      lsum += u0(m,IDN,k,j,i);
+      lsum += src(m,isrc,k,j,i);
     }, Kokkos::Sum<Real>(rsum));
 #if MPI_PARALLEL_ENABLED
     MPI_Allreduce(MPI_IN_PLACE, &rsum, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
@@ -299,7 +386,7 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
         Real lap = (phi(m,0,k,j,i+1) - 2.0*phi(m,0,k,j,i) + phi(m,0,k,j,i-1))/SQR(dx1)
                  + (phi(m,0,k,j+1,i) - 2.0*phi(m,0,k,j,i) + phi(m,0,k,j-1,i))/SQR(dx2)
                  + (phi(m,0,k+1,j,i) - 2.0*phi(m,0,k,j,i) + phi(m,0,k-1,j,i))/SQR(dx3);
-        lsq += SQR(four_pi_G*(u0(m,IDN,k,j,i) - rmean) - lap);
+        lsq += SQR(four_pi_G*(src(m,isrc,k,j,i) - rmean) - lap);
       }, Kokkos::Sum<Real>(ssq));
 #if MPI_PARALLEL_ENABLED
       MPI_Allreduce(MPI_IN_PLACE, &ssq, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
@@ -360,7 +447,7 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
     int j = js + ((idx/ni) % nj);
     int k = ks + ((idx/(ni*nj)) % nk);
     int m = idx/(ni*nj*nk);
-    lsum += u0(m,IDN,k,j,i);
+    lsum += src(m,isrc,k,j,i);
   }, Kokkos::Sum<Real>(rho_sum));
 #if MPI_PARALLEL_ENABLED
   MPI_Allreduce(MPI_IN_PLACE, &rho_sum, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
@@ -387,7 +474,7 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
     Real lap = (phi(m,0,k,j,i+1) - 2.0*phi(m,0,k,j,i) + phi(m,0,k,j,i-1))/SQR(dx1)
              + (phi(m,0,k,j+1,i) - 2.0*phi(m,0,k,j,i) + phi(m,0,k,j-1,i))/SQR(dx2)
              + (phi(m,0,k+1,j,i) - 2.0*phi(m,0,k,j,i) + phi(m,0,k-1,j,i))/SQR(dx3);
-    Real rhs = four_pi_G*(u0(m,IDN,k,j,i) - rho_mean);
+    Real rhs = four_pi_G*(src(m,isrc,k,j,i) - rho_mean);
     Real res = fabs(lap - rhs);
     lmax = fmax(lmax, res);
     lsq += SQR(res);
@@ -483,6 +570,135 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
 #endif
     if (global_variable::my_rank == 0) {
       std::cout << "# TS41-EPS: rms_eps= " << std::sqrt(ssq/ncells_tot) << std::endl;
+    }
+  }
+
+  // ---- dust force check (Phase 4c): gather -grad(phi) at the particles ---------------
+  // For profile = sin3 the analytic acceleration is known; the error of the gathered
+  // force is the centred-difference truncation (NGP at cell centres: exactly the cell
+  // value) plus the deposit/gather filtering (TSC).
+  if (dust_twin && pmbp->pdust->gravity_force) {
+    pmbp->pdust->ComputeGravForceNow();
+    // Net force on the gas, sum_cells rho_g g V with the same centred gradient the gas
+    // source term uses, and on the dust, sum_p m_p g(x_p) with the PM gather: their sum
+    // is the momentum error of the particle-mesh coupling (zero in the continuum).
+    {
+      particles::Particles *ppar = pmbp->ppart;
+      int npart = ppar->nprtcl_thispack;
+      auto &pr = ppar->prtcl_rdata;
+      auto &pi = ppar->prtcl_idata;
+      auto gids = pmbp->gids;
+      auto &gforce = pmbp->pdust->gforce;
+      int scheme = static_cast<int>(pmbp->pdust->deposit);
+      Real fg[3] = {0.0, 0.0, 0.0}, fd[3] = {0.0, 0.0, 0.0}, fdabs = 0.0;
+      Kokkos::parallel_reduce("fftp_fgas",
+          Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+      KOKKOS_LAMBDA(int idx, Real &fx, Real &fy, Real &fz) {
+        int i = is + (idx % ni);
+        int j = js + ((idx/ni) % nj);
+        int k = ks + ((idx/(ni*nj)) % nk);
+        int m = idx/(ni*nj*nk);
+        Real vol = size.d_view(m).dx1*size.d_view(m).dx2*size.d_view(m).dx3;
+        Real rv = u0(m,IDN,k,j,i)*vol;
+        fx += rv*gforce(m,0,k,j,i);
+        fy += rv*gforce(m,1,k,j,i);
+        fz += rv*gforce(m,2,k,j,i);
+      }, Kokkos::Sum<Real>(fg[0]), Kokkos::Sum<Real>(fg[1]), Kokkos::Sum<Real>(fg[2]));
+      Kokkos::parallel_reduce("fftp_fdust",
+          Kokkos::RangePolicy<>(DevExeSpace(), 0, npart),
+      KOKKOS_LAMBDA(const int p, Real &fx, Real &fy, Real &fz, Real &fa) {
+        int m = pi(PGID,p) - gids;
+        int ip, jp, kp;
+        Real wx[3], wy[3], wz[3];
+        dust::PMWeights(pr(IPX,p), size.d_view(m).x1min, size.d_view(m).x1max, indcs.nx1,
+                        is, scheme, ip, wx);
+        dust::PMWeights(pr(IPY,p), size.d_view(m).x2min, size.d_view(m).x2max, indcs.nx2,
+                        js, scheme, jp, wy);
+        dust::PMWeights(pr(IPZ,p), size.d_view(m).x3min, size.d_view(m).x3max, indcs.nx3,
+                        ks, scheme, kp, wz);
+        Real gx = 0.0, gy = 0.0, gz = 0.0;
+        for (int c=0; c<3; ++c) {
+          for (int b=0; b<3; ++b) {
+            Real wcb = wz[c]*wy[b];
+            if (wcb == 0.0) continue;
+            for (int a=0; a<3; ++a) {
+              Real w = wcb*wx[a];
+              gx += w*gforce(m,0,kp+c-1,jp+b-1,ip+a-1);
+              gy += w*gforce(m,1,kp+c-1,jp+b-1,ip+a-1);
+              gz += w*gforce(m,2,kp+c-1,jp+b-1,ip+a-1);
+            }
+          }
+        }
+        Real mp = pr(IPM,p);
+        fx += mp*gx; fy += mp*gy; fz += mp*gz;
+        fa += mp*sqrt(gx*gx + gy*gy + gz*gz);
+      }, Kokkos::Sum<Real>(fd[0]), Kokkos::Sum<Real>(fd[1]), Kokkos::Sum<Real>(fd[2]),
+         Kokkos::Sum<Real>(fdabs));
+#if MPI_PARALLEL_ENABLED
+      MPI_Allreduce(MPI_IN_PLACE, fg, 3, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+      MPI_Allreduce(MPI_IN_PLACE, fd, 3, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+      MPI_Allreduce(MPI_IN_PLACE, &fdabs, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+      Real fsum = std::sqrt(SQR(fg[0]+fd[0]) + SQR(fg[1]+fd[1]) + SQR(fg[2]+fd[2]));
+      Real fdmag = std::sqrt(SQR(fd[0]) + SQR(fd[1]) + SQR(fd[2]));
+      if (global_variable::my_rank == 0) {
+        std::cout << "# DUST-GRAVITY MOMENTUM: F_dust= (" << fd[0] << " " << fd[1] << " "
+                  << fd[2] << ") F_gas= (" << fg[0] << " " << fg[1] << " " << fg[2]
+                  << ") |F_gas+F_dust|/|F_dust|= " << fsum/fdmag
+                  << " |F_gas+F_dust|/sum_p m|g|= " << fsum/fdabs << std::endl;
+      }
+    }
+    if (sin3) {
+      particles::Particles *ppar = pmbp->ppart;
+      int npart = ppar->nprtcl_thispack;
+      auto &pr = ppar->prtcl_rdata;
+      auto &pi = ppar->prtcl_idata;
+      auto gids = pmbp->gids;
+      auto &gforce = pmbp->pdust->gforce;
+      int scheme = static_cast<int>(pmbp->pdust->deposit);
+      Real phi_amp3 = -four_pi_G*amp/(SQR(2.0*M_PI/lx) + SQR(2.0*M_PI/ly)
+                                      + SQR(2.0*M_PI/lz));
+      Real kx = 2.0*M_PI/lx, ky = 2.0*M_PI/ly, kz = 2.0*M_PI/lz;
+      Real gmax = fabs(phi_amp3)*fmax(kx, fmax(ky, kz));
+      Real emax = 0.0;
+      Kokkos::parallel_reduce("fftp_dust_force",
+          Kokkos::RangePolicy<>(DevExeSpace(), 0, npart),
+      KOKKOS_LAMBDA(const int p, Real &lmax) {
+        int m = pi(PGID,p) - gids;
+        int ip, jp, kp;
+        Real wx[3], wy[3], wz[3];
+        Real x = pr(IPX,p), y = pr(IPY,p), z = pr(IPZ,p);
+        dust::PMWeights(x, size.d_view(m).x1min, size.d_view(m).x1max, indcs.nx1, is,
+                        scheme, ip, wx);
+        dust::PMWeights(y, size.d_view(m).x2min, size.d_view(m).x2max, indcs.nx2, js,
+                        scheme, jp, wy);
+        dust::PMWeights(z, size.d_view(m).x3min, size.d_view(m).x3max, indcs.nx3, ks,
+                        scheme, kp, wz);
+        Real gx = 0.0, gy = 0.0, gz = 0.0;
+        for (int c=0; c<3; ++c) {
+          for (int b=0; b<3; ++b) {
+            Real wcb = wz[c]*wy[b];
+            if (wcb == 0.0) continue;
+            for (int a=0; a<3; ++a) {
+              Real w = wcb*wx[a];
+              gx += w*gforce(m,0,kp+c-1,jp+b-1,ip+a-1);
+              gy += w*gforce(m,1,kp+c-1,jp+b-1,ip+a-1);
+              gz += w*gforce(m,2,kp+c-1,jp+b-1,ip+a-1);
+            }
+          }
+        }
+        Real ax = -phi_amp3*kx*cos(kx*x)*sin(ky*y)*sin(kz*z);
+        Real ay = -phi_amp3*ky*sin(kx*x)*cos(ky*y)*sin(kz*z);
+        Real az = -phi_amp3*kz*sin(kx*x)*sin(ky*y)*cos(kz*z);
+        Real e = fmax(fabs(gx - ax), fmax(fabs(gy - ay), fabs(gz - az)));
+        lmax = fmax(lmax, e);
+      }, Kokkos::Max<Real>(emax));
+#if MPI_PARALLEL_ENABLED
+      MPI_Allreduce(MPI_IN_PLACE, &emax, 1, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+#endif
+      if (global_variable::my_rank == 0) {
+        std::cout << "# DUST-GRAVITY FORCE ERROR: max_rel= " << emax/gmax << std::endl;
+      }
     }
   }
 

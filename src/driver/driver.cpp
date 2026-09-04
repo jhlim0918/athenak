@@ -27,6 +27,7 @@
 #include "radiation/radiation.hpp"
 #include "driver.hpp"
 #include "gravity/gravity.hpp"
+#include "dust/dust.hpp"
 #include "utils/utils.hpp"
 
 #if MPI_PARALLEL_ENABLED
@@ -480,6 +481,10 @@ void Driver::Initialize(Mesh *pmesh, ParameterInput *pin, Outputs *pout, bool re
     if (pz4c != nullptr) {
       (void) pmesh->pmb_pack->pz4c->NewTimeStep(this, nexp_stages);
     }
+    // dust particles: the transport limit from the initial positions and velocities
+    if (pmesh->pmb_pack->pdust != nullptr) {
+      (void) pmesh->pmb_pack->pdust->ComputeNewTimeStep(this, nexp_stages);
+    }
 
     pmesh->NewTimeStep(tlim);
     RefreshSTSCycleState(pmesh);
@@ -562,9 +567,14 @@ void Driver::Execute(Mesh *pmesh, ParameterInput *pin, Outputs *pout, bool wdfla
       for (int stage=1; stage<=(nexp_stages); ++stage) {
         ExecuteTaskList(pmesh, "before_stagen", stage);
         // solve gravity at each RK stage so the potential is consistent
-        // with the current density (required for 2nd-order accuracy)
-        if (pmesh->pmb_pack->pgrav != nullptr)
-            {pmesh->pmb_pack->pgrav->Solve(this, stage);}
+        // with the current density (required for 2nd-order accuracy).  With the dust
+        // module present, skip the stages on which it deposits nothing (the dormant
+        // imex2+ assembly stage): its density would be stale, and nothing uses phi there.
+        if (pmesh->pmb_pack->pgrav != nullptr) {
+          bool dust_dormant = (pmesh->pmb_pack->pdust != nullptr) &&
+                              !(pmesh->pmb_pack->pdust->ActiveStage(this, stage));
+          if (!dust_dormant) {pmesh->pmb_pack->pgrav->Solve(this, stage);}
+        }
         ExecuteTaskList(pmesh, "stagen", stage);
         ExecuteTaskList(pmesh, "after_stagen", stage);
       }

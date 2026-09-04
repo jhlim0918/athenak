@@ -121,6 +121,8 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
       auto &ustar_ = ustar;
       auto &dmom_ = dmom;
       const bool heat = drag_heating;
+      const bool gf = gravity && gravity_force;
+      auto &gforce_ = gforce;
       par_for("dust_pc2_advance",DevExeSpace(),0,(npart-1),
       KOKKOS_LAMBDA(const int p) {
         int m = pi(PGID,p) - gids;
@@ -148,6 +150,7 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
         }
 
         Real ugx = 0.0, ugy = 0.0, ugz = 0.0;
+        Real gx = 0.0, gy = 0.0, gz = 0.0;   // self-gravity at the midpoint
         int clo = three_d ? 0 : 1, chi = three_d ? 2 : 1;
         for (int c=clo; c<=chi; ++c) {
           for (int b=0; b<3; ++b) {
@@ -159,18 +162,24 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
               ugx += w*ustar_(m,0,kk,jj,ii);
               ugy += w*ustar_(m,1,kk,jj,ii);
               ugz += w*ustar_(m,2,kk,jj,ii);
+              if (gf) {
+                gx += w*gforce_(m,0,kk,jj,ii);
+                gy += w*gforce_(m,1,kk,jj,ii);
+                gz += w*gforce_(m,2,kk,jj,ii);
+              }
             }
           }
         }
 
         // Solve the implicit-midpoint velocity equations.  The shearing-box Coriolis
-        // pair is a 2x2 linear system; vertical gravity uses the predicted midpoint.
+        // pair is a 2x2 linear system; vertical gravity uses the predicted midpoint,
+        // and self-gravity enters explicitly at the midpoint too.
         Real h = 0.5*dt;
         Real lambda = h/pr(IPTS,p);
         Real aa = 1.0 + lambda;
-        Real rx = vx0 + lambda*ugx;
-        Real ry = vy0 + lambda*ugy;
-        Real rz = vz0 + lambda*ugz;
+        Real rx = vx0 + lambda*ugx + h*gx;
+        Real ry = vy0 + lambda*ugy + h*gy;
+        Real rz = vz0 + lambda*ugz + h*gz;
         Real vxh, vyh, vzh;
         if (is_sbox && three_d) {
           Real cxy = 2.0*h*omega0_;
@@ -315,6 +324,15 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
   bool is_strat = is_stratified;
   Real qshear_ = qshear;
   Real omega0_ = omega0;
+  // self-gravity: gather -grad(phi) at the pre-stage position with the deposit kernel
+  const bool gf = gravity && gravity_force;
+  auto &gforce_ = gforce;
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, js = indcs.js, ks = indcs.ks;
+  int nx1 = indcs.nx1, nx2 = indcs.nx2, nx3 = indcs.nx3;
+  auto &mbsize = pmy_pack->pmb->mb_size;
+  auto gids = pmy_pack->gids;
+  int scheme = static_cast<int>(deposit);
 
   par_for("dust_push",DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     Real x_old  = pr(IPX,p);
@@ -336,6 +354,36 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
         // 2D r-z: azimuthal = z (matching gas IM3), no vertical gravity
         fx = 2.0*omega0_*vz_old;
         fz = -(2.0-qshear_)*omega0_*vx_old;
+      }
+    }
+    if (gf) {
+      int m = pi(PGID,p) - gids;
+      int ip, jp, kp;
+      Real wx[3], wy[3], wz[3];
+      PMWeights(x_old, mbsize.d_view(m).x1min, mbsize.d_view(m).x1max, nx1, is,
+                scheme, ip, wx);
+      PMWeights(y_old, mbsize.d_view(m).x2min, mbsize.d_view(m).x2max, nx2, js,
+                scheme, jp, wy);
+      if (three_d) {
+        PMWeights(z_old, mbsize.d_view(m).x3min, mbsize.d_view(m).x3max, nx3, ks,
+                  scheme, kp, wz);
+      } else {
+        kp = ks;
+        wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0;
+      }
+      int clo = three_d ? 0 : 1, chi = three_d ? 2 : 1;
+      for (int c=clo; c<=chi; ++c) {
+        for (int b=0; b<3; ++b) {
+          Real wcb = wz[c]*wy[b];
+          if (wcb == 0.0) continue;
+          for (int a=0; a<3; ++a) {
+            Real w = wcb*wx[a];
+            int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
+            fx += w*gforce_(m,0,kk,jj,ii);
+            fy += w*gforce_(m,1,kk,jj,ii);
+            fz += w*gforce_(m,2,kk,jj,ii);
+          }
+        }
       }
     }
 

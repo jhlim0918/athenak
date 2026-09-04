@@ -7,6 +7,7 @@
 //! \brief implementation of Particles class constructor and assorted other functions
 
 #include <iostream>
+#include <limits>
 #include <string>
 #include <algorithm>
 
@@ -39,6 +40,9 @@ Particles::Particles(MeshBlockPack *ppack, ParameterInput *pin) :
   Real r_npart = ppc*static_cast<Real>((pmy_pack->nmb_thispack)*ncells);
   // then cast to integer
   nprtcl_thispack = static_cast<int>(r_npart);
+  // no transport limit until a pusher computes one (Mesh::NewTimeStep reads dtnew before
+  // the first cycle, and its 2x growth rule would lock an uninitialized zero forever)
+  dtnew = std::numeric_limits<float>::max();
 
   // select particle type
   {

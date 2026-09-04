@@ -35,9 +35,21 @@ class Gravity {
   // dispatches to the solver selected by <gravity> solver = multigrid (default) | fft
   void Solve(Driver *pdriver, int stage);
 
+  // An additional mass density (e.g. the particle-mesh dust density, dust track Phase
+  // 4c) added to the gas density in every solver's source read.  The registering module
+  // owns the array and keeps its active cells and one ghost layer valid before each
+  // solve.  Solvers read SourceArray()(m,SourceIndex(),k,j,i): the gas conserved array
+  // at IDN when nothing is registered, else the sum formed in Solve().
+  void RegisterExtraDensity(const DvceArray5D<Real> &rho);
+  const DvceArray5D<Real>& SourceArray() const;
+  int SourceIndex() const;
+  bool has_extra_density = false;
+
   MeshBlockPack* pmy_pack;
   DvceArray5D<Real> phi, coarse_phi;
   DvceArray5D<Real> def;
+  DvceArray5D<Real> rho_extra;   // registered additional density (view alias)
+  DvceArray5D<Real> rho_total;   // gas + extra, formed in Solve() when registered
   Real four_pi_G;
   bool output_defect;
   bool fill_ghost;

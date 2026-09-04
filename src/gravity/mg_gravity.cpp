@@ -341,16 +341,18 @@ void MGGravityDriver::Solve(Driver *pdriver, int stage, Real dt) {
   // convention: Laplacian(u) = 6u - neighbors = -dx²∇²u).  To obtain the
   // standard Poisson equation ∇²φ = 4πGρ we must load the source with a
   // negative sign so that -∇²φ = -4πGρ, i.e. ∇²φ = +4πGρ.
-  auto &u0 = (pmy_pack_->pmhd != nullptr) ? pmy_pack_->pmhd->u0
-                                            : pmy_pack_->phydro->u0;
+  // the source density: the gas conserved array, or gas + registered extra density
+  // (Gravity::SourceArray, dust track)
+  auto &u0 = pmy_pack_->pgrav->SourceArray();
+  const int isrc = pmy_pack_->pgrav->SourceIndex();
 
   // Slab-open x3: recompute the Dirichlet face planes from the current density,
   // rolled by the same frozen shear phase as the x1 ghost fills (mg_qomt_)
   if (mg_slab_enabled_) {
-    ComputeSlabPlanes(u0, four_pi_G_, mg_qomt_);
+    ComputeSlabPlanes(u0, isrc, four_pi_G_, mg_qomt_);
   }
 
-  mglevels_->LoadSource(u0, IDN, indcs_.ng, -four_pi_G_);
+  mglevels_->LoadSource(u0, isrc, indcs_.ng, -four_pi_G_);
 
   // Apply source mask (zero source outside mask_radius_)
   mglevels_->ApplyMask();
