@@ -65,6 +65,7 @@ class ProblemGenerator {
   void DustDamping(ParameterInput *pin, const bool restart);
   void DustNSH(ParameterInput *pin, const bool restart);
   void DustGravOrbit(ParameterInput *pin, const bool restart);
+  void GravitoTurbInsertDust(ParameterInput *pin);   // gravito_turb, restart_insert
   void DustyWave(ParameterInput *pin, const bool restart);
   void DustDepositShear(ParameterInput *pin, const bool restart);
   void LinearWave(ParameterInput *pin, const bool restart);

@@ -41,6 +41,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -134,7 +135,16 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   gt_var.orbital_advection = pmbp->phydro->psbox_u->orbital_advection;
   user_hist_func = GravitoTurbHistory;
 
-  if (restart) return;
+  // two-stage dust runs (Baehr, Zhu & Yang 2022 style): a gas-only run to saturation,
+  // then a restart with <particles>/<dust> blocks and restart_insert = true, which
+  // inserts the particles into the saturated state here
+  if (restart) {
+    if (pmbp->ppart != nullptr &&
+        pin->GetOrAddBoolean("particles", "restart_insert", false)) {
+      GravitoTurbInsertDust(pin);
+    }
+    return;
+  }
 
   // problem parameters (defaults = SC14 fiducial constants)
   Real rho0 = pin->GetOrAddReal("problem", "rho0", 1.0);
@@ -262,6 +272,158 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   });
 
   return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void ProblemGenerator::GravitoTurbInsertDust()
+//! \brief Inserts the dust particles into a restarted (saturated) gravito-turbulent gas
+//! state: <particles>/ppc particles per cell in total, spread uniformly in (x,y) and as
+//! a Gaussian of width <problem>/dust_hz in z (Baehr et al. 2022: the initial gas
+//! width), at rest in the shearing frame, one species with the <dust> stopping time,
+//! equal masses summing to <problem>/dust_Z times the gas mass in the box.  Per-block
+//! counts follow the Gaussian mass in each block's z range, so the placement is
+//! deterministic and decomposition-independent (hash of the global block id and the
+//! particle's index in the block, <problem>/dust_seed).
+
+void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin) {
+  MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
+  if (pmbp->pdust == nullptr) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+              << "restart_insert needs a <dust> block" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  if (pmy_mesh_->nprtcl_total != 0) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+              << "restart_insert on a restart file that already carries particles; set "
+              << "particles/restart_insert = false to continue such a run" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  particles::Particles *ppar = pmbp->ppart;
+  auto &msize = pmy_mesh_->mesh_size;
+  auto &indcs = pmy_mesh_->mb_indcs;
+  int is = indcs.is, ie = indcs.ie, js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nmb = pmbp->nmb_thispack;
+  auto &size = pmbp->pmb->mb_size;
+
+  Real ppc = pin->GetOrAddReal("particles", "ppc", 1.0);
+  Real dust_Z = pin->GetOrAddReal("problem", "dust_Z", 0.01);
+  Real cs0 = pin->GetOrAddReal("problem", "cs0", 2.12625);
+  Real dust_hz = pin->GetOrAddReal("problem", "dust_hz", cs0/gt_var.omega0);
+  int64_t dust_seed = pin->GetOrAddInteger("problem", "dust_seed", 7);
+  Real ncells_tot = static_cast<Real>(pmy_mesh_->mesh_indcs.nx1)
+                   *static_cast<Real>(pmy_mesh_->mesh_indcs.nx2)
+                   *static_cast<Real>(pmy_mesh_->mesh_indcs.nx3);
+  Real n_target = ppc*ncells_tot;
+
+  // gas mass in the box (active cells)
+  auto &u0 = pmbp->phydro->u0;
+  int ni = ie-is+1, nj = je-js+1, nk = ke-ks+1;
+  int nmkji = nmb*nk*nj*ni;
+  Real mgas = 0.0;
+  Kokkos::parallel_reduce("gt_dust_mgas", Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+  KOKKOS_LAMBDA(int idx, Real &lsum) {
+    int i = is + (idx % ni);
+    int j = js + ((idx/ni) % nj);
+    int k = ks + ((idx/(ni*nj)) % nk);
+    int m = idx/(ni*nj*nk);
+    Real vol = size.d_view(m).dx1*size.d_view(m).dx2*size.d_view(m).dx3;
+    lsum += u0(m,IDN,k,j,i)*vol;
+  }, Kokkos::Sum<Real>(mgas));
+#if MPI_PARALLEL_ENABLED
+  MPI_Allreduce(MPI_IN_PLACE, &mgas, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+
+  // per-block counts: (x,y) area fraction times the Gaussian mass in the block's z range
+  Real area_box = gt_var.lx*gt_var.ly;
+  Real s2 = dust_hz*std::sqrt(2.0);
+  Real znorm = 0.5*(std::erf(msize.x3max/s2) - std::erf(msize.x3min/s2));
+  std::vector<int> off(nmb + 1, 0);
+  for (int m=0; m<nmb; ++m) {
+    Real area = (size.h_view(m).x1max - size.h_view(m).x1min)
+               *(size.h_view(m).x2max - size.h_view(m).x2min);
+    Real zfrac = 0.5*(std::erf(size.h_view(m).x3max/s2)
+                      - std::erf(size.h_view(m).x3min/s2))/znorm;
+    int n_m = static_cast<int>(std::floor(n_target*(area/area_box)*zfrac + 0.5));
+    off[m+1] = off[m] + n_m;
+  }
+  int npart = off[nmb];
+  int64_t ntot = npart;
+#if MPI_PARALLEL_ENABLED
+  MPI_Allreduce(MPI_IN_PLACE, &ntot, 1, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
+#endif
+  Real mp = dust_Z*mgas/static_cast<Real>(std::max<int64_t>(ntot, 1));
+
+  ppar->nprtcl_thispack = npart;
+  Kokkos::realloc(ppar->prtcl_rdata, ppar->nrdata, std::max(npart, 1));
+  Kokkos::realloc(ppar->prtcl_idata, ppar->nidata, std::max(npart, 1));
+  DvceArray1D<int> d_off("gt_dust_off", nmb + 1);
+  {
+    auto h_off = Kokkos::create_mirror_view(d_off);
+    for (int m=0; m<=nmb; ++m) h_off(m) = off[m];
+    Kokkos::deep_copy(d_off, h_off);
+  }
+  auto &pr = ppar->prtcl_rdata;
+  auto &pi = ppar->prtcl_idata;
+  auto gids = pmbp->gids;
+  auto &taus_ = pmbp->pdust->taus;
+  Real hz = dust_hz;
+  int64_t seed = dust_seed;
+  par_for("gt_dust_insert", DevExeSpace(), 0, (npart-1), KOKKOS_LAMBDA(const int p) {
+    // owning block by binary search over the offsets
+    int lo = 0, hi = nmb - 1;
+    while (lo < hi) {
+      int mid = (lo + hi + 1)/2;
+      if (d_off(mid) <= p) {lo = mid;} else {hi = mid - 1;}
+    }
+    int m = lo;
+    int64_t q = p - d_off(m);
+    int64_t gid = gids + m;
+    Real ux = 0.5*(HashNoise(gid, q, 0, 0, seed) + 1.0);
+    Real uy = 0.5*(HashNoise(gid, q, 1, 0, seed) + 1.0);
+    Real x1min = size.d_view(m).x1min, x1max = size.d_view(m).x1max;
+    Real x2min = size.d_view(m).x2min, x2max = size.d_view(m).x2max;
+    Real x3min = size.d_view(m).x3min, x3max = size.d_view(m).x3max;
+    pr(IPX,p) = x1min + ux*(x1max - x1min);
+    pr(IPY,p) = x2min + uy*(x2max - x2min);
+    // Gaussian z truncated to the block: Box-Muller from hashed uniforms, rejection
+    Real z = 0.5*(x3min + x3max);
+    for (int trial=0; trial<64; ++trial) {
+      Real u1 = 0.5*(HashNoise(gid, q, 2, trial, seed) + 1.0);
+      Real u2 = 0.5*(HashNoise(gid, q, 3, trial, seed) + 1.0);
+      u1 = fmax(u1, 1.0e-300);
+      Real zt = hz*sqrt(-2.0*log(u1))*cos(6.283185307179586*u2);
+      if (zt >= x3min && zt < x3max) {z = zt; break;}
+    }
+    pr(IPZ,p) = z;
+    pi(PGID,p) = static_cast<int>(gid);
+    pi(PSP,p) = 0;
+    pr(IPTS,p) = taus_.d_view(0);
+    pr(IPM,p) = mp;
+    pr(IPVX,p) = 0.0; pr(IPVY,p) = 0.0; pr(IPVZ,p) = 0.0;
+    pr(IPRX,p) = 0.0; pr(IPRY,p) = 0.0; pr(IPRZ,p) = 0.0;
+  });
+
+  // Mesh bookkeeping and tags
+  Mesh *pm = pmy_mesh_;
+  pm->nprtcl_thisrank = npart;
+#if MPI_PARALLEL_ENABLED
+  MPI_Allgather(&(pm->nprtcl_thisrank), 1, MPI_INT, pm->nprtcl_eachrank, 1, MPI_INT,
+                MPI_COMM_WORLD);
+#else
+  pm->nprtcl_eachrank[0] = npart;
+#endif
+  pm->nprtcl_total = 0;
+  for (int r=0; r<global_variable::nranks; ++r) {
+    pm->nprtcl_total += pm->nprtcl_eachrank[r];
+  }
+  ppar->CreateParticleTags(pin);
+  if (global_variable::my_rank == 0) {
+    std::cout << "gravito_turb: inserted " << pm->nprtcl_total << " dust particles "
+              << "(target " << static_cast<int64_t>(n_target) << "), mass " << mp
+              << " each = Z " << dust_Z << " x gas mass " << mgas << ", Gaussian h_z = "
+              << dust_hz << ", stopping time " << taus_.h_view(0) << std::endl;
+  }
 }
 
 //----------------------------------------------------------------------------------------

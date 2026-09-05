@@ -209,8 +209,19 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
 
   // particles (dust track, Phase 4d): per-rank counts and array widths (step 3 of the
   // writer); the Mesh counts and the array sizes are reset to the file's
+  // <particles>/restart_insert = true: the restart file carries NO particles (a gas-only
+  // stage); the problem generator inserts them (dust track, the two-stage science runs)
   particles::Particles *ppart = pm->pmb_pack->ppart;
-  if (ppart != nullptr) {
+  bool prtcl_insert = pin->GetOrAddBoolean("particles", "restart_insert", false);
+  if (ppart != nullptr && prtcl_insert) {
+    for (int r=0; r<global_variable::nranks; ++r) {pm->nprtcl_eachrank[r] = 0;}
+    pm->nprtcl_thisrank = 0;
+    pm->nprtcl_total = 0;
+    ppart->nprtcl_thispack = 0;
+    Kokkos::realloc(ppart->prtcl_rdata, ppart->nrdata, 1);
+    Kokkos::realloc(ppart->prtcl_idata, ppart->nidata, 1);
+  }
+  if (ppart != nullptr && !prtcl_insert) {
     int nranks = global_variable::nranks;
     std::vector<int> pcnt(nranks + 2, 0);
     if (global_variable::my_rank == 0 || single_file_per_rank) {
@@ -670,7 +681,7 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   }
 
   // particle arrays (step 5 of the writer), after all MeshBlock data
-  if (ppart != nullptr) {
+  if (ppart != nullptr && !prtcl_insert) {
     int npart = ppart->nprtcl_thispack;
     int nrd = ppart->nrdata, nid = ppart->nidata;
     IOWrapperSizeT pcount = static_cast<IOWrapperSizeT>(nrd + nid);

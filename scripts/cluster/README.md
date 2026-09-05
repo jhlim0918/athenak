@@ -171,3 +171,35 @@ bulk).  `module load shift` first if `shiftc` is missing; monitor with
 - CLI overrides only work for parameters that appear in the input file.
 - The hi-res twin (512 x 512 x 96, SC14 ".hi") is the same input with
   mesh/nx1=512 mesh/nx2=512 mesh/nx3=96 — 8x the cells, ~256 ranks recommended.
+
+## 3. The Baehr, Zhu & Yang (2022) dust runs (dust track, two stages)
+
+BR_L_10 / noBR_L_10 of their Table 1 (512^2 x 256, Lx = Ly = (80/pi) H_g,
+Lz = (40/pi) H_g, beta = 10, Q0 = 1.02, St = 1, Z = 0.01, 1.5e6 particles), in SC14
+code units with H_g = cs0/Omega = 2.16878.  The gas is run alone to the saturated
+state first; the particles are inserted into a restart dump.
+
+```bash
+# stage 1: gas only to t = 50 (dumps every 10)
+cd $SCRATCH/gtb/stage1 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_baehr_stage1.slurm
+# stage 2: restart from the t = 50 dump, insert the particles, run to t = 100
+cd $SCRATCH/gtb/BR_L_10   && BR=true  sbatch $HOME/athenak-multigrid/scripts/cluster/gt_baehr_stage2.slurm
+cd $SCRATCH/gtb/noBR_L_10 && BR=false sbatch $HOME/athenak-multigrid/scripts/cluster/gt_baehr_stage2.slurm
+```
+
+Stage 2 reads the add-on input `inputs/shearing_box/gravito_turb_baehr_dust.athinput`
+on top of the dump's own input (`-r dump -i addon`: blocks merge, the add-on wins):
+`<particles>/restart_insert = true` makes the reader skip the (absent) particle
+section and the generator insert the layer (Gaussian in z of width H_g, uniform in
+x,y, at rest, equal masses summing to Z x gas mass; deterministic and
+decomposition-independent).  Dust physics: PC2 coupling under rk2, TSC, self-gravity
+on, diode faces remove escaping particles (`DUST_ESCAPE_SUMMARY`, history column
+`d_escaped`).  To continue a stage-2 run from its own dump (which carries the
+particles) use `-r <dump> particles/restart_insert=false` without `-i`.  Outputs:
+`hst` (SC14 columns + `d_mass d_px d_py d_pz d_ke d_wrey d_escaped`), `bin` of
+`hydro_w`, `grav_phi` and `dust_dpm` (the module's own dust density), `pvtk`.
+
+Cost: memory-bandwidth-bound, ~32 s*node per cycle at 67M cells (~2 s/cycle on 16
+nodes).  The step is the floor halo's free fall, dt ~ 3e-3 (the SC14 box: 4e-3), so
+~17,000 cycles per 50/Omega: ~10 h per stage on 16 nodes, stage 2 ~1.3x.  The scripts
+ask for 16 nodes (2048 ranks, 8 blocks each); 8 nodes would take ~20 h per stage.

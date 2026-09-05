@@ -71,6 +71,10 @@ SourceTerms::SourceTerms(std::string block, MeshBlockPack *pp, ParameterInput *p
   // Omega defaults to the shearing box orbital frequency when that block exists.
   if (beta_cooling) {
     bcool_beta = pin->GetReal(block, "bcool_beta");
+    // optional irradiation floor: cool toward the temperature cs^2 = bcool_cs2_floor
+    // (Baehr, Zhu & Yang 2022: the background irradiation that keeps the gas from
+    // dropping below its initial Q0); 0 = cool toward zero (SC14)
+    bcool_cs2_floor = pin->GetOrAddReal(block, "bcool_cs2_floor", 0.0);
     if (pin->DoesBlockExist("shearing_box")) {
       bcool_omega0 = pin->GetOrAddReal(block, "bcool_omega0",
                                        pin->GetReal("shearing_box", "omega0"));
@@ -247,11 +251,15 @@ void SourceTerms::BetaCooling(const DvceArray5D<Real> &w0, const EOS_Data &eos_d
   int ks = indcs.ks, ke = indcs.ke;
   int nmb1 = pmy_pack->nmb_thispack - 1;
   Real oob = bcool_omega0/bcool_beta;
+  // internal energy density at the floor temperature: P_floor = rho*cs2_floor/gamma
+  Real efac = bcool_cs2_floor/(eos_data.gamma*(eos_data.gamma - 1.0));
 
   par_for("beta_cool", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
   KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-    // w0(IEN) is the internal energy density
-    u0(m,IEN,k,j,i) -= bdt*oob*w0(m,IEN,k,j,i);
+    // w0(IEN) is the internal energy density; cool only the excess over the floor
+    Real efloor = efac*w0(m,IDN,k,j,i);
+    Real de = w0(m,IEN,k,j,i) - efloor;
+    if (de > 0.0) {u0(m,IEN,k,j,i) -= bdt*oob*de;}
   });
 
   return;

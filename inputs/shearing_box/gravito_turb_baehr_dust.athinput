@@ -1,0 +1,53 @@
+# AthenaK input file: STAGE 2 of the Baehr, Zhu & Yang (2022) dust runs -- the ADD-ON read
+# on top of the stage-1 restart file:
+#     athena -r <stage1>/rst/gtb.00005.rst -i inputs/shearing_box/gravito_turb_baehr_dust.athinput \
+#            dust/back_reaction={true,false}            # BR_L_10 / noBR_L_10
+# Blocks here are merged over the restart file's input (parameters present in both are
+# taken from this file).  <particles>/restart_insert = true tells the reader the dump
+# carries no particles and the generator to insert them: Table 1 of the paper, 1.5e6
+# particles (ppc = 1.5e6/512^2/256), St = 1 (stopping time 1/Omega), Z = 0.01 of the gas
+# mass, Gaussian in z with the gas width H_g = cs0/Omega, at rest in the shearing frame.
+# To CONTINUE a stage-2 run from one of its own dumps, add particles/restart_insert=false
+# on the command line (those dumps carry the particles).  Coupling: PC2 under the rk2
+# integrator of the gas run; cfl 0.3 (3D checkerboard limit); diode faces remove
+# particles that leave (DUST_ESCAPE_SUMMARY, history column d_escaped).
+
+<time>
+tlim       = 100.0    # 50 more orbits^-1 of dust evolution
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 0.02235   # 1.5e6 particles in the 512^2 x 256 box
+restart_insert = true     # the stage-1 dump has no particles: insert them
+
+<dust>
+coupling      = pc2       # predictor-corrector under rk2
+nspecies      = 1
+taus_1        = 1.0       # St = 1 (Table 1, "L")
+back_reaction = true      # BR_L_10; false for noBR_L_10 (override on the command line)
+deposit       = tsc
+gravity       = true      # dust in the Poisson source and subject to -grad(phi)
+gravity_source = true
+gravity_force  = true
+dt_cfl        = 0.5
+dt_transport  = relative
+dt_block_safety = 0.5
+shear_fold    = true
+shear_remap   = plm
+stopping_time_mode = species_fixed
+
+<problem>
+dust_Z    = 0.01          # dust-to-gas mass ratio Z0 = M_d/M_g
+dust_hz   = 2.16878       # Gaussian half-width of the inserted layer = H_g
+dust_seed = 7
+
+<output5>
+file_type = bin
+variable  = dust_dpm
+dt        = 5.0
+
+<output6>
+file_type = pvtk
+variable  = prtcl_all
+dt        = 5.0

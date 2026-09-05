@@ -54,6 +54,7 @@ class SourceTerms {
 
   // data for constant-beta cooling (Gammie 2001): rho*L = U/t_cool, t_cool = beta/Omega
   Real bcool_beta;      // beta = Omega*t_cool
+  Real bcool_cs2_floor = 0.0;  // irradiation floor of beta cooling (cs^2 units)
   Real bcool_omega0;    // orbital frequency Omega
 
   // data for optically thin thermal cooling (Shi & Chiang 2014 eq. 8):

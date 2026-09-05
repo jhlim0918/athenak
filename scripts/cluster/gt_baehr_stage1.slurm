@@ -1,0 +1,42 @@
+#!/bin/bash
+#SBATCH -J gtb_stage1
+#SBATCH -p gg                    # Vista Grace-Grace CPU nodes (2 x 72 cores, no GPU)
+#SBATCH -N 16                    # nodes: 512^2x256 = 16384 blocks of 16^3
+#SBATCH -n 2048                  # 8 MeshBlocks per rank (memory-bandwidth-bound:
+                                 #   the same decomposition as the NAS run.  128 of the
+                                 #   144 cores per node: the code is memory-bandwidth-
+                                 #   bound, so the idle cores cost nothing (README sec. 2)
+#SBATCH -t 48:00:00              # gg queue maximum
+#SBATCH -A AST25015              # allocation to charge
+#SBATCH -o slurm.%j.out          # stdout+stderr (no -e => merged, like PBS -j oe)
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=jay.lim1@unlv.edu
+
+# STAGE 1 of the Baehr+22 dust runs: the gas alone to t = 50 (saturation).  Twin of
+# gt_sc14_full.slurm at 21x the cells.  Cost: the code is memory-bandwidth-bound at
+# ~12 s*node per cycle for 25M cells (README sec. 2), so 67M cells ~ 32 s*node/cycle, 2 s
+# per cycle on 16 nodes.  The step is set by the free-falling floor halo, dt ~ 3e-3 (the
+# SC14 box runs at 4e-3): ~17,000 cycles to t = 50 -> ~10 h on 16 nodes.  Stage 2
+# (particles, PC2 coupling, dust exchanges) runs ~1.3x slower per cycle.  Submit from the RUN directory in
+# $SCRATCH -- outputs land there and Slurm starts the job in the submit directory:
+#     cd $SCRATCH/gt_sc14_stndrd/b10 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_sc14_full.slurm
+# To continue a run after a walltime kill, replace the -i line with:
+#     -r $(ls rst/*.rst | tail -1) \
+# Per-run parameters go on the ibrun line, e.g.  hydro_srcterms/bcool_beta=5
+# Hi-res twin: INPUT=.../gravito_turb_sc14_hi.athinput with -N 6 -n 768 (README sec. 2).
+
+ATHENAK=$HOME/athenak-multigrid
+INPUT=$ATHENAK/inputs/shearing_box/gravito_turb_baehr.athinput
+
+# the modules the binary was built with -- mirror `module list` from the cmake shell
+module load gcc openmpi fftw3
+
+cd $SLURM_SUBMIT_DIR
+{
+  echo "# job $SLURM_JOB_ID on $SLURM_JOB_NUM_NODES node(s): $SLURM_JOB_NODELIST, $SLURM_NTASKS ranks"
+  echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD)"
+} >> run.log
+
+# ibrun is TACC's launcher: rank count and placement come from -N/-n above.
+# athena's -t guard stops 15 min before the Slurm limit so the final rst is written.
+ibrun $ATHENAK/build-cluster/src/athena -i $INPUT -d ./ -t 47:45:00 >> run.log 2>&1
