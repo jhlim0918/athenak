@@ -38,7 +38,8 @@
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}\\
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6},
-        \code{9a96f9f3}, \code{d39858ac}, \code{a9279dc8}}
+        \code{9a96f9f3}, \code{d39858ac}, \code{a9279dc8},
+        \code{386d5968}}
 \date{September 3--5, 2026}
 
 \begin{document}
@@ -224,6 +225,8 @@ Commit & Phase & Content \\
 \code{a9279dc8} & science & the Baehr et al.\ two-stage setup: \code{bcool\_cs2\_floor},
               \code{restart\_insert}, \fn{GravitoTurbInsertDust}, the two inputs, the
               Vista scripts \\
+\code{386d5968} & science & the particle history output (\code{phst}) and
+              \file{scripts/analysis/baehr\_table1.py} \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -1177,6 +1180,29 @@ the three momenta (shear-relative velocities, as the particles carry them), the 
 energy, the Reynolds stress $\sum m v_x v_y$ and the cumulative escaped mass; the
 gravitational-stress columns already measure the total potential. The NSH history's
 mass-weighted momenta are from Phase 4c.
+
+\paragraph{The particle history (\code{file\_type = phst}).} The counterpart of the
+Athena-C dust code's \file{dump\_particle\_history.c}
+(\file{outputs/particle\_history.cpp}): one line per output time in
+\file{<basename>.phst} with the global scalars --- particle count, mass, the three
+momenta and kinetic energies (shear-relative velocities, as the particles carry them),
+the escaped mass, and the maximum of the module's own particle-mesh dust density
+(\fn{AssembleDustDensityNow}, the Roche-density diagnostic) --- followed, per species,
+by the count, the mean position and velocity, and the number-weighted standard
+deviations $\sigma_x, \sigma_y, \sigma_z, \sigma_{v_x}, \sigma_{v_y}, \sigma_{v_z}$
+(Athena-C's ``var'' columns, $\sqrt{\sum(q-\langle q\rangle)^2/(n-1)}$; $\sigma_z$ is the
+dust scale height $H_d$). Means and deviations are two exact passes with MPI sums, so
+the file is rank-independent to round-off. The stage-2 input writes it every $0.25$.
+
+\paragraph{The Table-1 script.} \file{scripts/analysis/baehr\_table1.py} forms their
+Table 1 from a run directory: $Q$, $\alpha_R$ and $\alpha_G$ from the gravito-turbulence
+history (their eqs.\ 21--22 from the volume-weighted \code{wrey}, \code{wgrv},
+\code{rho\_cs2} columns), $H_d$ and the velocity dispersions from the \code{phst},
+the diffusion coefficients from tag-matched displacements between \code{pvtk}
+snapshots ($x$ wrapped over $L_x$, $z$ unwrapped; $y$ is sheared and unused),
+$Sc = (\alpha_R+\alpha_G)/\delta_{d,z}$, and, with \code{--roche}, a census of the
+cells above the Roche density $3.5\,\Omega^2/G$ in the \code{dust\_dpm} dumps
+(connected components and their masses).
 
 \subsection{The science setup: Baehr, Zhu \& Yang (2022) in two stages}
 \label{sec:science}
