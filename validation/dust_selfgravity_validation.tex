@@ -249,6 +249,10 @@ athena -i nsh_gasonly.athinput mesh/nx3=32 meshblock/nx3=32 problem/gas_vpert=1e
 athena -i inputs/dust/dust_grav_orbit.athinput problem/vz0=0.3 dust/gravity_force=false time/tlim=3
 athena -i nsh_rst.athinput; athena -r nsh3d.00001.rst          # structured NSH, dumps every 3.0
 athena -i <input with an <output> block variable = dust_dpm>
+# the two-stage science setup (mini box): gas alone, then restart + insert
+athena -i inputs/shearing_box/gravito_turb_baehr.athinput <mesh overrides> hydro_srcterms/beta_cooling=false \
+       time/tlim=0.5 output4/dt=0.25
+athena -r s1/rst/gtb.00001.rst -i inputs/shearing_box/gravito_turb_baehr_dust.athinput dust/back_reaction={true,false}
 \end{lstlisting}
 
 \noindent Phase 4c (\S\ref{sec:phase4c}):
@@ -1179,6 +1183,24 @@ filter ($3.6\times10^{-3}$ maximum), with the mean exactly $2$ in both. On the 3
 shear-periodic NSH lattice ($\epsilon = 1$) the output is $1.000000000000000$ in every
 cell, serially and on 4 ranks --- the additive exchange and the fold are in it.
 
+\subsection{The two-stage science setup, exercised}
+
+The Baehr et al.\ runs (implementation \S9.5) are a gas-only stage to saturation and
+a restart that inserts the particles. The mechanics were exercised in a $32^3$ box
+($L = 6.9$, $\Delta = 0.216 = 0.1\,H_g$, cooling off so the layer merely relaxes):
+stage 1 to $t = 0.5$ with a dump at $0.25$; stage 2 restarted from that dump with the
+add-on input, back-reaction on and off, serially and on 4 ranks. The generator reports
+736 particles inserted (target 732 from \code{ppc}), each of mass $Z M_{\rm gas}/N$, and
+the history's \code{d\_mass} column reads $0.970981 = 0.01\times97.0981$ from the first
+row; the dust momenta and kinetic energy evolve, \code{d\_escaped} stays zero (the layer
+is well inside the faces), the \code{dust\_dpm} and \code{pvtk} outputs are written, the
+serial and 4-rank BR histories agree to $0.0$, and BR and noBR diverge as they must.
+The irradiation floor of the cooling (\code{bcool\_cs2\_floor}) was checked for
+side effects on the same box: with the floor, without it, and with cooling off, the 40
+first steps have identical $\Delta t$ histories. For the Vista estimate the archived
+SC14 box shows the step settling at $4\times10^{-3}$ (the free-falling floor halo),
+which is what the job scripts assume.
+
 \begin{figure}[htbp]
 \centering
 \includegraphics[width=\linewidth]{figures/dust4d_checkerboard.png}
@@ -1230,6 +1252,8 @@ the hydro scheme's 3D checkerboard mode at \code{cfl} $\gtrsim 0.4$, not the dus
 coupling's, so the Courant rule is understood; particles leave through the vertical
 faces with their mass accounted; restart chains carry the particles exactly; and the
 module's own dust density and the SC14 dust history columns are available. The dust
-track is ready for the science box.
+track is ready for the science box, and the two-stage Baehr et al.\ setup --- the
+gas to saturation, then the particles inserted on restart, back-reaction a switch ---
+is built, exercised in a small box, and scripted for Vista.
 
 \end{document}

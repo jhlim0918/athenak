@@ -38,7 +38,7 @@
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}\\
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6},
-        \code{9a96f9f3}, \code{d39858ac}}
+        \code{9a96f9f3}, \code{d39858ac}, \code{a9279dc8}}
 \date{September 3--5, 2026}
 
 \begin{document}
@@ -221,6 +221,9 @@ Commit & Phase & Content \\
               \fn{RemoveEscaped} tasks; particle restart (writer step 3/5, reader);
               \code{dust\_dpm} output; SC14 history dust columns; the seeded gas-only
               diagnostic (\code{<problem>/gas\_vpert}); \code{dust\_grav\_orbit} \code{vz0} \\
+\code{a9279dc8} & science & the Baehr et al.\ two-stage setup: \code{bcool\_cs2\_floor},
+              \code{restart\_insert}, \fn{GravitoTurbInsertDust}, the two inputs, the
+              Vista scripts \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -1174,6 +1177,35 @@ the three momenta (shear-relative velocities, as the particles carry them), the 
 energy, the Reynolds stress $\sum m v_x v_y$ and the cumulative escaped mass; the
 gravitational-stress columns already measure the total potential. The NSH history's
 mass-weighted momenta are from Phase 4c.
+
+\subsection{The science setup: Baehr, Zhu \& Yang (2022) in two stages}
+\label{sec:science}
+
+The target runs (their Table 1, models \code{BR\_L\_10} and \code{noBR\_L\_10}) are
+built in SC14 code units with $H_g = c_{s0}/\Omega = 1.02\times2.12625 = 2.16878$ ---
+$Q_0 = 1.02$ through $c_{s0}$ --- so their $512^2\times256$ box with $L_x = L_y =
+(80/\pi)H_g$, $L_z = (40/\pi)H_g$ is $55.23^2\times27.61$ at $\Delta = 0.1079$ (cubic,
+$0.05\,H_g$). Two additions serve it. \code{<hydro\_srcterms>/bcool\_cs2\_floor} gives
+$\beta$-cooling an irradiation floor: only the internal energy above the floor
+temperature $c_s^2 = $ \code{bcool\_cs2\_floor} is cooled (their background
+irradiation that holds $Q$ above $Q_0$; zero recovers SC14). And the runs are staged:
+the gas alone to saturation (\file{inputs/shearing\_box/gravito\_turb\_baehr.athinput},
+$t = 50$, dumps every 10), then a restart that \emph{inserts} the particles ---
+\code{athena -r dump -i gravito\_turb\_baehr\_dust.athinput}: the add-on's blocks merge
+over the dump's input, \code{<particles>/restart\_insert = true} makes the restart
+reader skip the particle section the dump does not have, and
+\fn{ProblemGenerator::GravitoTurbInsertDust} places the layer: \code{ppc} particles per
+cell in total ($1.5\times10^6$), uniform in $(x,y)$, Gaussian in $z$ with width
+\code{dust\_hz} $= H_g$ (their initial gas width), at rest in the shearing frame, one
+species at $t_s = 1/\Omega$ ($St = 1$), equal masses summing to $Z = 0.01$ of the gas
+mass in the box. Per-block counts follow the Gaussian mass in each block's $z$ range and
+positions come from a hash of the global block id and the particle's index, so the
+insertion is decomposition-independent; the Mesh counts and tags are rebuilt. PC2
+coupling under the gas run's \code{rk2}, \code{cfl} $0.3$, TSC, self-gravity on, diode
+faces with the outflow removal. Back-reaction on or off is one command-line switch
+(\code{dust/back\_reaction}). Continuing a stage-2 run from one of its own dumps needs
+\code{particles/restart\_insert=false}, since those dumps carry the particles. Job
+scripts: \file{scripts/cluster/gt\_baehr\_stage\{1,2\}.slurm}, README \S3.
 
 %=========================================================================================
 \section{What the next phases must add}
