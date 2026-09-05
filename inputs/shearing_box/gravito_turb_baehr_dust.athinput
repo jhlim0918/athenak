@@ -51,3 +51,7 @@ dt        = 5.0
 file_type = pvtk
 variable  = prtcl_all
 dt        = 5.0
+
+<output7>
+file_type = phst      # particle history: momenta, KE, escaped mass, max dust density,
+dt        = 0.25      # per-species means and dispersions (sig_z = H_d)

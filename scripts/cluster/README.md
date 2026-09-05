@@ -197,7 +197,10 @@ on, diode faces remove escaping particles (`DUST_ESCAPE_SUMMARY`, history column
 `d_escaped`).  To continue a stage-2 run from its own dump (which carries the
 particles) use `-r <dump> particles/restart_insert=false` without `-i`.  Outputs:
 `hst` (SC14 columns + `d_mass d_px d_py d_pz d_ke d_wrey d_escaped`), `bin` of
-`hydro_w`, `grav_phi` and `dust_dpm` (the module's own dust density), `pvtk`.
+`hydro_w`, `grav_phi` and `dust_dpm` (the module's own dust density), `pvtk`, and
+`phst` (the particle history: momenta, kinetic energies, escaped mass, max dust density,
+per-species means and dispersions -- `sig_z` is H_d).  Their Table 1 from a finished
+run: `python3 scripts/analysis/baehr_table1.py <rundir> --t0 50 --t1 80 --roche`.
 
 Cost: memory-bandwidth-bound, ~32 s*node per cycle at 67M cells (~2 s/cycle on 16
 nodes).  The step is the floor halo's free fall, dt ~ 3e-3 (the SC14 box: 4e-3), so
