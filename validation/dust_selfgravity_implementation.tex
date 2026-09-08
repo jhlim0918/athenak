@@ -1233,6 +1233,23 @@ faces with the outflow removal. Back-reaction on or off is one command-line swit
 \code{particles/restart\_insert=false}, since those dumps carry the particles. Job
 scripts: \file{scripts/cluster/gt\_baehr\_stage\{1,2\}.slurm}, README \S3.
 
+\paragraph{The slab-plane cost, found on Vista.} The first stage-1 submission ran at
+$\sim25$ s per cycle on 16 nodes --- never finishing. The cause was in the multigrid's
+slab boundary (\fn{MultigridDriver::ComputeSlabPlanes}): it gathered the \emph{whole}
+root-resolution density on every rank ($512^2\times256$ doubles, 0.54 GB per rank),
+Allreduced it across the 2048 ranks, and then every rank redundantly rolled and
+transformed all 256 planes, twice per cycle. Tolerable at SC14's 3M cells, it made the
+cost grow with the box rather than with a rank's share of it (and was most of the
+``memory-bandwidth-bound'' cycle cost measured earlier). It is rewritten
+(multigrid document, Phase 3b addendum): each rank transforms only the root $k$-planes
+its own blocks touch, the shear roll is an exact phase between the $y$ and $x$
+transforms (linear, so the per-rank partial spectra add up; the earlier limited remap
+did not), and one Allreduce of the two face spectra (8 MB) replaces the 0.5 GB one.
+The static slab tests are unchanged to every digit, the sheared gravito-turbulence run
+matches its archive until the shear phase builds and differs at $10^{-6}$--$10^{-4}$
+thereafter (the planes are now free of remap error), 4 ranks now reproduce serial
+exactly, and a $64^3$ box went from 25 s to 0.33 s per cycle.
+
 %=========================================================================================
 \section{What the next phases must add}
 \label{sec:next}

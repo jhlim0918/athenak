@@ -1221,6 +1221,36 @@ subtraction automatically; the Dirichlet planes fix the constant. The mass secto
 now \emph{physical} (no Jeans swindle) --- the horizontally averaged potential is the
 discrete slab potential, a sector no periodic-box test could ever probe.
 
+\paragraph{Addendum (2026-09-08): a distributed plane computation.} The first
+implementation of \fn{ComputeSlabPlanes} gathered the whole root-resolution
+$4\pi G\rho$ into a $(n_z,n_y,n_x)$ array on every rank (an Allreduce of the full box),
+rolled it into the periodic frame with the conservative remap, and transformed all
+$n_z$ planes on every rank. Its cost therefore grew with the \emph{box}, not with a
+rank's share of it: at $512^2\times256$ on 2048 ranks that was 0.54 GB per rank per
+solve and $\sim25$ s per cycle --- the dust track's Baehr et al.\ box could not run.
+The rewrite keeps the method and changes the bookkeeping. Each rank builds, for each
+root $k$-plane its own blocks touch, a padded $(n_y,n_x)$ plane holding only its cells
+(refined blocks averaged conservatively as before); transforms it along $y$; applies
+the roll $\rho'(x,y) = \rho(x, y - q\Omega t\,x)$ as the exact phase
+$e^{-i k_y q\Omega t\, x}$ per column; transforms along $x$; and accumulates its
+contribution $\hat\rho_{k}\, w_{\mathbf k}\,\mu_{\mathbf k}^{k}$ (and its mirror) to the
+two face spectra. Because the transform, the phase and the accumulation are all linear
+in the density, one Allreduce of the two $(n_y,n_x)$ complex planes (8 MB) yields
+exactly the spectra of the whole box. The inverse is the mirror image (inverse $x$
+transform, conjugate phase, inverse $y$ transform) and lands directly in level 0 of the
+pyramid; the ring fill and restriction (step 7) keep the remap, since the rings must
+match the multigrid's own ghost convention. Two consequences beyond speed: the density
+roll is now free of remap error (the sheared gravito-turbulence history matches its
+archive to every digit until the shear phase builds and differs at $10^{-6}$--$10^{-4}$
+after), and the result is rank-independent --- the limited remap is nonlinear, so with
+it the sum of remapped partial planes was not the remap of the sum, and 4 ranks
+differed from serial by $10^{-3}$ in the sheared sheet test; now they agree to
+$10^{-7}$. Static tests: the sheet error $1.203474\times10^{-12}$ is unchanged to
+every digit, serially and on 4 ranks. Cost: a $64^3$ stratified box went from 25 s to
+0.33 s per cycle on one core; $10^6$ cells run at 1.1 s per cycle. The
+``memory-bandwidth-bound'' per-cycle costs quoted for the cluster runs were dominated
+by the old gather and no longer apply.
+
 \subsection{Phase 3 validation}
 \label{sec:phase3val}
 
