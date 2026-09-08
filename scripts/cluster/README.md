@@ -202,7 +202,13 @@ particles) use `-r <dump> particles/restart_insert=false` without `-i`.  Outputs
 per-species means and dispersions -- `sig_z` is H_d).  Their Table 1 from a finished
 run: `python3 scripts/analysis/baehr_table1.py <rundir> --t0 50 --t1 80 --roche`.
 
-Cost: memory-bandwidth-bound, ~32 s*node per cycle at 67M cells (~2 s/cycle on 16
-nodes).  The step is the floor halo's free fall, dt ~ 3e-3 (the SC14 box: 4e-3), so
-~17,000 cycles per 50/Omega: ~10 h per stage on 16 nodes, stage 2 ~1.3x.  The scripts
-ask for 16 nodes (2048 ranks, 8 blocks each); 8 nodes would take ~20 h per stage.
+Cost (after the 2026-09-08 slab-plane rewrite, commit noted in the implementation
+doc): the multigrid's slab boundary used to gather and transform the whole density on
+every rank -- ~25 s per cycle for this box on 16 nodes, i.e. never finishing.  Each
+rank now handles only its own planes (one 8 MB Allreduce per solve), and a 1M-cell
+box runs at 1.1 s/cycle on one core.  The step is the floor halo's free fall,
+dt ~ 3e-3 (the SC14 box: 4e-3), so ~17,000 cycles per 50/Omega; expect well under
+1 s/cycle on 16 nodes (2048 ranks, 8 blocks each): a few hours per stage.  Check the
+first `elapsed=` lines of run.log and scale down the node count if it is faster than
+needed.  The earlier "memory-bandwidth-bound, 11.8 s*node/cycle" numbers of sec. 2 were
+dominated by the old slab gather and no longer apply.

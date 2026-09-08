@@ -41,6 +41,20 @@
 //! the root sampling during the gather (refinement must stay away from the x3 faces;
 //! CheckSlabBlockLevels enforces root level for all x3-boundary blocks).
 //!
+//! Cost and distribution (2026-09-08 rewrite): no rank ever holds the full 3D density.
+//! Each rank transforms only the root k-planes its own MeshBlocks touch (a padded
+//! (ny,nx) plane per k-plane, zero outside its blocks), rolls each into the strictly
+//! periodic frame as an exact phase exp(-i ky qomt x) between the y and x transforms,
+//! and accumulates its share of the two face-plane spectra; ONE Allreduce of those two
+//! (ny,nx) complex planes then gives the spectra of the whole box, since the transform
+//! and the Green's-weighted sum are linear.  Communication is O(nx ny) per solve instead
+//! of O(nx ny nz), and the per-rank work scales with the rank's share of the mesh.  The
+//! earlier version gathered and rolled the full density on every rank and transformed
+//! every plane redundantly, which made a 67M-cell box cost ~25 s per cycle on 16 nodes.
+//! The phase roll replaces the conservative remap of the density planes (limited, hence
+//! nonlinear: partial planes did not add up across ranks); the ghost-ring fill of the
+//! plane pyramid keeps the remap so the planes match the multigrid's own ghost
+//! convention.
 //! Requires a build with -D Athena_ENABLE_FFT=ON (kokkos-fft) for the plane
 //! computation; the guard lives in MGGravityDriver.
 
@@ -57,6 +71,8 @@
 #include "../mesh/mesh.hpp"
 #include "../mesh/meshblock_pack.hpp"
 #include "../shearing_box/remap_fluxes.hpp"
+#include <vector>
+
 #include "multigrid.hpp"
 
 #if FFT_ENABLED
@@ -77,9 +93,10 @@ constexpr int PAD = 3;
 struct MultigridDriver::MGSlabFFTPlans {
 #if FFT_ENABLED
   using ComplexArray2D = DvceArray2D<Kokkos::complex<Real>>;
-  using Plan2D = KokkosFFT::Plan<DevExeSpace, ComplexArray2D, ComplexArray2D, 2>;
-  std::unique_ptr<Plan2D> fwd;
-  std::unique_ptr<Plan2D> bwd;
+  using Plan1D = KokkosFFT::Plan<DevExeSpace, ComplexArray2D, ComplexArray2D, 1>;
+  // the (ny,nx) plane is transformed one axis at a time so that the shear roll can be
+  // applied as an exact phase between the y and the x transforms
+  std::unique_ptr<Plan1D> fwd_y, fwd_x, bwd_y, bwd_x;
 #endif
 };
 
@@ -103,13 +120,12 @@ void MultigridDriver::AllocateSlabPlanes() {
     for (int p = 0; p < slab_nplanes_; ++p) {
       Kokkos::realloc(slab_planes_[p], 2, (ny >> p) + 2*ngh, (nx >> p) + 2*ngh);
     }
-    Kokkos::realloc(slab_dens_, nz, ny, nx);
+    Kokkos::realloc(slab_dens_, ny, nx);   // one padded root-resolution plane
     Kokkos::realloc(slab_zin_, ny, nx);
     Kokkos::realloc(slab_zout_, ny, nx);
     Kokkos::realloc(slab_zplanes_, 2, ny, nx);
     Kokkos::realloc(slab_mu_, ny, nx);
     Kokkos::realloc(slab_wt_, ny, nx);
-    Kokkos::realloc(slab_rplanes_, 2, ny, nx);
   }
 
   // per-block tables: root-level (lx1,lx2) for the boundary-condition kernels
@@ -241,50 +257,34 @@ void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int i
   const int ngh = mgroot_->GetGhostCells();
   const ReconstructionMethod order = mg_remap_order_;
 
-  // ---- 1. gather 4*pi*G*rho at root resolution (conservative average of refined
-  //         blocks; each rank fills only its own blocks, then one Allreduce(SUM))
-  auto dens = slab_dens_;
-  Kokkos::deep_copy(dens, 0.0);
-  {
-    auto &indcs = pmy_mesh_->mb_indcs;
-    int is = indcs.is, ie = indcs.ie;
-    int js = indcs.js, je = indcs.je;
-    int ks = indcs.ks, ke = indcs.ke;
-    int nmb1 = pmy_pack_->nmb_thispack - 1;
-    auto goffs = slab_goffs_;
-    Real fpg = four_pi_G;
-    par_for("mgslab_gather", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
-    KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-      int lev = goffs(m,3);
-      int gi = (goffs(m,0) + (i-is)) >> lev;
-      int gj = (goffs(m,1) + (j-js)) >> lev;
-      int gk = (goffs(m,2) + (k-ks)) >> lev;
-      Real w = 1.0/static_cast<Real>(1 << (3*lev));
-      Kokkos::atomic_add(&dens(gk,gj,gi), w*fpg*u0(m,ivar,k,j,i));
-    });
-  }
-#if MPI_PARALLEL_ENABLED
-  Kokkos::fence();
-  MPI_Allreduce(MPI_IN_PLACE, dens.data(), static_cast<int>(dens.size()),
-                MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
-#endif
-
-  // ---- 2. roll into the strictly periodic frame: y-shift by +qomt*x per x column.
-  //         In-place is safe: each team copies its whole column into scratch first.
-  if (qomt != 0.0) {
-    int scr_lvl = 0;
-    size_t scr_size = ScrArray1D<Real>::shmem_size(ny + 2*PAD)*2;
-    par_for_outer("mgslab_roll", DevExeSpace(), scr_size, scr_lvl, 0, nz-1, 0, nx-1,
-    KOKKOS_LAMBDA(TeamMember_t member, const int k, const int i) {
-      Real x1v = x1min + (static_cast<Real>(i) + 0.5)*dx1;
-      SlabRemapRow(member, scr_lvl, ny, dx2, qomt*x1v, order,
-                   [&](int jsrc) { return dens(k, jsrc, i); },
-                   [&](int j, Real v) { dens(k, j, i) = v; });
-    });
+  // ---- 1-4. per-rank partial face-plane spectra.  Each rank handles only the root
+  //         k-planes its own MeshBlocks touch: for each such plane it gathers its cells
+  //         into a padded root-resolution plane (zero elsewhere), rolls it into the
+  //         strictly periodic frame, transforms it, and accumulates the Green's-weighted
+  //         contribution to both face spectra.  The FFT and the accumulation are linear
+  //         in the density, so summing these partial spectra over ranks (one Allreduce
+  //         of two (ny,nx) complex planes) gives exactly the spectra of the whole box --
+  //         without ever assembling the full 3D density on any rank (the previous
+  //         gather of (nz,ny,nx) per rank plus its Allreduce and the redundant per-rank
+  //         transforms of every plane made the cost grow with the box, not the share).
+  if (slab_plans_ == nullptr) {
+    slab_plans_ = new MGSlabFFTPlans();
+    slab_plans_->fwd_y = std::make_unique<MGSlabFFTPlans::Plan1D>(
+        DevExeSpace(), slab_zin_, slab_zout_,
+        KokkosFFT::Direction::forward, KokkosFFT::axis_type<1>({0}));
+    slab_plans_->fwd_x = std::make_unique<MGSlabFFTPlans::Plan1D>(
+        DevExeSpace(), slab_zin_, slab_zout_,
+        KokkosFFT::Direction::forward, KokkosFFT::axis_type<1>({1}));
+    slab_plans_->bwd_x = std::make_unique<MGSlabFFTPlans::Plan1D>(
+        DevExeSpace(), slab_zin_, slab_zout_,
+        KokkosFFT::Direction::backward, KokkosFFT::axis_type<1>({1}));
+    slab_plans_->bwd_y = std::make_unique<MGSlabFFTPlans::Plan1D>(
+        DevExeSpace(), slab_zin_, slab_zout_,
+        KokkosFFT::Direction::backward, KokkosFFT::axis_type<1>({0}));
   }
 
-  // ---- 3. per-mode decay factor mu and face weight of the discrete vacuum Green's
-  //         function (kperp = 0 handled separately in the accumulation)
+  // per-mode decay factor mu and face weight of the discrete vacuum Green's function
+  // (kperp = 0 handled separately in the accumulation)
   {
     auto mu = slab_mu_;
     auto wt = slab_wt_;
@@ -311,32 +311,74 @@ void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int i
     });                                              // center and ghost center
   }
 
-  // ---- 4. slice-by-slice horizontal FFT + Green's-weighted accumulation of both
-  //         face-plane spectra
-  if (slab_plans_ == nullptr) {
-    slab_plans_ = new MGSlabFFTPlans();
-    slab_plans_->fwd = std::make_unique<MGSlabFFTPlans::Plan2D>(
-        DevExeSpace(), slab_zin_, slab_zout_,
-        KokkosFFT::Direction::forward, KokkosFFT::axis_type<2>({0,1}));
-    slab_plans_->bwd = std::make_unique<MGSlabFFTPlans::Plan2D>(
-        DevExeSpace(), slab_zin_, slab_zout_,
-        KokkosFFT::Direction::backward, KokkosFFT::axis_type<2>({0,1}));
-  }
   auto zin = slab_zin_;
   auto zout = slab_zout_;
   auto zplanes = slab_zplanes_;
   Kokkos::deep_copy(zplanes, Kokkos::complex<Real>(0.0, 0.0));
   {
+    auto &indcs = pmy_mesh_->mb_indcs;
+    int is = indcs.is, ie = indcs.ie;
+    int js = indcs.js, je = indcs.je;
+    int ks = indcs.ks, ke = indcs.ke;
+    int nmb = pmy_pack_->nmb_thispack;
+    int nmb1 = nmb - 1;
+    auto goffs = slab_goffs_;
+    Real fpg = four_pi_G;
+    auto plane = slab_dens_;   // (ny,nx) padded root-resolution plane
     auto mu = slab_mu_;
     auto wt = slab_wt_;
     Real dz2 = dx3*dx3;
-    for (int k = 0; k < nz; ++k) {
+
+    // the distinct root k-planes this rank's blocks cover (host: goffs is small)
+    auto h_goffs = Kokkos::create_mirror_view_and_copy(HostMemSpace(), slab_goffs_);
+    std::vector<int> kplanes;
+    {
+      std::vector<char> seen(nz, 0);
+      int nmbz = indcs.nx3;
+      for (int m = 0; m < nmb; ++m) {
+        int lev = h_goffs(m,3);
+        int k0 = h_goffs(m,2) >> lev;
+        int k1 = (h_goffs(m,2) + nmbz - 1) >> lev;
+        for (int kg = k0; kg <= k1; ++kg) seen[kg] = 1;
+      }
+      for (int kg = 0; kg < nz; ++kg) if (seen[kg]) kplanes.push_back(kg);
+    }
+
+    for (int kg : kplanes) {
+      // gather this rank's cells of root plane kg (conservative average of refined
+      // blocks), zero elsewhere
+      Kokkos::deep_copy(plane, 0.0);
+      par_for("mgslab_gather", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+        int lev = goffs(m,3);
+        if (((goffs(m,2) + (k-ks)) >> lev) != kg) return;
+        int gi = (goffs(m,0) + (i-is)) >> lev;
+        int gj = (goffs(m,1) + (j-js)) >> lev;
+        Real w = 1.0/static_cast<Real>(1 << (3*lev));
+        Kokkos::atomic_add(&plane(gj,gi), w*fpg*u0(m,ivar,k,j,i));
+      });
+
+      // horizontal transform into the strictly periodic (rolled) frame: FFT along y,
+      // then the roll rho'(x,y) = rho(x, y - qomt*x) as the exact phase
+      // exp(-i ky qomt x) per column, then FFT along x.  Linear in the density (so the
+      // per-rank partial planes add up exactly) and free of any remap error.
       par_for("mgslab_r2z", DevExeSpace(), 0, ny-1, 0, nx-1,
       KOKKOS_LAMBDA(const int j, const int i) {
-        zin(j,i) = Kokkos::complex<Real>(dens(k,j,i), 0.0);
+        zin(j,i) = Kokkos::complex<Real>(plane(j,i), 0.0);
       });
-      KokkosFFT::execute(*(slab_plans_->fwd), slab_zin_, slab_zout_,
+      KokkosFFT::execute(*(slab_plans_->fwd_y), slab_zin_, slab_zout_,
                          KokkosFFT::Normalization::backward);
+      par_for("mgslab_phase", DevExeSpace(), 0, ny-1, 0, nx-1,
+      KOKKOS_LAMBDA(const int j, const int i) {
+        int jp = (j <= ny/2) ? j : j - ny;
+        Real ky = 2.0*M_PI*static_cast<Real>(jp)/ly;
+        Real x1v = x1min + (static_cast<Real>(i) + 0.5)*dx1;
+        Real arg = -ky*qomt*x1v;
+        zin(j,i) = zout(j,i)*Kokkos::complex<Real>(cos(arg), sin(arg));
+      });
+      KokkosFFT::execute(*(slab_plans_->fwd_x), slab_zin_, slab_zout_,
+                         KokkosFFT::Normalization::backward);
+      const int k = kg;
       par_for("mgslab_accum", DevExeSpace(), 0, ny-1, 0, nx-1,
       KOKKOS_LAMBDA(const int j, const int i) {
         if (j == 0 && i == 0) {
@@ -350,34 +392,41 @@ void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int i
       });
     }
   }
+#if MPI_PARALLEL_ENABLED
+  // sum the partial face spectra over ranks (two (ny,nx) complex planes)
+  Kokkos::fence();
+  MPI_Allreduce(MPI_IN_PLACE, reinterpret_cast<Real*>(zplanes.data()),
+                static_cast<int>(2*zplanes.size()), MPI_ATHENA_REAL, MPI_SUM,
+                MPI_COMM_WORLD);
+#endif
 
-  // ---- 5. inverse FFT of the two face-plane spectra -> real planes (rolled frame)
-  auto rplanes = slab_rplanes_;
-  for (int f = 0; f < 2; ++f) {
-    par_for("mgslab_pcopy", DevExeSpace(), 0, ny-1, 0, nx-1,
-    KOKKOS_LAMBDA(const int j, const int i) {
-      zin(j,i) = zplanes(f,j,i);
-    });
-    KokkosFFT::execute(*(slab_plans_->bwd), slab_zin_, slab_zout_,
-                       KokkosFFT::Normalization::backward);
-    par_for("mgslab_z2r", DevExeSpace(), 0, ny-1, 0, nx-1,
-    KOKKOS_LAMBDA(const int j, const int i) {
-      rplanes(f,j,i) = zout(j,i).real();
-    });
-  }
-
-  // ---- 6. unroll back to the current frame, into the interior of pyramid level 0
+  // ---- 5-6. inverse transform of the two face-plane spectra: iFFT along x, the
+  //         unroll as the conjugate phase, iFFT along y -> real planes in the current
+  //         frame, into the interior of pyramid level 0
   {
     auto plane0 = slab_planes_[0];
-    int scr_lvl = 0;
-    size_t scr_size = ScrArray1D<Real>::shmem_size(ny + 2*PAD)*2;
-    par_for_outer("mgslab_unroll", DevExeSpace(), scr_size, scr_lvl, 0, 1, 0, nx-1,
-    KOKKOS_LAMBDA(TeamMember_t member, const int f, const int i) {
-      Real x1v = x1min + (static_cast<Real>(i) + 0.5)*dx1;
-      SlabRemapRow(member, scr_lvl, ny, dx2, -qomt*x1v, order,
-                   [&](int jsrc) { return rplanes(f, jsrc, i); },
-                   [&](int j, Real v) { plane0(f, ngh+j, ngh+i) = v; });
-    });
+    for (int f = 0; f < 2; ++f) {
+      par_for("mgslab_pcopy", DevExeSpace(), 0, ny-1, 0, nx-1,
+      KOKKOS_LAMBDA(const int j, const int i) {
+        zin(j,i) = zplanes(f,j,i);
+      });
+      KokkosFFT::execute(*(slab_plans_->bwd_x), slab_zin_, slab_zout_,
+                         KokkosFFT::Normalization::backward);
+      par_for("mgslab_unphase", DevExeSpace(), 0, ny-1, 0, nx-1,
+      KOKKOS_LAMBDA(const int j, const int i) {
+        int jp = (j <= ny/2) ? j : j - ny;
+        Real ky = 2.0*M_PI*static_cast<Real>(jp)/ly;
+        Real x1v = x1min + (static_cast<Real>(i) + 0.5)*dx1;
+        Real arg = ky*qomt*x1v;
+        zin(j,i) = zout(j,i)*Kokkos::complex<Real>(cos(arg), sin(arg));
+      });
+      KokkosFFT::execute(*(slab_plans_->bwd_y), slab_zin_, slab_zout_,
+                         KokkosFFT::Normalization::backward);
+      par_for("mgslab_z2r", DevExeSpace(), 0, ny-1, 0, nx-1,
+      KOKKOS_LAMBDA(const int j, const int i) {
+        plane0(f, ngh+j, ngh+i) = zout(j,i).real();
+      });
+    }
   }
 
   // ---- 7. ghost rings + restriction down the pyramid.  Ring fill: x1 ghost columns

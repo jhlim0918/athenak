@@ -523,11 +523,10 @@ class MultigridDriver {
   DvceArray3D<Real> *slab_planes_ = nullptr;   // [p](2, ny_p+2*ngh, nx_p+2*ngh)
   DvceArray2D<int> slab_lloc_;           // per-block root-level (lx1,lx2); -1 if unused
   DvceArray2D<int> slab_goffs_;          // per-block (gox,goy,goz,lev) for the gather
-  DvceArray3D<Real> slab_dens_;          // (nz,ny,nx) root-resolution 4piG*rho gather
+  DvceArray2D<Real> slab_dens_;          // (ny,nx) padded root plane of 4piG*rho
   DvceArray2D<Kokkos::complex<Real>> slab_zin_, slab_zout_;  // (ny,nx) FFT slice bufs
   DvceArray3D<Kokkos::complex<Real>> slab_zplanes_;  // (2,ny,nx) face spectra accum
   DvceArray2D<Real> slab_mu_, slab_wt_;  // (ny,nx) per-mode decay factor and weight
-  DvceArray3D<Real> slab_rplanes_;       // (2,ny,nx) real face planes (rolled frame)
   struct MGSlabFFTPlans;                 // KokkosFFT plans; defined in multigrid_slab.cpp
   MGSlabFFTPlans *slab_plans_ = nullptr;
   void AllocateSlabPlanes();             // pyramid + offset tables; PrepareForAMR-safe

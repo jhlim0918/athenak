@@ -13,11 +13,10 @@
 #SBATCH --mail-user=jay.lim1@unlv.edu
 
 # STAGE 1 of the Baehr+22 dust runs: the gas alone to t = 50 (saturation).  Twin of
-# gt_sc14_full.slurm at 21x the cells.  Cost: the code is memory-bandwidth-bound at
-# ~12 s*node per cycle for 25M cells (README sec. 2), so 67M cells ~ 32 s*node/cycle, 2 s
-# per cycle on 16 nodes.  The step is set by the free-falling floor halo, dt ~ 3e-3 (the
-# SC14 box runs at 4e-3): ~17,000 cycles to t = 50 -> ~10 h on 16 nodes.  Stage 2
-# (particles, PC2 coupling, dust exchanges) runs ~1.3x slower per cycle.  Submit from the RUN directory in
+# gt_sc14_full.slurm at 21x the cells.  Cost: after the slab-plane rewrite (README
+# sec. 3) expect well under 1 s per cycle on 16 nodes; the step is set by the
+# free-falling floor halo, dt ~ 3e-3 (the SC14 box runs at 4e-3): ~17,000 cycles to
+# t = 50 -> a few hours.  Stage 2 (particles, PC2 coupling, dust exchanges) ~1.3x.  Submit from the RUN directory in
 # $SCRATCH -- outputs land there and Slurm starts the job in the submit directory:
 #     cd $SCRATCH/gt_sc14_stndrd/b10 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_sc14_full.slurm
 # To continue a run after a walltime kill, replace the -i line with:
