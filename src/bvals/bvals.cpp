@@ -473,23 +473,23 @@ particles::ParticlesBoundaryValues::ParticlesBoundaryValues(
       (pp->particle_type == ParticleType::dust) &&
       (pmesh->mesh_bcs[BoundaryFace::inner_x1] == BoundaryFlag::shear_periodic);
   if (shear_periodic_x1) {
-    if (pmesh->multilevel) {
-      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                << std::endl << "Particles with shear-periodic boundaries do not "
-                << "support SMR/AMR" << std::endl;
-      std::exit(EXIT_FAILURE);
-    }
     qshear_sp = pin->GetReal("shearing_box","qshear");
     omega0_sp = pin->GetReal("shearing_box","omega0");
-    auto &mindcs = pmesh->mesh_indcs;
-    auto &bindcs = pmesh->mb_indcs;
-    int nmbx1 = mindcs.nx1/bindcs.nx1;
-    nmb_sp_x2 = std::max(mindcs.nx2/bindcs.nx2, 1);
-    nmb_sp_x3 = std::max(mindcs.nx3/bindcs.nx3, 1);
+    // the face blocks share one refinement level (Mesh::CheckShearingBoxRefinement);
+    // build the maps at that level
+    int blev = pmesh->root_level;
+    for (int m=0; m<(pmesh->nmb_total); ++m) {
+      if (pmesh->lloc_eachmb[m].lx1 == 0) {blev = pmesh->lloc_eachmb[m].level; break;}
+    }
+    int lshift = blev - pmesh->root_level;
+    int nmbx1 = (pmesh->nmb_rootx1) << lshift;
+    nmb_sp_x2 = std::max((pmesh->nmb_rootx2) << lshift, 1);
+    nmb_sp_x3 = std::max((pmesh->nmb_rootx3) << lshift, 1);
     sgid_map = DualArray3D<int>("sgid_map", 2, nmb_sp_x3, nmb_sp_x2);
     srank_map = DualArray3D<int>("srank_map", 2, nmb_sp_x3, nmb_sp_x2);
     for (int m=0; m<(pmesh->nmb_total); ++m) {
       auto &ll = pmesh->lloc_eachmb[m];
+      if (ll.level != blev) continue;
       if (ll.lx1 == 0) {                // MeshBlocks at the inner x1 boundary
         sgid_map.h_view(0,ll.lx3,ll.lx2) = m;
         srank_map.h_view(0,ll.lx3,ll.lx2) = pmesh->rank_eachmb[m];

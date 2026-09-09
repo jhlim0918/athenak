@@ -36,6 +36,13 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
     ustar("ustar",1,1,1,1,1),
     dmom("dmom",1,1,1,1,1),
     cdummy("cdum",1,1,1,1,1),
+    coarse_us("dust_cus",1,1,1,1,1),
+    coarse_rd("dust_crd",1,1,1,1,1),
+    coarse_g("dust_cg",1,1,1,1,1),
+    rfac("dust_rfac",1),
+    fimg_q("dust_fimg_q",1,1,1,1,1),
+    fimg_d("dust_fimg_d",1,1,1,1,1),
+    fimg_r("dust_fimg_r",1,1,1,1,1),
     solver_r("dust_solver_r",1,1,1,1,1),
     solver_p("dust_solver_p",1,1,1,1,1),
     solver_ap("dust_solver_ap",1,1,1,1,1),
@@ -91,9 +98,24 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
               << "or hybrid requires integrator=rk2" << std::endl;
     std::exit(EXIT_FAILURE);
   }
-  if (pmy_pack->pmesh->multilevel) {
+  // static mesh refinement: the additive deposit exchange restricts/injects across level
+  // boundaries, the copy exchanges of u*, rho_dust and g carry coarse arrays and are
+  // prolongated like the gas (see MeshBoundaryValuesDep and RestrictField/
+  // ProlongateField).  Adaptive refinement is not supported: nothing redistributes the
+  // particles when MeshBlocks are created, destroyed or moved between ranks.
+  multilevel = pmy_pack->pmesh->multilevel;
+  if (pmy_pack->pmesh->adaptive) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "Dust drag does not support SMR/AMR" << std::endl;
+              << "Dust drag supports static mesh refinement only (no AMR: particles are "
+              << "not redistributed when the mesh changes)" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  if (multilevel && (pmy_pack->pmesh->max_level - pmy_pack->pmesh->root_level) > 1) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+              << "Dust drag supports ONE level of static refinement: every MeshBlock "
+              << "deposits with the kernel of the finest level (blocks one level below "
+              << "it through a 2x fine image), which is consistent across a single level "
+              << "jump only" << std::endl;
     std::exit(EXIT_FAILURE);
   }
   bool shear_x1 = (pmy_pack->pmesh->mesh_bcs[BoundaryFace::inner_x1] ==
@@ -261,6 +283,12 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
                 << std::endl;
       std::exit(EXIT_FAILURE);
     }
+  }
+  if (multilevel && drag_solver != DustDragSolver::local) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+              << std::endl << "Coupled drag solvers (drag_solver != local) are not "
+              << "supported with mesh refinement" << std::endl;
+    std::exit(EXIT_FAILURE);
   }
   if (coupling == DustCoupling::hybrid &&
       drag_solver != DustDragSolver::local && drag_solver != DustDragSolver::dc1 &&
@@ -448,6 +476,37 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   }
   Kokkos::realloc(qdep,  nmb, 5, ncells3, ncells2, ncells1);
   Kokkos::realloc(ustar, nmb, 3, ncells3, ncells2, ncells1);
+  // finest-level deposits: per-block factor and the fine images of the deposit fields
+  rfac = DualArray1D<int>("dust_rfac", std::max(pmy_pack->nmb_thispack, 1));
+  for (int m=0; m<(pmy_pack->nmb_thispack); ++m) {
+    int lev = pmy_pack->pmb->mb_lev.h_view(m);
+    rfac.h_view(m) = (multilevel && (lev < pmy_pack->pmesh->max_level)) ? 2 : 1;
+    if (rfac.h_view(m) > 1) {any_coarse = true;}
+  }
+  rfac.template modify<HostMemSpace>();
+  rfac.template sync<DevExeSpace>();
+  if (any_coarse) {
+    int rx = 2, ry = (indcs.nx2 > 1) ? 2 : 1, rz = (indcs.nx3 > 1) ? 2 : 1;
+    Kokkos::realloc(fimg_q, nmb, 5, rz*ncells3, ry*ncells2, rx*ncells1);
+    Kokkos::realloc(fimg_d, nmb, 4, rz*ncells3, ry*ncells2, rx*ncells1);
+    Kokkos::realloc(fimg_r, nmb, 1, rz*ncells3, ry*ncells2, rx*ncells1);
+  }
+  if (multilevel) {
+    // coarse copies of the copy-exchanged fields (same layout as Hydro::coarse_u0)
+    int n_cc1 = indcs.cnx1 + 2*(indcs.ng);
+    int n_cc2 = (indcs.cnx2 > 1)? (indcs.cnx2 + 2*(indcs.ng)) : 1;
+    int n_cc3 = (indcs.cnx3 > 1)? (indcs.cnx3 + 2*(indcs.ng)) : 1;
+    Kokkos::realloc(coarse_us, nmb, 3, n_cc3, n_cc2, n_cc1);
+    Kokkos::realloc(coarse_rd, nmb, 1, n_cc3, n_cc2, n_cc1);
+    if (gravity) {Kokkos::realloc(coarse_g, nmb, 3, n_cc3, n_cc2, n_cc1);}
+    if (global_variable::my_rank == 0) {
+      std::cout << "# dust: static mesh refinement active: every MeshBlock deposits "
+                << "with the finest-level kernel (2x fine image on the coarser blocks, "
+                << "volume-averaged onto their cells); ghost deposits are exchanged "
+                << "conservatively across level boundaries; u*, rho_dust and g are "
+                << "prolongated" << std::endl;
+    }
+  }
   Kokkos::realloc(dmom,  nmb, 4, ncells3, ncells2, ncells1);
   Kokkos::deep_copy(dmom, 0.0);  // read as R_g=0 in stage 2 if back_reaction is off
   if (drag_solver == DustDragSolver::pcg || drag_solver == DustDragSolver::adaptive) {

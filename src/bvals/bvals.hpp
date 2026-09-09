@@ -245,7 +245,10 @@ class MeshBoundaryValuesCC : public MeshBoundaryValues {
 //  \brief Derived class implementing an ADDITIVE ghost-zone exchange for cell-centered
 //  fields built by particle deposition: ghost-cell deposits are packed and *added* into
 //  the overlapping active cells of the neighboring MeshBlock (the reverse data flow of
-//  the ordinary copy exchange). Uniform grids only.
+//  the ordinary copy exchange).  With SMR the exchange crosses refinement levels
+//  conservatively: deposits sent to a coarser neighbor are restricted (volume average of
+//  the density-like deposit), deposits received from a coarser neighbor are injected
+//  into the fine cells covered by each coarse ghost cell.
 
 class MeshBoundaryValuesDep : public MeshBoundaryValues {
  public:
@@ -256,8 +259,10 @@ class MeshBoundaryValuesDep : public MeshBoundaryValues {
   void InitRecvIndices(MeshBoundaryBuffer &b,int o1,int o2,int o3,int f1,int f2) override;
   TaskStatus InitFluxRecv(const int nvar) override {return TaskStatus::complete;}
 
-  // pack ghost-region deposits and send; receive and sum into active cells
-  TaskStatus PackAndSendDeposit(DvceArray5D<Real> &a);
+  // pack ghost-region deposits and send; receive and sum into active cells.  fimg is
+  // the 2x fine image of a (dust::DepositStencil) from which the ghost deposits sent to
+  // FINER neighbors are packed; it is never read on a uniform mesh (pass any view)
+  TaskStatus PackAndSendDeposit(DvceArray5D<Real> &a, DvceArray5D<Real> &fimg);
   TaskStatus RecvAndSumDeposit(DvceArray5D<Real> &a);
 
   // Shear-periodic x1 faces (3D shearing box): fold the x1 ghost slabs of the face
@@ -268,14 +273,26 @@ class MeshBoundaryValuesDep : public MeshBoundaryValues {
   // unsheared plain-periodic x1 contributions of the face blocks when this path is
   // active.  yshear is a length (q*Omega*Lx*t).  No-op unless the mesh is 3D with
   // shear-periodic x1 faces.  Contains one MPI_Allreduce: all ranks call it in lockstep.
+  // The planes live at the (uniform) refinement level of the shear-face MeshBlocks.
   TaskStatus FoldShearDeposit(DvceArray5D<Real> &a, const Real yshear,
                               ReconstructionMethod rcon);
   bool ShearX1() const {return shear_x1_;}
 
+  // SMR: restrict the deposit array (active zone AND ghost shell) into the internal
+  // coarse copy that the sends to coarser neighbors are packed from.  Public because it
+  // encloses a device lambda (NVCC extended-lambda rule).
+  void RestrictDeposit(DvceArray5D<Real> &a);
+  int SubCells() const {return nsub_;}   // 2^d fine cells per coarse cell
+
  private:
+  bool multilevel_ = false;       // SMR/AMR mesh: level-dependent index sets in use
+  int nsub_ = 1;                  // 2^d: fine cells per coarse cell (2, 4 or 8)
+  int coarse_nvar_ = 0;           // nvar the coarse copy is currently sized for
+  DvceArray5D<Real> coarse_;      // (nmb, nvar, cnx3+2ng, cnx2+2ng, cnx1+2ng)
   bool shear_x1_ = false;         // 3D mesh with shear-periodic x1 faces
   bool x3_periodic_ = true;       // z-ghost rows of the slab wrap in z (else dropped)
-  int shear_gny_ = 0, shear_gnz_ = 0;  // global cell counts in y and z (uniform grid)
+  int shear_lev_ = 0;             // logical level of the shear-face MeshBlocks
+  int shear_gny_ = 0, shear_gnz_ = 0;  // global cell counts in y and z at shear_lev_
   int shear_nvar_ = 0;            // nvar the planes are currently sized for
   DvceArray4D<Real> shear_plane_; // (face, v*ng+d, gk, gj); face 0 = inner-ghost slabs
   DvceArray2D<int> shear_goffs_;  // (m, {gj0, gk0}): global index of first active cell
@@ -356,13 +373,14 @@ class ParticlesBoundaryValues {
   DualArray1D<ParticleLocationData> sendlist;
   DualArray1D<int> send_count;  // device-side append counter (length one)
 
-  // shear-periodic x1 boundary support (uniform grids only). Particles crossing the
-  // radial mesh boundaries are shifted azimuthally (positions only; velocities are
-  // shear-relative), so their destination MeshBlock is generally not the x1-neighbor:
-  // it is found from a (side, lx3, lx2) -> gid/rank map over the boundary MeshBlocks.
+  // shear-periodic x1 boundary support. Particles crossing the radial mesh boundaries
+  // are shifted azimuthally (positions only; velocities are shear-relative), so their
+  // destination MeshBlock is generally not the x1-neighbor: it is found from a
+  // (side, lx3, lx2) -> gid/rank map over the boundary MeshBlocks, built at the
+  // (uniform, by the mesh policy) refinement level of those blocks.
   bool shear_periodic_x1=false;
   Real qshear_sp=0.0, omega0_sp=0.0;   // copies of <shearing_box> parameters
-  int nmb_sp_x2=1, nmb_sp_x3=1;        // root-grid MeshBlock counts in x2/x3
+  int nmb_sp_x2=1, nmb_sp_x3=1;        // MeshBlock counts in x2/x3 at the face level
   DualArray3D<int> sgid_map;           // destination GID:  (side, lx3, lx2)
   DualArray3D<int> srank_map;          // destination rank: (side, lx3, lx2)
 

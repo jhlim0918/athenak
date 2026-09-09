@@ -66,6 +66,7 @@ bool DustGasDrag::GravityStage(Driver *pdrive, int stage) const {
 
 void DustGasDrag::DepositMass() {
   Kokkos::deep_copy(DevExeSpace(), rho_dust, 0.0);
+  ZeroImage(fimg_r);
 
   particles::Particles *ppar = pmy_pack->ppart;
   auto &pr = ppar->prtcl_rdata;
@@ -81,24 +82,18 @@ void DustGasDrag::DepositMass() {
   auto gids = pmy_pack->gids;
   int scheme = static_cast<int>(deposit);
   auto &rho = rho_dust;
+  auto &fimg_ = fimg_r;
+  auto rf = rfac.d_view;
 
   par_for("dust_grav_deposit",DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m = pi(PGID,p) - gids;
+    // finest-level deposit stencil (the block's own cells when rfac = 1)
+    const int r = rf(m);
     int ip, jp, kp;
-    Real wx[3], wy[3], wz[3];
-    PMWeights(pr(IPX,p), mbsize.d_view(m).x1min, mbsize.d_view(m).x1max, nx1, is,
-              scheme, ip, wx);
-    PMWeights(pr(IPY,p), mbsize.d_view(m).x2min, mbsize.d_view(m).x2max, nx2, js,
-              scheme, jp, wy);
-    if (three_d) {
-      PMWeights(pr(IPZ,p), mbsize.d_view(m).x3min, mbsize.d_view(m).x3max, nx3, ks,
-                scheme, kp, wz);
-    } else {
-      kp = ks;
-      wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0;
-    }
-    Real vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
-    if (three_d) {vol *= mbsize.d_view(m).dx3;}
+    Real wx[3], wy[3], wz[3], vol;
+    DepositStencil(mbsize.d_view(m), pr(IPX,p), pr(IPY,p), pr(IPZ,p), nx1, nx2, nx3,
+                   is, js, ks, r, three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
+    const DvceArray5D<Real> &tgt = (r > 1) ? fimg_ : rho;
     Real minv = pr(IPM,p)/vol;
     int clo = three_d ? 0 : 1, chi = three_d ? 2 : 1;
     for (int c=clo; c<=chi; ++c) {
@@ -106,11 +101,12 @@ void DustGasDrag::DepositMass() {
         Real wcb = wz[c]*wy[b]*minv;
         if (wcb == 0.0) continue;
         for (int a=0; a<3; ++a) {
-          DepositAdd(&rho(m,0,kp+c-1,jp+b-1,ip+a-1), wcb*wx[a]);
+          DepositAdd(&tgt(m,0,kp+c-1,jp+b-1,ip+a-1), wcb*wx[a]);
         }
       }
     }
   });
+  RestrictImage(fimg_r, rho_dust);
 }
 
 //----------------------------------------------------------------------------------------
@@ -187,7 +183,7 @@ TaskStatus DustGasDrag::DepositGravity(Driver *pdrive, int stage) {
 
 TaskStatus DustGasDrag::SendRhoDust(Driver *pdrive, int stage) {
   if (!GravityStage(pdrive, stage) || !gravity_source) {return TaskStatus::complete;}
-  return pbval_rd->PackAndSendDeposit(rho_dust);
+  return pbval_rd->PackAndSendDeposit(rho_dust, fimg_r);
 }
 
 TaskStatus DustGasDrag::RecvRhoDust(Driver *pdrive, int stage) {
@@ -203,12 +199,13 @@ TaskStatus DustGasDrag::FoldRhoDust(Driver *pdrive, int stage) {
 
 TaskStatus DustGasDrag::SendRhoDustCopy(Driver *pdrive, int stage) {
   if (!GravityStage(pdrive, stage) || !gravity_source) {return TaskStatus::complete;}
-  return pbval_rc->PackAndSendCC(rho_dust, cdummy);
+  RestrictField(rho_dust, coarse_rd);
+  return pbval_rc->PackAndSendCC(rho_dust, coarse_rd);
 }
 
 TaskStatus DustGasDrag::RecvRhoDustCopy(Driver *pdrive, int stage) {
   if (!GravityStage(pdrive, stage) || !gravity_source) {return TaskStatus::complete;}
-  return pbval_rc->RecvAndUnpackCC(rho_dust, cdummy);
+  return pbval_rc->RecvAndUnpackCC(rho_dust, coarse_rd);
 }
 
 TaskStatus DustGasDrag::SendRhoDustShr(Driver *pdrive, int stage) {
@@ -225,6 +222,14 @@ TaskStatus DustGasDrag::RecvRhoDustShr(Driver *pdrive, int stage) {
   return psbox_rc->RecvAndUnpackCC(rho_dust);
 }
 
+TaskStatus DustGasDrag::ProlongateRhoDust(Driver *pdrive, int stage) {
+  if (!GravityStage(pdrive, stage) || !gravity_source || !multilevel) {
+    return TaskStatus::complete;
+  }
+  ProlongateField(pbval_rc, rho_dust, coarse_rd);
+  return TaskStatus::complete;
+}
+
 //----------------------------------------------------------------------------------------
 // task wrappers: "stagen" force field (after the driver's Poisson solve)
 
@@ -236,12 +241,13 @@ TaskStatus DustGasDrag::ComputeGravForce(Driver *pdrive, int stage) {
 
 TaskStatus DustGasDrag::SendGravForce(Driver *pdrive, int stage) {
   if (!GravityStage(pdrive, stage) || !gravity_force) {return TaskStatus::complete;}
-  return pbval_g->PackAndSendCC(gforce, cdummy);
+  RestrictField(gforce, coarse_g);
+  return pbval_g->PackAndSendCC(gforce, coarse_g);
 }
 
 TaskStatus DustGasDrag::RecvGravForce(Driver *pdrive, int stage) {
   if (!GravityStage(pdrive, stage) || !gravity_force) {return TaskStatus::complete;}
-  return pbval_g->RecvAndUnpackCC(gforce, cdummy);
+  return pbval_g->RecvAndUnpackCC(gforce, coarse_g);
 }
 
 TaskStatus DustGasDrag::SendGravForceShr(Driver *pdrive, int stage) {
@@ -258,6 +264,14 @@ TaskStatus DustGasDrag::RecvGravForceShr(Driver *pdrive, int stage) {
   return psbox_g->RecvAndUnpackCC(gforce);
 }
 
+TaskStatus DustGasDrag::ProlongateGravForce(Driver *pdrive, int stage) {
+  if (!GravityStage(pdrive, stage) || !gravity_force || !multilevel) {
+    return TaskStatus::complete;
+  }
+  ProlongateField(pbval_g, gforce, coarse_g);
+  return TaskStatus::complete;
+}
+
 //----------------------------------------------------------------------------------------
 //! \fn DustGasDrag::AssembleDustDensityNow / ComputeGravForceNow
 //! \brief Synchronous versions of the two task chains for problem generators that call
@@ -267,7 +281,7 @@ void DustGasDrag::AssembleDustDensityNow() {
   Real time = pmy_pack->pmesh->time;
   DepositMass();
   RequireDone(pbval_rd->InitRecv(1), "density InitRecv");
-  RequireDone(pbval_rd->PackAndSendDeposit(rho_dust), "density send");
+  RequireDone(pbval_rd->PackAndSendDeposit(rho_dust, fimg_r), "density send");
   TaskStatus status;
   do {
     status = pbval_rd->RecvAndSumDeposit(rho_dust);
@@ -281,9 +295,10 @@ void DustGasDrag::AssembleDustDensityNow() {
   RequireDone(pbval_rd->ClearRecv(), "density ClearRecv");
 
   RequireDone(pbval_rc->InitRecv(1), "density-copy InitRecv");
-  RequireDone(pbval_rc->PackAndSendCC(rho_dust, cdummy), "density-copy send");
+  RestrictField(rho_dust, coarse_rd);
+  RequireDone(pbval_rc->PackAndSendCC(rho_dust, coarse_rd), "density-copy send");
   do {
-    status = pbval_rc->RecvAndUnpackCC(rho_dust, cdummy);
+    status = pbval_rc->RecvAndUnpackCC(rho_dust, coarse_rd);
     RequireDone(status, "density-copy receive");
   } while (status == TaskStatus::incomplete);
   RequireDone(pbval_rc->ClearSend(), "density-copy ClearSend");
@@ -299,6 +314,7 @@ void DustGasDrag::AssembleDustDensityNow() {
     RequireDone(psbox_rc->ClearSend(), "density-shear ClearSend");
     RequireDone(psbox_rc->ClearRecv(), "density-shear ClearRecv");
   }
+  ProlongateField(pbval_rc, rho_dust, coarse_rd);
 }
 
 void DustGasDrag::ComputeGravForceNow() {
@@ -306,10 +322,11 @@ void DustGasDrag::ComputeGravForceNow() {
   Real time = pmy_pack->pmesh->time;
   ComputeForceField();
   RequireDone(pbval_g->InitRecv(3), "force InitRecv");
-  RequireDone(pbval_g->PackAndSendCC(gforce, cdummy), "force send");
+  RestrictField(gforce, coarse_g);
+  RequireDone(pbval_g->PackAndSendCC(gforce, coarse_g), "force send");
   TaskStatus status;
   do {
-    status = pbval_g->RecvAndUnpackCC(gforce, cdummy);
+    status = pbval_g->RecvAndUnpackCC(gforce, coarse_g);
     RequireDone(status, "force receive");
   } while (status == TaskStatus::incomplete);
   RequireDone(pbval_g->ClearSend(), "force ClearSend");
@@ -325,6 +342,7 @@ void DustGasDrag::ComputeGravForceNow() {
     RequireDone(psbox_g->ClearSend(), "force-shear ClearSend");
     RequireDone(psbox_g->ClearRecv(), "force-shear ClearRecv");
   }
+  ProlongateField(pbval_g, gforce, coarse_g);
 }
 
 } // namespace dust

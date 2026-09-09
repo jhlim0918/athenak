@@ -36,7 +36,9 @@
 //! the relative change of the field-0 total (round-off: the remap is conservative).
 //! Parameters: <problem> time0, remap (dc | plm | ppmx), fold (false = plain pass only:
 //! then the strips must stay exactly 0).  Requires a 3D mesh with shear-periodic x1 and
-//! a <shearing_box> block; run with <time> nlim = 0.
+//! a <shearing_box> block; run with <time> nlim = 0.  With static refinement the plane
+//! geometry follows the (uniform) level of the shear-face MeshBlocks; interior refined
+//! blocks take part in the plain additive pass only (and must stay exactly 0: leak).
 
 #include <cmath>
 #include <cstdio>
@@ -111,7 +113,13 @@ void ProblemGenerator::DustDepositShear(ParameterInput *pin, const bool restart)
   const int ks = indcs.ks, ke = indcs.ke;
   const int ncells1 = nx1 + 2*ng, ncells2 = nx2 + 2*ng, ncells3 = nx3 + 2*ng;
   const int nmb = pmbp->nmb_thispack;
-  const int gny = pm->mesh_indcs.nx2, gnz = pm->mesh_indcs.nx3;
+  // the plane geometry lives at the (uniform) level of the shear-face MeshBlocks
+  int blev = pm->root_level;
+  for (int mm=0; mm<(pm->nmb_total); ++mm) {
+    if (pm->lloc_eachmb[mm].lx1 == 0) {blev = pm->lloc_eachmb[mm].level; break;}
+  }
+  const int gny = (pm->mesh_indcs.nx2) << (blev - pm->root_level);
+  const int gnz = (pm->mesh_indcs.nx3) << (blev - pm->root_level);
   auto &size = pmbp->pmb->mb_size;
   auto &mb_bcs = pmbp->pmb->mb_bcs;
   auto &msize = pm->mesh_size;
@@ -218,7 +226,12 @@ void ProblemGenerator::DustDepositShear(ParameterInput *pin, const bool restart)
   MeshBoundaryValuesDep dep(pmbp, pin);
   dep.InitializeBuffers(nvar);
   Require(dep.InitRecv(nvar), "InitRecv");
-  Require(dep.PackAndSendDeposit(a), "PackAndSendDeposit");
+  // the 2x fine image from which sends to finer neighbours are packed (dust::
+  // DepositStencil): nothing was deposited into it here, so it is all zero
+  DvceArray5D<Real> fimg("dds_fimg", nmb, nvar, (pm->three_d ? 2*ncells3 : ncells3),
+                         2*ncells2, 2*ncells1);
+  Kokkos::deep_copy(fimg, 0.0);
+  Require(dep.PackAndSendDeposit(a, fimg), "PackAndSendDeposit");
   TaskStatus st;
   do {
     st = dep.RecvAndSumDeposit(a);

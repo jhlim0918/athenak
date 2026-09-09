@@ -1,0 +1,81 @@
+# AthenaK input file: the shear-periodic additive deposit exchange unit test (pgen
+# dust_deposit_shear) on a mesh with STATIC REFINEMENT (dust track, particles + SMR).
+# 64x32x16 root cells in 4x2x2 MeshBlocks of 16x16x8; problem/refine_faces selects
+# the layout through the two <refined_region> blocks below (edit, or override the
+# region extents on the command line):
+#   interior : the two middle x1 columns (full y and z) at level 1, the shear-face
+#              columns at root -> the face blocks have FINER x1-neighbours inward; the
+#              fold itself is unchanged (planes at the root level) and the plain
+#              additive pass crosses the level boundary (leak must stay exactly 0)
+#   faces    : BOTH shear-face columns at level 1 (full y and z), interior at root ->
+#              the planes live at level 1 (mesh nx2, nx3 doubled)
+# Expected: same errors as the uniform test at the same face-level nx2 (see
+# validation/run/dust4b/deposit_test/deposit_shear_results.txt): time0=0 exact,
+# leak = 0, mass_err ~ 1e-16.
+
+<comment>
+problem   = shear-periodic additive deposit exchange test, SMR
+
+<job>
+basename  = dds_smr
+
+<mesh>
+nghost    = 4         # even for SMR; PPMX remap needs >= 3
+nx1       = 64
+x1min     = -0.5
+x1max     = 0.5
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+
+nx2       = 32
+x2min     = -0.5
+x2max     = 0.5
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 16
+x3min     = -0.125
+x3max     = 0.125
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16        # 4 root columns: edges at -0.5,-0.25,0,0.25,0.5
+nx2       = 16
+nx3       = 8
+
+<mesh_refinement>
+refinement = static
+
+<refined_region1>
+level = 1
+x1min = -0.25         # interior bar (the two middle columns)
+x1max = 0.25
+x2min = -0.5
+x2max = 0.5
+x3min = -0.125
+x3max = 0.125
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = 0        # run the problem generator only
+tlim       = 0.0
+ndiag      = 1
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = plm
+rsolver     = hlle
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+
+<problem>
+pgen_name = dust_deposit_shear
+time0     = 0.37      # shear phase (0 = exact integer-shift check)
+remap     = plm       # dc | plm | ppmx
+fold      = true      # false: plain pass only (diagnostic; strips must stay 0)

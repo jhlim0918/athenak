@@ -44,6 +44,53 @@ void UpdateGID(int &newgid, NeighborBlock nghbr, int myrank, int *pcounter,
 }
 
 //----------------------------------------------------------------------------------------
+//! \fn int DestinationSlot()
+//! \brief Neighbor-table slot of the MeshBlock that owns the region across offset
+//! (ix,iy,iz) (each -1/0/+1, not all zero) of MeshBlock m.  (fx,fy,fz) is the half of
+//! this block in each direction the particle sits in (selects the subblock of a FINER
+//! neighbor); (myfx1,myfx2,myfx3) is this block's position inside its parent (selects
+//! the subblock slot a COARSER neighbor is stored in, see MeshBlock::SetNeighbors).
+//! Same-level neighbors occupy the (0,0) slot.  A coarser neighbor at an INTERIOR edge or
+//! corner of the coarse face is not stored at all (it is the block that also owns the
+//! face), so the search drops the offset components in which this block is interior to
+//! its parent and retries with the face/edge that remains.  Returns -1 if nothing found.
+
+KOKKOS_INLINE_FUNCTION
+int DestinationSlot(const DualArray2D<NeighborBlock> &nghbr, const int m,
+                    int ix, int iy, int iz, const int fx, const int fy, const int fz,
+                    const int myfx1, const int myfx2, const int myfx3,
+                    const int mylevel) {
+  const int myox1 = 2*myfx1 - 1, myox2 = 2*myfx2 - 1, myox3 = 2*myfx3 - 1;
+  for (int attempt=0; attempt<3; ++attempt) {
+    if ((abs(ix) + abs(iy) + abs(iz)) == 0) {return -1;}
+    // subblock indices of a finer neighbor and the number of subblock slots
+    int n1 = 0, n2 = 0, nsub = 1;
+    if (iz == 0 && iy == 0)       {n1 = fy; n2 = fz; nsub = 4;}   // x1 face
+    else if (iz == 0 && ix == 0)  {n1 = fx; n2 = fz; nsub = 4;}   // x2 face
+    else if (iz == 0)             {n1 = fz;          nsub = 2;}   // x1x2 edge
+    else if (iy == 0 && ix == 0)  {n1 = fx; n2 = fy; nsub = 4;}   // x3 face
+    else if (iy == 0)             {n1 = fy;          nsub = 2;}   // x3x1 edge
+    else if (ix == 0)             {n1 = fx;          nsub = 2;}   // x2x3 edge
+    const int indx0 = NeighborIndex(ix,iy,iz,0,0);
+    if ((nghbr.d_view(m,indx0).gid >= 0) && (nghbr.d_view(m,indx0).lev > mylevel)) {
+      return NeighborIndex(ix,iy,iz,n1,n2);   // finer: the particle's subblock
+    }
+    // same level: slot 0; coarser: the one subblock slot set by SetNeighbors
+    for (int s=0; s<nsub; ++s) {
+      if (nghbr.d_view(m,indx0+s).gid >= 0) {return indx0 + s;}
+    }
+    // unset: an interior edge/corner of a coarser neighbor -- reduce to the face/edge
+    // in the direction(s) where this block is exterior to its parent
+    int jx = (ix != 0 && ix == myox1) ? ix : 0;
+    int jy = (iy != 0 && iy == myox2) ? iy : 0;
+    int jz = (iz != 0 && iz == myox3) ? iz : 0;
+    if ((jx == ix) && (jy == iy) && (jz == iz)) {return -1;}   // nothing to reduce
+    ix = jx; iy = jy; iz = jz;
+  }
+  return -1;
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn void ParticlesBoundaryValues::SetNewGID()
 //! \brief
 
@@ -184,65 +231,21 @@ TaskStatus ParticlesBoundaryValues::SetNewPrtclGID() {
         nb.dest = 0;
         UpdateGID(pi(PGID,p), nb, myrank, pcounter, psendl, p);
       } else {
-      if (iz == 0) {
-        if (iy == 0) {
-          // x1 face
-          int indx = NeighborIndex(ix,0,0,0,0);           // neighbor at same level
-          if (nghbr.d_view(m,indx).lev > mylevel) {       // neighbor at finer level
-            indx = NeighborIndex(ix,0,0,fy,fz);
-          }
-          while (nghbr.d_view(m,indx).gid < 0) {indx++;}  // neighbor at coarser level
-          UpdateGID(pi(PGID,p), nghbr.d_view(m,indx), myrank, pcounter, psendl, p);
-        } else if (ix == 0) {
-          // x2 face
-          int indx = NeighborIndex(0,iy,0,0,0);
-          if (nghbr.d_view(m,indx).lev > mylevel) {
-            indx = NeighborIndex(0,iy,0,fx,fz);
-          }
-          while (nghbr.d_view(m,indx).gid < 0) {indx++;}
-          UpdateGID(pi(PGID,p), nghbr.d_view(m,indx), myrank, pcounter, psendl, p);
-        } else {
-          // x1x2 edge
-          int indx = NeighborIndex(ix,iy,0,0,0);
-          if (nghbr.d_view(m,indx).lev > mylevel) {
-            indx = NeighborIndex(ix,iy,0,fz,0);
-          }
-          while (nghbr.d_view(m,indx).gid < 0) {indx++;}
-          UpdateGID(pi(PGID,p), nghbr.d_view(m,indx), myrank, pcounter, psendl, p);
-        }
-      } else if (iy == 0) {
-        if (ix == 0) {
-          // x3 face
-          int indx = NeighborIndex(0,0,iz,0,0);
-          if (nghbr.d_view(m,indx).lev > mylevel) {
-            indx = NeighborIndex(0,0,iz,fx,fy);
-          }
-          while (nghbr.d_view(m,indx).gid < 0) {indx++;}
-          UpdateGID(pi(PGID,p), nghbr.d_view(m,indx), myrank, pcounter, psendl, p);
-        } else {
-          // x3x1 edge
-          int indx = NeighborIndex(ix,0,iz,0,0);
-          if (nghbr.d_view(m,indx).lev > mylevel) {
-            indx = NeighborIndex(ix,0,iz,fy,0);
-          }
-          while (nghbr.d_view(m,indx).gid < 0) {indx++;}
-          UpdateGID(pi(PGID,p), nghbr.d_view(m,indx), myrank, pcounter, psendl, p);
-        }
-      } else {
-        if (ix == 0) {
-          // x2x3 edge
-          int indx = NeighborIndex(0,iy,iz,0,0);
-          if (nghbr.d_view(m,indx).lev > mylevel) {
-            indx = NeighborIndex(0,iy,iz,fx,0);
-          }
-          while (nghbr.d_view(m,indx).gid < 0) {indx++;}
-          UpdateGID(pi(PGID,p), nghbr.d_view(m,indx), myrank, pcounter, psendl, p);
-        } else {
-          // corners
-          int indx = NeighborIndex(ix,iy,iz,0,0);
-          UpdateGID(pi(PGID,p), nghbr.d_view(m,indx), myrank, pcounter, psendl, p);
-        }
+      // this block's position inside its parent (parity of its logical location at its
+      // own level), from the block geometry; selects the coarser-neighbor slots
+      int lx1 = static_cast<int>((mbsize.d_view(m).x1min - meshsize.x1min)/lx + 0.5);
+      int lx2 = static_cast<int>((mbsize.d_view(m).x2min - meshsize.x2min)/ly + 0.5);
+      int lx3 = static_cast<int>((mbsize.d_view(m).x3min - meshsize.x3min)/lz + 0.5);
+      int myfx1 = lx1 & 1, myfx2 = lx2 & 1, myfx3 = lx3 & 1;
+      int indx = DestinationSlot(nghbr, m, ix, iy, iz, fx, fy, fz,
+                                 myfx1, myfx2, myfx3, mylevel);
+      if (indx < 0) {
+        Kokkos::printf("ParticlesBoundaryValues: no neighbor for particle %d of block "
+                       "gid=%d at offset (%d %d %d), x=(%.6e %.6e %.6e)\n", p,
+                       pi(PGID,p), ix, iy, iz, x1, x2, x3);
+        Kokkos::abort("SetNewPrtclGID: destination MeshBlock not found");
       }
+      UpdateGID(pi(PGID,p), nghbr.d_view(m,indx), myrank, pcounter, psendl, p);
 
       // reset x,y,z positions if particle crosses Mesh boundary using periodic BCs
       // RK position registers must be shifted with the position so the low-storage

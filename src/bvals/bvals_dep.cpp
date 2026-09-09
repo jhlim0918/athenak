@@ -16,7 +16,30 @@
 //! buffers with a scalar loop over neighbors, exactly as in
 //! MeshBoundaryValuesFC::SumBoundaryFluxes().
 //!
-//! Only same-level (uniform grid) exchanges are supported.
+//! Static mesh refinement (level jumps of one between neighbors): every deposited field
+//! is a density (mass, momentum or a rate per unit volume), and every block deposits
+//! with the kernel of the FINEST level (dust::DepositStencil: a block one level below the
+//! finest scatters into a 2x fine image of itself, which is then volume-averaged onto its
+//! cells).  The exchange across a level boundary is then both conservative and
+//! consistent:
+//!   * a FINE block sends its ghost shell RESTRICTED to the coarse resolution (the
+//!     volume average of the 2^d fine ghost cells covering each coarse cell: the mass
+//!     m W of the fine cells is summed and divided by the coarse volume);
+//!   * a COARSE block sends the 2^d fine-image cells of each of its ghost cells (the
+//!     finest-kernel deposits of its own particles), which the fine receiver adds into
+//!     the corresponding fine cells.
+//! A fine cell thus receives the finest-kernel weight of every nearby particle and a
+//! coarse cell the volume average of those weights, whatever block the particles live
+//! in; a uniform particle lattice at the finest spacing deposits an exactly uniform
+//! field across the interface.
+//! The index sets follow the neighbor table of MeshBlock::SetNeighbors: the buffer of a
+//! coarser neighbor is the subblock slot (f1,f2) of the fine block's position inside its
+//! parent, and a fine block's edge/corner slot toward a coarser neighbor is only set at
+//! the EXTERIOR edges/corners of the coarse face -- an interior edge belongs to the same
+//! coarse block as the face, so the face buffer carries the fine ghost shell's
+//! transverse overhang on the interior side (ng fine = ng/2 coarse cells), exactly the
+//! adjoint of the copy exchange's (cnx - ng) overhang.  The receiving coarse block sums
+//! it into the cng cells just across the midline of its face.
 //!
 //! Shear-periodic x1 faces (3D shearing box): the x1 ghost slabs of the face blocks are
 //! NOT folded by the plain-periodic pass (their unsheared x1 buffers are skipped in
@@ -26,6 +49,8 @@
 //! result into the active edge strips of the blocks across the face.  Sign: the copy
 //! exchange fills inner ghosts with outer content shifted by +yshear; the deposit map
 //! is its adjoint, so inner-ghost deposits are shifted by -yshear (outer by +yshear).
+//! With refinement the face blocks share one level (Mesh::CheckShearingBoxRefinement)
+//! and the planes are laid out at that level.
 
 #include <algorithm>
 #include <cstdlib>
@@ -50,13 +75,22 @@ constexpr int PAD = 3;
 // MeshBoundaryValuesDep constructor:
 
 MeshBoundaryValuesDep::MeshBoundaryValuesDep(MeshBlockPack *pp, ParameterInput *pin) :
-  MeshBoundaryValues(pp, pin, false) {
+  MeshBoundaryValues(pp, pin, false),
+  coarse_("dep_coarse",1,1,1,1,1) {
   Mesh *pm = pp->pmesh;
-  if (pm->multilevel) {
-    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-              << std::endl << "Additive deposit exchange does not support SMR/AMR"
-              << std::endl;
-    std::exit(EXIT_FAILURE);
+  multilevel_ = pm->multilevel;
+  nsub_ = pm->three_d ? 8 : (pm->multi_d ? 4 : 2);
+  if (multilevel_) {
+    // the injection of a coarser neighbor's ng ghost cells needs ng coarse cells (2ng
+    // fine cells) inside the fine block's active zone
+    auto &mb = pm->mb_indcs;
+    if ((2*mb.ng > mb.nx1) || (pm->multi_d && (2*mb.ng > mb.nx2)) ||
+        (pm->three_d && (2*mb.ng > mb.nx3))) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "Additive deposit exchange with SMR needs MeshBlocks of "
+                << "at least 2*nghost cells in each active dimension" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
   }
 
   // shear-periodic x1 faces: global plane geometry, per-block global offsets, and the
@@ -64,13 +98,20 @@ MeshBoundaryValuesDep::MeshBoundaryValuesDep(MeshBlockPack *pp, ParameterInput *
   shear_x1_ = (pm->three_d &&
                (pm->mesh_bcs[BoundaryFace::inner_x1] == BoundaryFlag::shear_periodic));
   if (shear_x1_) {
-    shear_gny_ = pm->mesh_indcs.nx2;   // uniform grid: root-level global cell counts
-    shear_gnz_ = pm->mesh_indcs.nx3;
+    // level of the shear-face MeshBlocks (uniform along both faces by the mesh policy)
+    shear_lev_ = pm->root_level;
+    for (int mm=0; mm<(pm->nmb_total); ++mm) {
+      if (pm->lloc_eachmb[mm].lx1 == 0) {shear_lev_ = pm->lloc_eachmb[mm].level; break;}
+    }
+    int lshift = shear_lev_ - pm->root_level;
+    shear_gny_ = (pm->mesh_indcs.nx2) << lshift;   // global cell counts at shear_lev_
+    shear_gnz_ = (pm->mesh_indcs.nx3) << lshift;
     x3_periodic_ = (pm->mesh_bcs[BoundaryFace::inner_x3] == BoundaryFlag::periodic);
     int nmb = pp->nmb_thispack;
     Kokkos::realloc(shear_goffs_, nmb, 2);
     auto goffs_h = Kokkos::create_mirror_view(shear_goffs_);
     for (int m=0; m<nmb; ++m) {
+      // valid (and used) for the face blocks only, which sit at shear_lev_
       LogicalLocation &lloc = pm->lloc_eachmb[m + pp->gids];
       goffs_h(m,0) = static_cast<int>(lloc.lx2)*pm->mb_indcs.nx2;
       goffs_h(m,1) = static_cast<int>(lloc.lx3)*pm->mb_indcs.nx3;
@@ -118,90 +159,292 @@ MeshBoundaryValuesDep::MeshBoundaryValuesDep(MeshBlockPack *pp, ParameterInput *
 //! \fn void MeshBoundaryValuesDep::InitSendIndices
 //! \brief Calculates indices of GHOST cells packed into send buffers. These are the
 //! mirror image of the receive ("unpack into ghosts") indices of the copy exchange in
-//! MeshBoundaryValuesCC::InitRecvIndices. Only same-level indices are used.
+//! MeshBoundaryValuesCC::InitRecvIndices.
+//!   isame: same-level neighbor, own resolution, the ghost slab/edge/corner
+//!   icoar: COARSER neighbor: the ghost shell in the block's COARSE index space
+//!          (packed from the restricted copy), ng/2 coarse cells deep, plus the
+//!          transverse overhang of ng/2 coarse cells on the interior side(s) of the
+//!          parent (f = 0 -> the block is the lower child -> overhang upward)
+//!   ifine: FINER neighbor: own ghost cells, ng deep, over the transverse half (f1,f2)
+//!          covered by that fine neighbor, each sent as its 2^d fine-image cells
 
 void MeshBoundaryValuesDep::InitSendIndices(MeshBoundaryBuffer &buf,
                                             int ox1, int ox2, int ox3, int f1, int f2) {
-  auto &mb_indcs = pmy_pack->pmesh->mb_indcs;
-  int ng = mb_indcs.ng;
-  if ((f1 != 0) || (f2 != 0)) {return;}  // only same-level buffers used
+  auto &mb = pmy_pack->pmesh->mb_indcs;
+  int ng = mb.ng;
+  int cng = ng/2;
 
-  auto &isame = buf.isame[0];
+  // same level (slot (0,0) only)
+  if ((f1 == 0) && (f2 == 0)) {
+    auto &isame = buf.isame[0];
+    if (ox1 == 0) {
+      isame.bis = mb.is;          isame.bie = mb.ie;
+    } else if (ox1 > 0) {
+      isame.bis = mb.ie + 1;      isame.bie = mb.ie + ng;
+    } else {
+      isame.bis = mb.is - ng;     isame.bie = mb.is - 1;
+    }
+    if (ox2 == 0) {
+      isame.bjs = mb.js;          isame.bje = mb.je;
+    } else if (ox2 > 0) {
+      isame.bjs = mb.je + 1;      isame.bje = mb.je + ng;
+    } else {
+      isame.bjs = mb.js - ng;     isame.bje = mb.js - 1;
+    }
+    if (ox3 == 0) {
+      isame.bks = mb.ks;          isame.bke = mb.ke;
+    } else if (ox3 > 0) {
+      isame.bks = mb.ke + 1;      isame.bke = mb.ke + ng;
+    } else {
+      isame.bks = mb.ks - ng;     isame.bke = mb.ks - 1;
+    }
+    buf.isame_ndat = (isame.bie - isame.bis + 1)*(isame.bje - isame.bjs + 1)*
+                     (isame.bke - isame.bks + 1);
+  }
+  if (!multilevel_) {return;}
+
+  // the transverse subblock index of each direction (as in MeshBoundaryValuesCC):
+  // x <- f1 (when ox1 == 0); y <- f1 if ox1 != 0 else f2; z <- f1 on x1x2 edges else f2
+  const int fx = f1;
+  const int fy = (ox1 != 0) ? f1 : f2;
+  const int fz = (ox1 != 0 && ox2 != 0) ? f1 : f2;
+
+  // to a COARSER neighbor: restricted ghost shell (coarse indices) + interior overhang
+  {auto &ic = buf.icoar[0];
   if (ox1 == 0) {
-    isame.bis = mb_indcs.is;          isame.bie = mb_indcs.ie;
+    ic.bis = mb.cis;              ic.bie = mb.cie;
+    if (fx == 0) {ic.bie += cng;} else {ic.bis -= cng;}
   } else if (ox1 > 0) {
-    isame.bis = mb_indcs.ie + 1;      isame.bie = mb_indcs.ie + ng;
+    ic.bis = mb.cie + 1;          ic.bie = mb.cie + cng;
   } else {
-    isame.bis = mb_indcs.is - ng;     isame.bie = mb_indcs.is - 1;
+    ic.bis = mb.cis - cng;        ic.bie = mb.cis - 1;
   }
-
   if (ox2 == 0) {
-    isame.bjs = mb_indcs.js;          isame.bje = mb_indcs.je;
+    ic.bjs = mb.cjs;              ic.bje = mb.cje;
+    if (mb.nx2 > 1) {if (fy == 0) {ic.bje += cng;} else {ic.bjs -= cng;}}
   } else if (ox2 > 0) {
-    isame.bjs = mb_indcs.je + 1;      isame.bje = mb_indcs.je + ng;
+    ic.bjs = mb.cje + 1;          ic.bje = mb.cje + cng;
   } else {
-    isame.bjs = mb_indcs.js - ng;     isame.bje = mb_indcs.js - 1;
+    ic.bjs = mb.cjs - cng;        ic.bje = mb.cjs - 1;
+  }
+  if (ox3 == 0) {
+    ic.bks = mb.cks;              ic.bke = mb.cke;
+    if (mb.nx3 > 1) {if (fz == 0) {ic.bke += cng;} else {ic.bks -= cng;}}
+  } else if (ox3 > 0) {
+    ic.bks = mb.cke + 1;          ic.bke = mb.cke + cng;
+  } else {
+    ic.bks = mb.cks - cng;        ic.bke = mb.cks - 1;
+  }
+  buf.icoar_ndat = (ic.bie - ic.bis + 1)*(ic.bje - ic.bjs + 1)*(ic.bke - ic.bks + 1);
   }
 
-  if (ox3 == 0) {
-    isame.bks = mb_indcs.ks;          isame.bke = mb_indcs.ke;
-  } else if (ox3 > 0) {
-    isame.bks = mb_indcs.ke + 1;      isame.bke = mb_indcs.ke + ng;
+  // to a FINER neighbor: own ghost cells over the transverse half of that neighbor
+  {auto &fi = buf.ifine[0];
+  if (ox1 == 0) {
+    fi.bis = mb.is;               fi.bie = mb.ie;
+    if (fx == 1) {fi.bis += mb.cnx1;} else {fi.bie -= mb.cnx1;}
+  } else if (ox1 > 0) {
+    fi.bis = mb.ie + 1;           fi.bie = mb.ie + ng;
   } else {
-    isame.bks = mb_indcs.ks - ng;     isame.bke = mb_indcs.ks - 1;
+    fi.bis = mb.is - ng;          fi.bie = mb.is - 1;
   }
-  buf.isame_ndat = (isame.bie - isame.bis + 1)*(isame.bje - isame.bjs + 1)*
-                   (isame.bke - isame.bks + 1);
-  // Keep these per-axis extents identical to the partner ranges constructed by
-  // InitRecvIndices(). Rank-packed MPI sends and receives must agree on payload size.
+  if (ox2 == 0) {
+    fi.bjs = mb.js;               fi.bje = mb.je;
+    if (mb.nx2 > 1) {if (fy == 1) {fi.bjs += mb.cnx2;} else {fi.bje -= mb.cnx2;}}
+  } else if (ox2 > 0) {
+    fi.bjs = mb.je + 1;           fi.bje = mb.je + ng;
+  } else {
+    fi.bjs = mb.js - ng;          fi.bje = mb.js - 1;
+  }
+  if (ox3 == 0) {
+    fi.bks = mb.ks;               fi.bke = mb.ke;
+    if (mb.nx3 > 1) {if (fz == 1) {fi.bks += mb.cnx3;} else {fi.bke -= mb.cnx3;}}
+  } else if (ox3 > 0) {
+    fi.bks = mb.ke + 1;           fi.bke = mb.ke + ng;
+  } else {
+    fi.bks = mb.ks - ng;          fi.bke = mb.ks - 1;
+  }
+  // each ghost cell is sent as its nsub_ fine-image cells
+  buf.ifine_ndat = nsub_*(fi.bie - fi.bis + 1)*(fi.bje - fi.bjs + 1)*
+                   (fi.bke - fi.bks + 1);
+  }
+  // Payload sizes: icoar (sender finer) matches the receiver's ifine, and ifine (sender
+  // coarser) matches the receiver's icoar, by construction of InitRecvIndices().
 }
 
 //----------------------------------------------------------------------------------------
 //! \fn void MeshBoundaryValuesDep::InitRecvIndices
 //! \brief Calculates indices of ACTIVE cells into which receive buffers are summed.
-//! These are the mirror image of the send ("pack from active") indices of the copy
-//! exchange in MeshBoundaryValuesCC::InitSendIndices.
+//!   isame: same-level neighbor: the edge strip ng deep
+//!   ifine: FINER neighbor: own active cells ng/2 deep over the transverse half (f1,f2)
+//!          of that neighbor, extended by ng/2 cells across the midline (the fine
+//!          block's interior overhang)
+//!   icoar: COARSER neighbor: indices are in this block's COARSE index space (ng coarse
+//!          cells deep, whole transverse range); the buffer holds the 2^d fine-image
+//!          cells of each such coarse cell, added into the fine cells they cover
 
 void MeshBoundaryValuesDep::InitRecvIndices(MeshBoundaryBuffer &buf,
                                             int ox1, int ox2, int ox3, int f1, int f2) {
-  auto &mb_indcs = pmy_pack->pmesh->mb_indcs;
-  int ng1 = mb_indcs.ng - 1;
-  if ((f1 != 0) || (f2 != 0)) {return;}  // only same-level buffers used
+  auto &mb = pmy_pack->pmesh->mb_indcs;
+  int ng = mb.ng;
+  int ng1 = ng - 1;
+  int cng = ng/2;
 
-  auto &isame = buf.isame[0];
-  isame.bis = (ox1 > 0) ? (mb_indcs.ie - ng1) : mb_indcs.is;
-  isame.bie = (ox1 < 0) ? (mb_indcs.is + ng1) : mb_indcs.ie;
-  isame.bjs = (ox2 > 0) ? (mb_indcs.je - ng1) : mb_indcs.js;
-  isame.bje = (ox2 < 0) ? (mb_indcs.js + ng1) : mb_indcs.je;
-  isame.bks = (ox3 > 0) ? (mb_indcs.ke - ng1) : mb_indcs.ks;
-  isame.bke = (ox3 < 0) ? (mb_indcs.ks + ng1) : mb_indcs.ke;
-  buf.isame_ndat = (isame.bie - isame.bis + 1)*(isame.bje - isame.bjs + 1)*
-                   (isame.bke - isame.bks + 1);
-  // Keep these per-axis extents identical to the partner ranges constructed by
-  // InitSendIndices(). Rank-packed MPI sends and receives must agree on payload size.
+  if ((f1 == 0) && (f2 == 0)) {
+    auto &isame = buf.isame[0];
+    isame.bis = (ox1 > 0) ? (mb.ie - ng1) : mb.is;
+    isame.bie = (ox1 < 0) ? (mb.is + ng1) : mb.ie;
+    isame.bjs = (ox2 > 0) ? (mb.je - ng1) : mb.js;
+    isame.bje = (ox2 < 0) ? (mb.js + ng1) : mb.je;
+    isame.bks = (ox3 > 0) ? (mb.ke - ng1) : mb.ks;
+    isame.bke = (ox3 < 0) ? (mb.ks + ng1) : mb.ke;
+    buf.isame_ndat = (isame.bie - isame.bis + 1)*(isame.bje - isame.bjs + 1)*
+                     (isame.bke - isame.bks + 1);
+  }
+  if (!multilevel_) {return;}
+
+  const int fx = f1;
+  const int fy = (ox1 != 0) ? f1 : f2;
+  const int fz = (ox1 != 0 && ox2 != 0) ? f1 : f2;
+
+  // from a FINER neighbor: own active strip cng deep, its half of the face + overhang
+  {auto &fi = buf.ifine[0];
+  if (ox1 == 0) {
+    fi.bis = mb.is;               fi.bie = mb.ie;
+    if (fx == 0) {fi.bie -= (mb.cnx1 - cng);} else {fi.bis += (mb.cnx1 - cng);}
+  } else if (ox1 > 0) {
+    fi.bis = mb.ie - cng + 1;     fi.bie = mb.ie;
+  } else {
+    fi.bis = mb.is;               fi.bie = mb.is + cng - 1;
+  }
+  if (ox2 == 0) {
+    fi.bjs = mb.js;               fi.bje = mb.je;
+    if (mb.nx2 > 1) {
+      if (fy == 0) {fi.bje -= (mb.cnx2 - cng);} else {fi.bjs += (mb.cnx2 - cng);}
+    }
+  } else if (ox2 > 0) {
+    fi.bjs = mb.je - cng + 1;     fi.bje = mb.je;
+  } else {
+    fi.bjs = mb.js;               fi.bje = mb.js + cng - 1;
+  }
+  if (ox3 == 0) {
+    fi.bks = mb.ks;               fi.bke = mb.ke;
+    if (mb.nx3 > 1) {
+      if (fz == 0) {fi.bke -= (mb.cnx3 - cng);} else {fi.bks += (mb.cnx3 - cng);}
+    }
+  } else if (ox3 > 0) {
+    fi.bks = mb.ke - cng + 1;     fi.bke = mb.ke;
+  } else {
+    fi.bks = mb.ks;               fi.bke = mb.ks + cng - 1;
+  }
+  buf.ifine_ndat = (fi.bie - fi.bis + 1)*(fi.bje - fi.bjs + 1)*(fi.bke - fi.bks + 1);
+  }
+
+  // from a COARSER neighbor: coarse cells to inject, ng deep at the edge (coarse indices)
+  {auto &ic = buf.icoar[0];
+  if (ox1 == 0) {
+    ic.bis = mb.cis;              ic.bie = mb.cie;
+  } else if (ox1 > 0) {
+    ic.bis = mb.cie - ng + 1;     ic.bie = mb.cie;
+  } else {
+    ic.bis = mb.cis;              ic.bie = mb.cis + ng - 1;
+  }
+  if (ox2 == 0) {
+    ic.bjs = mb.cjs;              ic.bje = mb.cje;
+  } else if (ox2 > 0) {
+    ic.bjs = mb.cje - ng + 1;     ic.bje = mb.cje;
+  } else {
+    ic.bjs = mb.cjs;              ic.bje = mb.cjs + ng - 1;
+  }
+  if (ox3 == 0) {
+    ic.bks = mb.cks;              ic.bke = mb.cke;
+  } else if (ox3 > 0) {
+    ic.bks = mb.cke - ng + 1;     ic.bke = mb.cke;
+  } else {
+    ic.bks = mb.cks;              ic.bke = mb.cks + ng - 1;
+  }
+  // each coarse cell of the range arrives as its nsub_ fine cells
+  buf.icoar_ndat = nsub_*(ic.bie - ic.bis + 1)*(ic.bje - ic.bjs + 1)*
+                   (ic.bke - ic.bks + 1);
+  }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void MeshBoundaryValuesDep::RestrictDeposit
+//! \brief Volume-average the deposit array into the internal coarse copy over the coarse
+//! active zone AND the coarse ghost shell (ng/2 cells deep, the image of the ng fine
+//! ghost cells): sends to coarser neighbors are packed from the ghost part.
+
+void MeshBoundaryValuesDep::RestrictDeposit(DvceArray5D<Real> &a) {
+  auto &mb = pmy_pack->pmesh->mb_indcs;
+  const int nmb = pmy_pack->nmb_thispack;
+  const int nvar = a.extent_int(1);
+  const int ng = mb.ng, cng = ng/2;
+  const bool multi_d = pmy_pack->pmesh->multi_d;
+  const bool three_d = pmy_pack->pmesh->three_d;
+  if (coarse_nvar_ != nvar) {
+    int nmbmax = std::max(nmb, pmy_pack->pmesh->nmb_maxperrank);
+    int n1 = mb.cnx1 + 2*ng;
+    int n2 = (mb.nx2 > 1) ? (mb.cnx2 + 2*ng) : 1;
+    int n3 = (mb.nx3 > 1) ? (mb.cnx3 + 2*ng) : 1;
+    Kokkos::realloc(coarse_, nmbmax, nvar, n3, n2, n1);
+    coarse_nvar_ = nvar;
+  }
+  const int cis = mb.cis, cie = mb.cie, cjs = mb.cjs, cje = mb.cje;
+  const int cks = mb.cks, cke = mb.cke;
+  const int is = mb.is, js = mb.js, ks = mb.ks;
+  const int il = cis - cng, iu = cie + cng;
+  const int jl = multi_d ? (cjs - cng) : cjs, ju = multi_d ? (cje + cng) : cje;
+  const int kl = three_d ? (cks - cng) : cks, ku = three_d ? (cke + cng) : cke;
+  auto ca = coarse_;
+  par_for("dep_restrict", DevExeSpace(), 0, nmb-1, 0, nvar-1, kl, ku, jl, ju, il, iu,
+  KOKKOS_LAMBDA(const int m, const int v, const int k, const int j, const int i) {
+    const int fi = 2*(i - cis) + is;
+    if (three_d) {
+      const int fj = 2*(j - cjs) + js;
+      const int fk = 2*(k - cks) + ks;
+      ca(m,v,k,j,i) = 0.125*(a(m,v,fk  ,fj  ,fi) + a(m,v,fk  ,fj  ,fi+1)
+                           + a(m,v,fk  ,fj+1,fi) + a(m,v,fk  ,fj+1,fi+1)
+                           + a(m,v,fk+1,fj  ,fi) + a(m,v,fk+1,fj  ,fi+1)
+                           + a(m,v,fk+1,fj+1,fi) + a(m,v,fk+1,fj+1,fi+1));
+    } else if (multi_d) {
+      const int fj = 2*(j - cjs) + js;
+      ca(m,v,k,j,i) = 0.25*(a(m,v,k,fj  ,fi) + a(m,v,k,fj  ,fi+1)
+                          + a(m,v,k,fj+1,fi) + a(m,v,k,fj+1,fi+1));
+    } else {
+      ca(m,v,k,j,i) = 0.5*(a(m,v,k,j,fi) + a(m,v,k,j,fi+1));
+    }
+  });
 }
 
 //----------------------------------------------------------------------------------------
 //! \fn TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit()
 //! \brief Pack ghost-region deposits into boundary buffers and send to neighbors.
-//! Adapted from MeshBoundaryValuesCC::PackAndSendCC with all coarse/fine/z4c branches
-//! removed (uniform grid only). Same-rank neighbors are written directly into the
-//! destination receive buffer; the task graph guarantees the receiver does not start
-//! summing until all local packs are complete.
+//! Adapted from MeshBoundaryValuesCC::PackAndSendCC.  Same-rank neighbors are written
+//! directly into the destination receive buffer; the task graph guarantees the receiver
+//! does not start summing until all local packs are complete.  Sends to coarser
+//! neighbors are packed from the restricted copy (RestrictDeposit).
 //!
 //! Input array must be a 5D Kokkos View dimensioned (nmb, nvar, nx3, nx2, nx1)
 
-TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a) {
+TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a,
+                                                     DvceArray5D<Real> &fimg) {
   // create local references for variables in kernel
   int nmb = pmy_pack->nmb_thispack;
   int nnghbr = pmy_pack->pmb->nnghbr;
   int nvar = a.extent_int(1);
+  if (multilevel_) {RestrictDeposit(a);}
 
   {int my_rank = global_variable::my_rank;
   auto &nghbr = pmy_pack->pmb->nghbr;
   auto &mbgid = pmy_pack->pmb->mb_gid;
+  auto &mblev = pmy_pack->pmb->mb_lev;
   auto &sbuf = sendbuf;
   auto &rbuf = recvbuf;
+  auto ca = coarse_;
+  const int nsub = nsub_;
+  const bool multi_d = pmy_pack->pmesh->multi_d;
+  const bool three_d = pmy_pack->pmesh->three_d;
 #if MPI_PARALLEL_ENABLED
   // Build (or refresh) the rank-packed metadata before the kernel writes off-rank
   // payloads directly into the aggregate send buffer.
@@ -222,21 +465,35 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a) {
 
     // only load buffers when neighbor exists
     if (nghbr.d_view(m,n).gid >= 0) {
-      int il = sbuf[n].isame[0].bis;
-      int iu = sbuf[n].isame[0].bie;
-      int jl = sbuf[n].isame[0].bjs;
-      int ju = sbuf[n].isame[0].bje;
-      int kl = sbuf[n].isame[0].bks;
-      int ku = sbuf[n].isame[0].bke;
+      // neighbor coarser: pack the restricted ghost shell; same: own ghosts; finer:
+      // the fine-image cells of own ghosts over the neighbor's half of the face
+      const bool to_coarse = (nghbr.d_view(m,n).lev < mblev.d_view(m));
+      const bool to_fine = (nghbr.d_view(m,n).lev > mblev.d_view(m));
+      const MeshBufferIndcs &ix = to_coarse ? sbuf[n].icoar[0] :
+          (to_fine ? sbuf[n].ifine[0] : sbuf[n].isame[0]);
+      int il = ix.bis, iu = ix.bie;
+      int jl = ix.bjs, ju = ix.bje;
+      int kl = ix.bks, ku = ix.bke;
       int ni = iu - il + 1;
       int nj = ju - jl + 1;
       int nk = ku - kl + 1;
       int nkj  = nk*nj;
+      const int ns = to_fine ? nsub : 1;   // values per (coarse) cell of the range
 
       // indices of recv'ing (destination) MB and buffer: MB IDs are stored sequentially
       // in MeshBlockPacks, so array index equals (target_id - first_id)
       int dm = nghbr.d_view(m,n).gid - mbgid.d_view(0);
       int dn = nghbr.d_view(m,n).dest;
+
+      // value of cell (k,j,i) of the range, sub-cell q of its fine image when to_fine
+      auto value = [&](const int k, const int j, const int i, const int q) -> Real {
+        if (to_coarse) {return ca(m,v,k,j,i);}
+        if (!to_fine) {return a(m,v,k,j,i);}
+        const int si = q & 1;
+        const int sj = multi_d ? ((q >> 1) & 1) : 0;
+        const int sk = three_d ? ((q >> 2) & 1) : 0;
+        return fimg(m, v, (three_d ? 2*k + sk : k), (multi_d ? 2*j + sj : j), 2*i + si);
+      };
 
       // Middle loop over k,j
       Kokkos::parallel_for(Kokkos::TeamThreadRange<>(tmember, nkj), [&](const int idx) {
@@ -244,25 +501,31 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a) {
         int j = (idx - k * nj) + jl;
         k += kl;
 
-        // Inner (vector) loop over i
+        // Inner (vector) loop over i (and the fine-image sub-cells)
         // copy directly into recv buffer if MeshBlocks on same rank
         if (nghbr.d_view(m,n).rank == my_rank) {
-          Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il,iu+1),
-          [&](const int i) {
-            rbuf[dn].vars(dm, (i-il + ni*(j-jl + nj*(k-kl + nk*v))) ) = a(m,v,k,j,i);
+          Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il*ns,(iu+1)*ns),
+          [&](const int iq) {
+            const int i = iq/ns, q = iq - i*ns;
+            rbuf[dn].vars(dm, ns*(i-il + ni*(j-jl + nj*(k-kl + nk*v))) + q) =
+                value(k,j,i,q);
           });
         // else copy into send buffer for MPI communication below
         } else {
 #if MPI_PARALLEL_ENABLED
           int base = sendoff(m*nnghbr + n);
-          Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il,iu+1),
-          [&](const int i) {
-            aggsbuf(base + (i-il + ni*(j-jl + nj*(k-kl + nk*v)))) = a(m,v,k,j,i);
+          Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il*ns,(iu+1)*ns),
+          [&](const int iq) {
+            const int i = iq/ns, q = iq - i*ns;
+            aggsbuf(base + ns*(i-il + ni*(j-jl + nj*(k-kl + nk*v))) + q) =
+                value(k,j,i,q);
           });
 #else
-          Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il,iu+1),
-          [&](const int i) {
-            sbuf[n].vars(m, (i-il + ni*(j-jl + nj*(k-kl + nk*v))) ) = a(m,v,k,j,i);
+          Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il*ns,(iu+1)*ns),
+          [&](const int iq) {
+            const int i = iq/ns, q = iq - i*ns;
+            sbuf[n].vars(m, ns*(i-il + ni*(j-jl + nj*(k-kl + nk*v))) + q) =
+                value(k,j,i,q);
           });
 #endif
         }
@@ -299,13 +562,16 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a) {
 //! \brief Check receives are complete, then SUM buffers into active-zone edge strips.
 //! The loop over neighbor buffers is intentionally scalar (sequential within each team):
 //! receive strips of different buffers overlap near active-zone edges/corners, so
-//! concurrent accumulation over buffers would race (cf. SumBoundaryFluxes).
+//! concurrent accumulation over buffers would race (cf. SumBoundaryFluxes).  Buffers
+//! from a coarser neighbor hold coarse cells: each is injected (added) into the 2^d
+//! fine cells it covers.
 
 TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
   // create local references for variables in kernel
   int nmb = pmy_pack->nmb_thispack;
   int nnghbr = pmy_pack->pmb->nnghbr;
   auto &nghbr = pmy_pack->pmb->nghbr;
+  auto &mblev = pmy_pack->pmb->mb_lev;
   auto &rbuf = recvbuf;
 #if MPI_PARALLEL_ENABLED
   //----- STEP 1: check that recv boundary buffer communications have all completed
@@ -344,6 +610,13 @@ TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
   const bool shear = shear_x1_;
   auto ox1tab = nghbr_ox1_;
   auto &mb_bcs = pmy_pack->pmb->mb_bcs;
+  // fine-index mapping of the injection from coarser neighbors
+  auto &mb = pmy_pack->pmesh->mb_indcs;
+  const int cis = mb.cis, cjs = mb.cjs, cks = mb.cks;
+  const int is = mb.is, js = mb.js, ks = mb.ks;
+  const bool multi_d = pmy_pack->pmesh->multi_d;
+  const bool three_d = pmy_pack->pmesh->three_d;
+  const int nsub = nsub_;
 
   // Outer loop over (# of MeshBlocks)*(# of variables); loop over buffers is scalar
   Kokkos::TeamPolicy<> policy(DevExeSpace(), (nmb*nvar), Kokkos::AUTO);
@@ -362,16 +635,18 @@ TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
       }
       // only sum buffers when neighbor exists (and not across a shear face)
       if ((nghbr.d_view(m,n).gid >= 0) && !skip) {
-        int il = rbuf[n].isame[0].bis;
-        int iu = rbuf[n].isame[0].bie;
-        int jl = rbuf[n].isame[0].bjs;
-        int ju = rbuf[n].isame[0].bje;
-        int kl = rbuf[n].isame[0].bks;
-        int ku = rbuf[n].isame[0].bke;
+        const bool from_coarse = (nghbr.d_view(m,n).lev < mblev.d_view(m));
+        const MeshBufferIndcs &ix = from_coarse ? rbuf[n].icoar[0] :
+            ((nghbr.d_view(m,n).lev == mblev.d_view(m)) ? rbuf[n].isame[0] :
+                                                           rbuf[n].ifine[0]);
+        int il = ix.bis, iu = ix.bie;
+        int jl = ix.bjs, ju = ix.bje;
+        int kl = ix.bks, ku = ix.bke;
         int ni = iu - il + 1;
         int nj = ju - jl + 1;
         int nk = ku - kl + 1;
         int nkj  = nk*nj;
+        const int ns = from_coarse ? nsub : 1;   // values per (coarse) cell of the range
 #if MPI_PARALLEL_ENABLED
         // A non-negative aggregate offset identifies an off-rank payload. Same-rank
         // payloads remain in their per-neighbor receive buffers.
@@ -384,15 +659,29 @@ TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
           int j = (idx - k * nj) + jl;
           k += kl;
 
-          // Inner (vector) loop over i
-          Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il,iu+1),
-          [&](const int i) {
-            const int bi = (i-il + ni*(j-jl + nj*(k-kl + nk*v)));
+          // Inner (vector) loop over i (and the fine sub-cells of a coarse-range cell)
+          Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il*ns,(iu+1)*ns),
+          [&](const int iq) {
+            const int i = iq/ns, q = iq - i*ns;
+            const int bi = ns*(i-il + ni*(j-jl + nj*(k-kl + nk*v))) + q;
 #if MPI_PARALLEL_ENABLED
-            a(m,v,k,j,i) += (base >= 0) ? aggrbuf(base + bi) : rbuf[n].vars(m, bi);
+            const Real val = (base >= 0) ? aggrbuf(base + bi) : rbuf[n].vars(m, bi);
 #else
-            a(m,v,k,j,i) += rbuf[n].vars(m, bi);
+            const Real val = rbuf[n].vars(m, bi);
 #endif
+            if (!from_coarse) {
+              a(m,v,k,j,i) += val;
+            } else {
+              // (k,j,i) are COARSE indices of this block and q the fine sub-cell: add
+              // the sender's fine-image value into that fine cell
+              const int si = q & 1;
+              const int sj = multi_d ? ((q >> 1) & 1) : 0;
+              const int sk = three_d ? ((q >> 2) & 1) : 0;
+              const int fi = 2*(i - cis) + is + si;
+              const int fj = multi_d ? (2*(j - cjs) + js + sj) : j;
+              const int fk = three_d ? (2*(k - cks) + ks + sk) : k;
+              a(m,v,fk,fj,fi) += val;
+            }
           });
         });
       }
@@ -419,7 +708,8 @@ TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
 //! rows overlap its neighbors' active rows), hence the atomic gather and the summing
 //! MPI_Allreduce; the summation order can differ with the rank count at the round-off
 //! level.  Three device kernels on one execution-space instance (stream ordered); the
-//! only explicit fence is the one before the collective.
+//! only explicit fence is the one before the collective.  Only the face blocks take
+//! part; with refinement they all sit at shear_lev_, the level of the planes.
 
 TaskStatus MeshBoundaryValuesDep::FoldShearDeposit(DvceArray5D<Real> &a,
                                                    const Real yshear,

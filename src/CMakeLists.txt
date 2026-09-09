@@ -43,6 +43,7 @@ add_executable(
         dust/dust.cpp
         dust/dust_newdt.cpp
         dust/dust_gravity.cpp
+        dust/dust_smr.cpp
         dust/dust_pm.cpp
         dust/dust_push.cpp
         dust/dust_solver.cpp
@@ -144,6 +145,7 @@ add_executable(
         pgen/tests/dust_grav_orbit.cpp
         pgen/tests/dusty_wave.cpp
         pgen/tests/dust_deposit_shear.cpp
+        pgen/tests/dust_settle.cpp
         pgen/tests/gr_bondi.cpp
         pgen/tests/gr_monopole.cpp
         pgen/tests/linear_wave.cpp

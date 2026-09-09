@@ -57,6 +57,7 @@ void DustGasDrag::AssembleDustGasDragTasks(
   id.grecvc  = tlb->AddTask(&DustGasDrag::RecvRhoDustCopy, this, id.gsendc);
   id.gsends  = tlb->AddTask(&DustGasDrag::SendRhoDustShr, this, id.grecvc);
   id.grecvs  = tlb->AddTask(&DustGasDrag::RecvRhoDustShr, this, id.gsends);
+  id.gprolc  = tlb->AddTask(&DustGasDrag::ProlongateRhoDust, this, id.grecvs);
 
   // assemble "stagen" task list
   // register copies (replaces Hydro::CopyCons), then the explicit gas chain
@@ -77,7 +78,9 @@ void DustGasDrag::AssembleDustGasDragTasks(
   id.grecvf    = tl["stagen"]->AddTask(&DustGasDrag::RecvGravForce, this, id.gsendf);
   id.gsendfs   = tl["stagen"]->AddTask(&DustGasDrag::SendGravForceShr, this, id.grecvf);
   id.grecvfs   = tl["stagen"]->AddTask(&DustGasDrag::RecvGravForceShr, this, id.gsendfs);
-  TaskID push_ready = (id.first2 | id.grecvfs);
+  id.gprolf    = tl["stagen"]->AddTask(&DustGasDrag::ProlongateGravForce, this,
+                                       id.grecvfs);
+  TaskID push_ready = (id.first2 | id.gprolf);
   id.push      = tl["stagen"]->AddTask(&DustGasDrag::ExplicitPush, this, push_ready);
   id.p_newgid  = tl["stagen"]->AddTask(&DustGasDrag::UpdateParticleGIDs, this, id.push);
   id.p_cnt     = tl["stagen"]->AddTask(&DustGasDrag::CountParticleSends, this,
@@ -102,8 +105,10 @@ void DustGasDrag::AssembleDustGasDragTasks(
   id.sendus_shr = tl["stagen"]->AddTask(&DustGasDrag::SendUstarShr, this, id.recvus);
   id.recvus_shr = tl["stagen"]->AddTask(&DustGasDrag::RecvUstarShr, this,
                                         id.sendus_shr);
-  id.gkp       = tl["stagen"]->AddTask(&DustGasDrag::GatherKickPMBR, this,
+  // SMR: prolongate the u* ghosts next to coarser neighbors (no-op on a uniform mesh)
+  id.prolus    = tl["stagen"]->AddTask(&DustGasDrag::ProlongateUstar, this,
                                        id.recvus_shr);
+  id.gkp       = tl["stagen"]->AddTask(&DustGasDrag::GatherKickPMBR, this, id.prolus);
   // Hybrid split-BE drifts only after the relaxed kick, so its sole migration belongs
   // here.  These wrappers no-op for IMEX and PC2; the first chain above does the
   // opposite.  Both branches therefore retain exactly one migration per active cycle.
@@ -318,7 +323,7 @@ TaskStatus DustGasDrag::SendDepQP(Driver *pdrive, int stage) {
   if (!ActiveStage(pdrive, stage) || !back_reaction || !use) {
     return TaskStatus::complete;
   }
-  return pbval_qp->PackAndSendDeposit(qdep);
+  return pbval_qp->PackAndSendDeposit(qdep, fimg_q);
 }
 
 TaskStatus DustGasDrag::RecvDepQP(Driver *pdrive, int stage) {
@@ -349,7 +354,8 @@ TaskStatus DustGasDrag::SendUstar(Driver *pdrive, int stage) {
       (coupling == DustCoupling::hybrid &&
        hybrid_mode == HybridMode::split_be && stage == 2);
   if (!ActiveStage(pdrive, stage) || !use) {return TaskStatus::complete;}
-  return pbval_us->PackAndSendCC(ustar, cdummy);
+  RestrictField(ustar, coarse_us);
+  return pbval_us->PackAndSendCC(ustar, coarse_us);
 }
 
 TaskStatus DustGasDrag::RecvUstar(Driver *pdrive, int stage) {
@@ -357,7 +363,16 @@ TaskStatus DustGasDrag::RecvUstar(Driver *pdrive, int stage) {
       (coupling == DustCoupling::hybrid &&
        hybrid_mode == HybridMode::split_be && stage == 2);
   if (!ActiveStage(pdrive, stage) || !use) {return TaskStatus::complete;}
-  return pbval_us->RecvAndUnpackCC(ustar, cdummy);
+  return pbval_us->RecvAndUnpackCC(ustar, coarse_us);
+}
+
+TaskStatus DustGasDrag::ProlongateUstar(Driver *pdrive, int stage) {
+  bool use = (coupling == DustCoupling::imex) ||
+      (coupling == DustCoupling::hybrid &&
+       hybrid_mode == HybridMode::split_be && stage == 2);
+  if (!ActiveStage(pdrive, stage) || !use || !multilevel) {return TaskStatus::complete;}
+  ProlongateField(pbval_us, ustar, coarse_us);
+  return TaskStatus::complete;
 }
 
 TaskStatus DustGasDrag::SendUstarShr(Driver *pdrive, int stage) {
@@ -386,7 +401,7 @@ TaskStatus DustGasDrag::SendPMBR(Driver *pdrive, int stage) {
   if (!ActiveStage(pdrive, stage) || !back_reaction || !use) {
     return TaskStatus::complete;
   }
-  return pbval_dm->PackAndSendDeposit(dmom);
+  return pbval_dm->PackAndSendDeposit(dmom, fimg_d);
 }
 
 TaskStatus DustGasDrag::RecvPMBR(Driver *pdrive, int stage) {
@@ -473,6 +488,64 @@ TaskStatus DustGasDrag::ClearDep(Driver *pdrive, int stage) {
     }
   }
   return tstat;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn DustGasDrag::RestrictField / ProlongateField
+//! \brief SMR bookkeeping around a copy exchange of a ghost-filled field (u*, rho_dust,
+//! g), mirroring Hydro::RestrictU / Hydro::Prolongate.  The coarse ghost cells at
+//! physical (non-periodic) faces are given the adjacent active coarse value so that the
+//! prolongation stencil of a fine block touching both a coarser neighbor and such a face
+//! reads defined data (the fine ghosts there are set by the caller's own policy).
+
+void DustGasDrag::RestrictField(DvceArray5D<Real> &a, DvceArray5D<Real> &ca) {
+  if (!multilevel) {return;}
+  pmy_pack->pmesh->pmr->RestrictCC(a, ca);
+}
+
+void DustGasDrag::ProlongateField(MeshBoundaryValuesCC *pbval, DvceArray5D<Real> &a,
+                                  DvceArray5D<Real> &ca) {
+  if (!multilevel) {return;}
+  pbval->FillCoarseInBndryCC(a, ca);
+  if (!(pmy_pack->pmesh->strictly_periodic)) {
+    auto &indcs = pmy_pack->pmesh->mb_indcs;
+    const int cis = indcs.cis, cie = indcs.cie;
+    const int cjs = indcs.cjs, cje = indcs.cje;
+    const int cks = indcs.cks, cke = indcs.cke;
+    const bool multi_d = pmy_pack->pmesh->multi_d;
+    const bool three_d = pmy_pack->pmesh->three_d;
+    const int nmb1 = pmy_pack->nmb_thispack - 1;
+    const int nvar = ca.extent_int(1);
+    const int n1 = ca.extent_int(4), n2 = ca.extent_int(3), n3 = ca.extent_int(2);
+    auto &mb_bcs = pmy_pack->pmb->mb_bcs;
+    auto physical = [] (BoundaryFlag f) {
+      return (f != BoundaryFlag::block) && (f != BoundaryFlag::periodic) &&
+             (f != BoundaryFlag::shear_periodic);
+    };
+    par_for("dust_coarse_physbc",DevExeSpace(),0,nmb1,0,nvar-1,0,n3-1,0,n2-1,0,n1-1,
+    KOKKOS_LAMBDA(const int m, const int v, const int k, const int j, const int i) {
+      int kk = k, jj = j, ii = i;
+      bool in_ghost = false;
+      auto &bc = mb_bcs.d_view;
+      if (i < cis && physical(bc(m,BoundaryFace::inner_x1))) {ii = cis; in_ghost = true;}
+      if (i > cie && physical(bc(m,BoundaryFace::outer_x1))) {ii = cie; in_ghost = true;}
+      if (multi_d) {
+        if (j < cjs && physical(bc(m,BoundaryFace::inner_x2))) {jj = cjs; in_ghost=true;}
+        if (j > cje && physical(bc(m,BoundaryFace::outer_x2))) {jj = cje; in_ghost=true;}
+      }
+      if (three_d) {
+        if (k < cks && physical(bc(m,BoundaryFace::inner_x3))) {kk = cks; in_ghost=true;}
+        if (k > cke && physical(bc(m,BoundaryFace::outer_x3))) {kk = cke; in_ghost=true;}
+      }
+      if (in_ghost) {
+        ii = (ii < cis) ? cis : ((ii > cie) ? cie : ii);
+        jj = (jj < cjs) ? cjs : ((jj > cje) ? cje : jj);
+        kk = (kk < cks) ? cks : ((kk > cke) ? cke : kk);
+        ca(m,v,k,j,i) = ca(m,v,kk,jj,ii);
+      }
+    });
+  }
+  pbval->ProlongateCC(a, ca);
 }
 
 } // namespace dust

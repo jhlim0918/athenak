@@ -86,7 +86,7 @@ void DustGasDrag::CompleteCopyExchange(DvceArray5D<Real> &field) {
 
 void DustGasDrag::CompleteAddExchange(DvceArray5D<Real> &field) {
   RequireComplete(pbval_solver_add->InitRecv(3), "add InitRecv");
-  RequireComplete(pbval_solver_add->PackAndSendDeposit(field), "add send");
+  RequireComplete(pbval_solver_add->PackAndSendDeposit(field, cdummy), "add send");
   TaskStatus status;
   do {
     status = pbval_solver_add->RecvAndSumDeposit(field);

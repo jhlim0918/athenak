@@ -113,6 +113,8 @@ struct DustGasDragTaskIDs {
   // self-gravity (Phase 4c): dust density into the Poisson source, force on particles
   TaskID gdep, gsend, grecv, gfold, gsendc, grecvc, gsends, grecvs;
   TaskID gforce, gsendf, grecvf, gsendfs, grecvfs;
+  // SMR: prolongation of the copy-exchanged fields at fine/coarse boundaries
+  TaskID prolus, gprolc, gprolf;
 };
 
 namespace dust {
@@ -161,6 +163,38 @@ void PMWeights(const Real x, const Real xmin, const Real xmax, const int nx,
     w[0] = 0.5*SQR(0.5 - del);
     w[1] = 0.75 - SQR(del);
     w[2] = 0.5*SQR(0.5 + del);
+  }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void DepositStencil
+//! \brief Particle-mesh stencil used for every DEPOSIT (scatter) of the module.  With
+//! static mesh refinement all MeshBlocks deposit with the kernel of the FINEST level so
+//! that the deposited density is one consistent field across level boundaries: a block
+//! one level below the finest (r = 2) scatters into its fine image (r*nx cells and r*ng
+//! ghost cells per direction, cell volume V/r^d), which is then volume-averaged onto its
+//! own cells (DustGasDrag::RestrictImage); a block at the finest level (r = 1) scatters
+//! into its own cells.  Gathers keep using the block's own cells (PMWeights directly).
+//! On a uniform mesh r = 1 and the arithmetic is unchanged.
+
+KOKKOS_INLINE_FUNCTION
+void DepositStencil(const RegionSize &sz, const Real x, const Real y, const Real z,
+                    const int nx1, const int nx2, const int nx3,
+                    const int is, const int js, const int ks, const int r,
+                    const bool three_d, const int scheme,
+                    int &ip, int &jp, int &kp, Real wx[3], Real wy[3], Real wz[3],
+                    Real &vol) {
+  PMWeights(x, sz.x1min, sz.x1max, r*nx1, r*is, scheme, ip, wx);
+  PMWeights(y, sz.x2min, sz.x2max, r*nx2, r*js, scheme, jp, wy);
+  vol = sz.dx1*sz.dx2;
+  if (three_d) {
+    PMWeights(z, sz.x3min, sz.x3max, r*nx3, r*ks, scheme, kp, wz);
+    vol *= sz.dx3;
+    if (r > 1) {vol /= static_cast<Real>(r*r*r);}
+  } else {
+    kp = ks;
+    wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0;
+    if (r > 1) {vol /= static_cast<Real>(r*r);}
   }
 }
 
@@ -223,7 +257,21 @@ class DustGasDrag {
   DvceArray5D<Real> rho_dust;   // nvar=1: PM dust mass density (Poisson source, 4c)
   DvceArray5D<Real> gforce;     // nvar=3: -grad(phi) on the mesh, ghost-filled (4c)
                              // [3] (ideal gas with drag_heating); becomes R_g after apply
-  DvceArray5D<Real> cdummy;  // 1-element dummy coarse array for ustar copy exchange
+  DvceArray5D<Real> cdummy;  // 1-element dummy coarse array (coupled-solver exchanges)
+  // SMR: restricted copies of the copy-exchanged fields, (nmb, nvar, cnx3+2ng, ...);
+  // 1-element dummies on a uniform mesh (PackAndSendCC never reads them then)
+  DvceArray5D<Real> coarse_us;  // u*
+  DvceArray5D<Real> coarse_rd;  // rho_dust
+  DvceArray5D<Real> coarse_g;   // gforce
+  bool multilevel;           // SMR mesh: restrict/prolongate around the copy exchanges
+  // SMR: finest-level deposits.  rfac(m) = 2 on blocks one level below the finest level
+  // (they scatter into the fine images below, then RestrictImage averages onto their
+  // cells), 1 otherwise.  any_coarse = some block of this pack has rfac = 2.
+  bool any_coarse = false;
+  DualArray1D<int> rfac;
+  DvceArray5D<Real> fimg_q;     // fine image of qdep (5 vars)
+  DvceArray5D<Real> fimg_d;     // fine image of dmom (4 vars)
+  DvceArray5D<Real> fimg_r;     // fine image of rho_dust (1 var)
   DvceArray5D<Real> solver_r;   // coupled-solver residual
   DvceArray5D<Real> solver_p;   // PCG search direction
   DvceArray5D<Real> solver_ap;  // matrix-free A*x / A*p work field
@@ -322,6 +370,7 @@ class DustGasDrag {
   TaskStatus RecvUstar(Driver *pdrive, int stage);
   TaskStatus SendUstarShr(Driver *pdrive, int stage);
   TaskStatus RecvUstarShr(Driver *pdrive, int stage);
+  TaskStatus ProlongateUstar(Driver *pdrive, int stage);   // SMR: fine ghosts of u*
   TaskStatus GatherKickPMBR(Driver *pdrive, int stage);    // gather+kick+record+scatter
   TaskStatus SendPMBR(Driver *pdrive, int stage);
   TaskStatus RecvPMBR(Driver *pdrive, int stage);
@@ -347,6 +396,21 @@ class DustGasDrag {
   TaskStatus RecvGravForce(Driver *pdrive, int stage);
   TaskStatus SendGravForceShr(Driver *pdrive, int stage);
   TaskStatus RecvGravForceShr(Driver *pdrive, int stage);
+  TaskStatus ProlongateRhoDust(Driver *pdrive, int stage);   // SMR: fine ghost layer
+  TaskStatus ProlongateGravForce(Driver *pdrive, int stage); // SMR: fine ghosts of g
+  // SMR helpers around a copy exchange of a ghost-filled field: restrict the active zone
+  // into the coarse copy before PackAndSendCC; after the receives (and the shear remap)
+  // fill the coarse array in same-level boundaries, apply zero-gradient values in the
+  // coarse ghosts at physical faces, and prolongate the fine ghosts next to coarser
+  // neighbors.  No-ops on a uniform mesh.
+  void RestrictField(DvceArray5D<Real> &a, DvceArray5D<Real> &ca);
+  // SMR finest-level deposits (dust_smr.cpp): zero a fine image before a scatter, and
+  // volume-average it onto the block cells (active zone + ghosts) after; both no-ops
+  // when no block of this pack has rfac = 2
+  void ZeroImage(DvceArray5D<Real> &fimg);
+  void RestrictImage(DvceArray5D<Real> &fimg, DvceArray5D<Real> &a);
+  void ProlongateField(MeshBoundaryValuesCC *pbval, DvceArray5D<Real> &a,
+                       DvceArray5D<Real> &ca);
   void DepositMass();                // the deposit kernel (rho_dust, active + ghosts)
   void ComputeForceField();          // gforce on active cells from phi
   void AssembleDustDensityNow();   // synchronous deposit + exchanges (static solves)

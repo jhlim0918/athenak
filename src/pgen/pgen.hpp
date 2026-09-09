@@ -68,6 +68,7 @@ class ProblemGenerator {
   void GravitoTurbInsertDust(ParameterInput *pin);   // gravito_turb, restart_insert
   void DustyWave(ParameterInput *pin, const bool restart);
   void DustDepositShear(ParameterInput *pin, const bool restart);
+  void DustSettle(ParameterInput *pin, const bool restart);
   void LinearWave(ParameterInput *pin, const bool restart);
   void LWImplode(ParameterInput *pin, const bool restart);
   void Monopole(ParameterInput *pin, const bool restart);

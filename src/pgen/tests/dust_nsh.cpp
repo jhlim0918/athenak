@@ -44,6 +44,10 @@
 #include <string>
 #include <vector>
 
+#if MPI_PARALLEL_ENABLED
+#include <mpi.h>
+#endif
+
 // Athena++ headers
 #include "athena.hpp"
 #include "globals.hpp"
@@ -212,6 +216,14 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
   }
   bool check_equilibrium =
       pin->GetOrAddBoolean("problem","check_equilibrium",!random_placement);
+  // SMR: place the lattice at the FINEST-level cell centres on every MeshBlock (blocks
+  // one level below the finest carry 2^d times as many particles, with masses scaled to
+  // the finest cell volume), so the finest-kernel deposits are exactly uniform across
+  // the level boundaries and the equilibrium is again held to round-off
+  bool lattice_finest = pin->GetOrAddBoolean("problem","lattice_finest",false);
+  if (lattice_finest && (random_placement || !(pmy_mesh_->multilevel))) {
+    lattice_finest = false;
+  }
   pgen_final_func = check_equilibrium ? DustNSHErrors : nullptr;
   // Keep this enrolled in dust-free runs as well so an otherwise unchanged input
   // with user_hist=true remains valid; the callback emits no dust columns in that mode.
@@ -324,13 +336,52 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
   // nonlinear streaming-instability calculations (e.g. Johansen et al. 2007 Run BA).
   particles::Particles *ppar = pmbp->ppart;
   int npart = ppar->nprtcl_thispack;
-  auto &pr = ppar->prtcl_rdata;
-  auto &pi = ppar->prtcl_idata;
   auto &mbsize = pmbp->pmb->mb_size;
   auto gids = pmbp->gids;
   int npart_permb = npart/nmb;
   int ncells = indcs.nx1*indcs.nx2*indcs.nx3;
   int ppc_int = npart_permb/ncells;
+  // finest-level lattice: per-block refinement factor, particle offsets, and a resized
+  // particle array (the tags are re-created below)
+  DualArray1D<int> lat_r("nsh_lat_r", nmb);
+  DualArray1D<int> lat_off("nsh_lat_off", nmb+1);
+  lat_off.h_view(0) = 0;
+  for (int m=0; m<nmb; ++m) {
+    int r = 1;
+    if (lattice_finest) {
+      r = (pmbp->pmb->mb_lev.h_view(m) < pmy_mesh_->max_level) ? 2 : 1;
+    }
+    lat_r.h_view(m) = r;
+    int rd = r*r*(three_d ? r : 1);
+    lat_off.h_view(m+1) = lat_off.h_view(m) + ppc_int*ncells*rd;
+  }
+  lat_r.template modify<HostMemSpace>();  lat_r.template sync<DevExeSpace>();
+  lat_off.template modify<HostMemSpace>(); lat_off.template sync<DevExeSpace>();
+  if (lattice_finest) {
+    npart = lat_off.h_view(nmb);
+    Kokkos::realloc(ppar->prtcl_rdata, ppar->nrdata, std::max(npart, 1));
+    Kokkos::realloc(ppar->prtcl_idata, ppar->nidata, std::max(npart, 1));
+    ppar->nprtcl_thispack = npart;
+    Mesh *pm = pmy_mesh_;
+    pm->nprtcl_thisrank = npart;
+#if MPI_PARALLEL_ENABLED
+    MPI_Allgather(&(pm->nprtcl_thisrank), 1, MPI_INT, pm->nprtcl_eachrank, 1, MPI_INT,
+                  MPI_COMM_WORLD);
+#else
+    pm->nprtcl_eachrank[0] = npart;
+#endif
+    pm->nprtcl_total = 0;
+    for (int n=0; n<global_variable::nranks; ++n) {
+      pm->nprtcl_total += pm->nprtcl_eachrank[n];
+    }
+    ppar->CreateParticleTags(pin);
+    if (global_variable::my_rank == 0) {
+      std::cout << "# NSH lattice at the finest-level cell centres: " << pm->nprtcl_total
+                << " particles" << std::endl;
+    }
+  }
+  auto &pr = ppar->prtcl_rdata;
+  auto &pi = ppar->prtcl_idata;
   if ((!random_placement &&
        ((npart_permb != ppc_int*ncells) || (ppc_int % nspec != 0))) ||
       (random_placement && (npart % nspec != 0))) {
@@ -356,6 +407,8 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
   spdat.template modify<HostMemSpace>();
   spdat.template sync<DevExeSpace>();
 
+  auto lat_r_ = lat_r.d_view;
+  auto lat_off_ = lat_off.d_view;
   par_for("nsh_part", DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m, s;
     if (random_placement) {
@@ -380,26 +433,34 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
       // nspec. The divisibility check above guarantees equal counts in this pack.
       s = p % nspec;
     } else {
-      m = p/npart_permb;
-      if (m > (nmb-1)) {m = nmb-1;}
-      int q = p - m*npart_permb;
+      // lattice: block m owns particles [lat_off(m), lat_off(m+1)), ppc_int per cell of
+      // its (r x) lattice grid
+      m = 0;
+      for (int mm=0; mm<nmb; ++mm) {if (p >= lat_off_(mm)) {m = mm;}}
+      int r = lat_r_(m);
+      int q = p - lat_off_(m);
       int c = q/ppc_int;
       s = (q % ppc_int) % nspec;
-      int i = c % lnx1;
-      int j = (c/lnx1) % lnx2;
-      int k = c/(lnx1*lnx2);
-      pr(IPX,p) = CellCenterX(i, lnx1, mbsize.d_view(m).x1min,
+      int rnx1 = r*lnx1, rnx2 = r*lnx2, rnx3 = three_d ? r*lnx3 : lnx3;
+      int i = c % rnx1;
+      int j = (c/rnx1) % rnx2;
+      int k = c/(rnx1*rnx2);
+      pr(IPX,p) = CellCenterX(i, rnx1, mbsize.d_view(m).x1min,
                              mbsize.d_view(m).x1max);
-      pr(IPY,p) = CellCenterX(j, lnx2, mbsize.d_view(m).x2min,
+      pr(IPY,p) = CellCenterX(j, rnx2, mbsize.d_view(m).x2min,
                              mbsize.d_view(m).x2max);
       pr(IPZ,p) = three_d ?
-          CellCenterX(k, lnx3, mbsize.d_view(m).x3min, mbsize.d_view(m).x3max) : 0.0;
+          CellCenterX(k, rnx3, mbsize.d_view(m).x3min, mbsize.d_view(m).x3max) : 0.0;
     }
     pi(PGID,p) = gids + m;
     pi(PSP,p) = s;
     pr(IPTS,p) = taus_.d_view(s);
     Real vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
     if (three_d) {vol *= mbsize.d_view(m).dx3;}
+    if (!random_placement && lat_r_(m) > 1) {
+      int rd = lat_r_(m)*lat_r_(m)*(three_d ? lat_r_(m) : 1);
+      vol /= static_cast<Real>(rd);
+    }
     pr(IPM,p) = spdat.d_view(s,2)*vol;
     if (mass_mod_amp != 0.0) {
       pr(IPM,p) *= 1.0 + mass_mod_amp*sin(6.283185307179586*(pr(IPY,p) - mesh_y0)/mesh_ly

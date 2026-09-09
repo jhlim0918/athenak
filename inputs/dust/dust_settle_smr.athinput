@@ -1,0 +1,118 @@
+# AthenaK input file (SMR twin of dust_settle.athinput): tide + drag analytics for test particles in the stratified 3D
+# shearing box (dust track, particles + SMR ladder, step 1; pgen dust_settle).  Gas:
+# isothermal hydrostatic slab (H = c_s/Omega = 1) at the dust-free NSH state
+# u = (0,-etavk,0) with the radial forcing 2*Omega*etavk.  Test particles of three
+# stopping times start at rest vertically at z0 = 1.75 H, spread over (x,y):
+#   Omega*tau = 0.1  overdamped settling, terminal rate Omega^2 tau (e-fold 10/Omega)
+#   Omega*tau = 1    damped vertical epicycle, lambda = 0.5, w = 0.866
+#   Omega*tau = 10   nearly undamped epicycle, lambda = 0.05
+# History: per species the z-sums and counts of the particles with |x| < xsplit ("in")
+# and |x| >= xsplit ("out") and the analytic z(t) (uniform box: both populations are
+# equivalent).  Horizontal NSH velocities are held to round-off (see the phst output).
+# dust_settle_smr.athinput refines the bar |x| < 1, all y, |z| < 1 to level 1: the "in"
+# particles settle through the level boundary, the "out" particles stay at root.
+# Box 4 x 2 x 6 (H), dx = 0.125 (cubic), MeshBlocks 8^3 (4 x 2 x 6 at root).
+
+<comment>
+problem   = tide + drag, test particles in a hydrostatic slab
+
+<job>
+basename  = settle_smr
+
+<mesh>
+nghost    = 2
+nx1       = 32
+x1min     = -2.0
+x1max     = 2.0
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+
+nx2       = 16
+x2min     = -1.0
+x2max     = 1.0
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 48
+x3min     = -3.0
+x3max     = 3.0
+ix3_bc    = diode         # particles crossing a z face are removed (none expected)
+ox3_bc    = diode
+
+<meshblock>
+nx1       = 8
+nx2       = 8
+nx3       = 8
+
+<mesh_refinement>
+refinement = static
+
+<refined_region1>
+level = 1
+x1min = -1.0              # the two middle x1 columns (the shear-face columns stay root)
+x1max = 1.0
+x2min = -1.0              # full azimuthal extent (annular policy, orbital advection)
+x2max = 1.0
+x3min = -1.0              # the two rows around the midplane: level jumps in x1 and x3
+x3max = 1.0
+
+<time>
+evolution  = dynamic
+integrator = imex2+       # imex coupling (rk2 + coupling=pc2 also valid)
+cfl_number = 0.3
+nlim       = -1
+tlim       = 12.566370614359172   # 2 orbits
+ndiag      = 100
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = plm
+rsolver     = hlle
+dfloor      = 1.0e-8
+
+<hydro_srcterms>
+const_accel     = true    # radial pressure-gradient mimic on the gas only
+const_accel_val = 0.1     # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear     = 1.5
+omega0     = 1.0
+stratified = true         # vertical tide -Omega^2 z on gas and particles
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 0.375     # 3 species: 24 particles per 8^3 block-equivalent
+
+<dust>
+coupling      = imex
+back_reaction = false     # test particles
+nspecies      = 3
+taus_1        = 0.1
+taus_2        = 1.0
+taus_3        = 10.0
+deposit       = tsc
+dt_cfl        = 0.5
+dt_transport  = relative
+dt_block_safety = 0.5
+
+<problem>
+pgen_name = dust_settle
+user_hist = true
+rho0      = 1.0
+etavk     = 0.05
+z0        = 1.75          # initial height (H = 1)
+floor     = 1.0e-6
+xsplit    = 1.0           # "in" = |x| < 1 (the refined bar of the SMR twin)
+
+<output1>
+file_type  = hst
+dt         = 0.05
+data_format = %.14e
+
+<output2>
+file_type  = phst         # per-species particle means and dispersions
+dt         = 0.05
+data_format = %.14e

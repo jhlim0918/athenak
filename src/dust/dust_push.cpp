@@ -116,10 +116,15 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
     auto gids = pmy_pack->gids;
     int scheme = static_cast<int>(deposit);
 
+    auto rf = rfac.d_view;
     if (hybrid_mode == HybridMode::pc2) {
-      if (br) Kokkos::deep_copy(DevExeSpace(), dmom, 0.0);
+      if (br) {
+        Kokkos::deep_copy(DevExeSpace(), dmom, 0.0);
+        ZeroImage(fimg_d);
+      }
       auto &ustar_ = ustar;
       auto &dmom_ = dmom;
+      auto &fimg_ = fimg_d;
       const bool heat = drag_heating;
       const bool gf = gravity && gravity_force;
       auto &gforce_ = gforce;
@@ -221,8 +226,18 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
         pr(IPRZ,p) = dvz_drag;
 
         if (br) {
-          Real vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
-          if (three_d) vol *= mbsize.d_view(m).dx3;
+          // finest-level deposit stencil at the midpoint (the gather stencil itself on
+          // a block at the finest level, the 2x fine image one level below)
+          const int r = rf(m);
+          Real vol;
+          if (r > 1) {
+            DepositStencil(mbsize.d_view(m), xh, yh, zh, nx1, nx2, nx3, is, js, ks, r,
+                           three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
+          } else {
+            vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
+            if (three_d) vol *= mbsize.d_view(m).dx3;
+          }
+          const DvceArray5D<Real> &tgt = (r > 1) ? fimg_ : dmom_;
           Real fac = -pr(IPM,p)/vol;
           // frictional dissipation of the midpoint drag impulse (midpoint quadrature of
           // m |u - v|^2/t_s over dt, minus the kinetic-energy form correction), as heat
@@ -239,18 +254,23 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
               for (int a=0; a<3; ++a) {
                 Real w = wcb*wx[a];
                 int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
-                DepositAdd(&dmom_(m,0,kk,jj,ii), w*dvx_drag);
-                DepositAdd(&dmom_(m,1,kk,jj,ii), w*dvy_drag);
-                DepositAdd(&dmom_(m,2,kk,jj,ii), w*dvz_drag);
-                if (heat) {DepositAdd(&dmom_(m,3,kk,jj,ii), wcbq*wx[a]);}
+                DepositAdd(&tgt(m,0,kk,jj,ii), w*dvx_drag);
+                DepositAdd(&tgt(m,1,kk,jj,ii), w*dvy_drag);
+                DepositAdd(&tgt(m,2,kk,jj,ii), w*dvz_drag);
+                if (heat) {DepositAdd(&tgt(m,3,kk,jj,ii), wcbq*wx[a]);}
               }
             }
           }
         }
       });
+      if (br) {RestrictImage(fimg_d, dmom);}
     } else {
-      if (br) Kokkos::deep_copy(DevExeSpace(), qdep, 0.0);
+      if (br) {
+        Kokkos::deep_copy(DevExeSpace(), qdep, 0.0);
+        ZeroImage(fimg_q);
+      }
       auto &qdep_ = qdep;
+      auto &fimg_ = fimg_q;
       par_for("dust_be_prepare",DevExeSpace(),0,(npart-1),
       KOKKOS_LAMBDA(const int p) {
         Real x0 = pr(IPX1,p), y0 = pr(IPY1,p), z0 = pr(IPZ1,p);
@@ -273,21 +293,13 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
 
         if (!br) return;
         int m = pi(PGID,p) - gids;
+        // finest-level deposit stencil (the block's own cells when rfac = 1)
+        const int r = rf(m);
         int ip, jp, kp;
-        Real wx[3], wy[3], wz[3];
-        PMWeights(x0, mbsize.d_view(m).x1min, mbsize.d_view(m).x1max, nx1, is,
-                  scheme, ip, wx);
-        PMWeights(y0, mbsize.d_view(m).x2min, mbsize.d_view(m).x2max, nx2, js,
-                  scheme, jp, wy);
-        if (three_d) {
-          PMWeights(z0, mbsize.d_view(m).x3min, mbsize.d_view(m).x3max, nx3, ks,
-                    scheme, kp, wz);
-        } else {
-          kp = ks;
-          wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0;
-        }
-        Real vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
-        if (three_d) vol *= mbsize.d_view(m).dx3;
+        Real wx[3], wy[3], wz[3], vol;
+        DepositStencil(mbsize.d_view(m), x0, y0, z0, nx1, nx2, nx3, is, js, ks, r,
+                       three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
+        const DvceArray5D<Real> &tgt = (r > 1) ? fimg_ : qdep_;
         Real cj = dt/(pr(IPTS,p) + dt);
         Real muc = pr(IPM,p)*cj/vol;
         Real rate = pr(IPM,p)/(pr(IPTS,p)*vol);
@@ -299,15 +311,16 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
             for (int a=0; a<3; ++a) {
               Real w = wcb*wx[a];
               int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
-              DepositAdd(&qdep_(m,0,kk,jj,ii), w*muc);
-              DepositAdd(&qdep_(m,1,kk,jj,ii), w*muc*pr(IPVX,p));
-              DepositAdd(&qdep_(m,2,kk,jj,ii), w*muc*pr(IPVY,p));
-              DepositAdd(&qdep_(m,3,kk,jj,ii), w*muc*pr(IPVZ,p));
-              DepositAdd(&qdep_(m,4,kk,jj,ii), w*rate);
+              DepositAdd(&tgt(m,0,kk,jj,ii), w*muc);
+              DepositAdd(&tgt(m,1,kk,jj,ii), w*muc*pr(IPVX,p));
+              DepositAdd(&tgt(m,2,kk,jj,ii), w*muc*pr(IPVY,p));
+              DepositAdd(&tgt(m,3,kk,jj,ii), w*muc*pr(IPVZ,p));
+              DepositAdd(&tgt(m,4,kk,jj,ii), w*rate);
             }
           }
         }
       });
+      if (br) {RestrictImage(fimg_q, qdep);}
     }
     return TaskStatus::complete;
   }
