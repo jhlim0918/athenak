@@ -21,10 +21,11 @@
        I.\ The Dust-Module Merge (Phase 4a),\\
        the Shear-Periodic Deposit Fold, the Ideal-Gas Energy Update\\
        and the Particle Timestep under Shear (Phase 4b, i--iii),\\
-       Dust Self-Gravity (Phase 4c), and the Vertical Policy, Restart\\
-       and Diagnostics (Phase 4d)}
-\author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}}
-\date{September 3--5, 2026}
+       Dust Self-Gravity (Phase 4c), the Vertical Policy, Restart\\
+       and Diagnostics (Phase 4d), and Particles on Statically\\
+       Refined Meshes (Phase 5)}
+\author{\code{athenak-multigrid} tree, branches \code{dust-multigrid} and \code{dust-smr}}
+\date{September 3--8, 2026}
 
 \begin{document}
 \maketitle
@@ -131,6 +132,20 @@ vertical faces are removed with their mass accounted (64 of 64 in the escape tes
 serially and on 2 ranks), particle restart reproduces an uninterrupted run to every
 digit (serially and on 4 ranks), and the new \code{dust\_dpm} output reproduces the twin
 profile exactly and the uniform lattice to round-off on 4 ranks.
+
+\textbf{Phase 5} takes the particles onto statically refined meshes. The shear-periodic
+deposit unit test on refined meshes reproduces the uniform digits at the same face-level
+geometry, leak-free, at 1, 2 and 4 ranks. The uniform NSH lattice across a level boundary
+exposed the interface ripple of the natural restrict/inject exchange ($9/8$ and $15/16$ of
+the uniform density in the two cells at every interface, measured exactly); with the
+finest-level deposits adopted, a lattice at the finest spacing deposits $1.000000000000000$
+in every cell and the equilibrium holds to round-off, serially and on 4 ranks, and a
+structured run is rank-independent. Test particles settling through a refined layer agree
+with those on the root mesh to $10^{-3}$ of their initial height, within the residual of
+both against the analytic damped oscillator. The linA streaming mode, however, grows at
+half the uniform rate when radial level boundaries cut through it (root and fine uniform
+meshes both within $1\%$ of YJ07): the interfaces disturb a $10^{-11}$ linear mode at the
+$O(1)$ level, an open finding recorded for the next step.
 \end{abstract}
 
 \tableofcontents
@@ -152,7 +167,7 @@ their limitations section names. The route (implementation document, \S1.2):
 Phase 4a merges the dust module; 4b adds what the 3D shearing box needs from it
 (shear-remapped additive deposits, ideal-gas back-reaction, a relaxed particle
 timestep); 4c adds dust self-gravity through the existing Poisson solve; 4d builds
-the science configuration; Phase 5 takes particles onto refined meshes.
+the science configuration; Phase 5 takes particles onto refined meshes (\S\ref{sec:phase5}).
 
 \subsection{What Phase 4a must establish}
 
@@ -1218,6 +1233,137 @@ outputs, with the $e^{35t}$ growth of the checkerboard mode.}
 \end{figure}
 
 %=========================================================================================
+\section{Phase 5: particles on statically refined meshes}
+\label{sec:phase5}
+
+Mechanism: implementation document \S10. Data: \file{run/dust5/} (README); figure
+\ref{fig:smr}. Branch \code{dust-smr}. The ladder is gravity-free: (1) the deposit unit
+test on refined meshes, (2) the uniform NSH lattice with a refined bar, (3) tide $+$ drag
+analytics for test particles settling through a refined layer, (4) the linA streaming
+mode with a level boundary through it, (5) rank independence throughout. Every uniform-mesh
+regression is unchanged bit for bit: the Phase-4b deposit unit test reproduces its
+archived digits, and the structured one-orbit NSH box of the Phase-4d restart test
+reproduces \file{run/dust4d/rst/base.\{user,hydro\}.hst} to every digit.
+
+\subsection{The deposit unit test on refined meshes}
+
+\code{dust\_deposit\_shear} on a $64\times32\times16$ root grid of $16\times16\times8$
+blocks, \code{nghost} $= 4$, in two layouts: the two interior columns refined to level 1
+(the shear-face blocks have finer neighbors inward, and the fold's planes stay at root),
+and both shear-face columns refined to level 1 (the planes live at level 1). In both the
+fold reproduces the \emph{uniform} test at the same face-level geometry to every printed
+digit --- $5.130207\times10^{-3}$ / $2.054089\times10^{-4}$ (interior bar, against the
+uniform $32$-row mesh with the same $n_g$ and blocks) and $1.434797\times10^{-3}$ /
+$3.599340\times10^{-5}$ (refined faces, against the uniform mesh with $\Delta x_1 = 1/128$
+and 64 rows) --- with the constant field exact, the multiplicity exact, nothing leaking
+into any cell outside the receiving strips (the interior refined blocks included), mass
+conserved to $10^{-15}$, exact at \code{time0} $= 0$, and 1, 2 and 4 ranks identical.
+The first version of the test passed a one-element dummy for the fine image; the leak
+column then read $10^{267}$ --- the coarse face blocks packing their inward ghost cells
+for finer neighbors from unallocated memory --- which is the check working as intended.
+
+\subsection{The lattice, the interface, and why the deposit scheme changed}
+
+The NSH lattice of Phase 4b on the same root grid with the bar $|x| < 0.25$, all $y$,
+$|z| < 0.25$ at level 1 (\file{inputs/dust/dust\_nsh\_shear3d\_smr.athinput}, 88 blocks,
+$\Delta x_1 = 1/128$ on the fine level so the step is $2.3\times10^{-3}$): with the first,
+restrict/inject exchange and one lattice point per cell of each block the equilibrium
+\emph{drifts}, all eight error columns at $2$--$5\times10^{-5}$ after one orbit where the
+uniform mesh gives $10^{-16}$. The \code{dust\_dpm} dump at $t = 0$ says why (figure
+\ref{fig:smr}, left; \file{run/dust5/dpm/}): across the $x = 0.25$ boundary the deposited
+density is $1.000$ everywhere except $1.125$ in the second fine cell and $0.9375$ in the
+adjacent coarse cell --- the $9/8$ and $15/16$ the implementation document derives for a
+kernel that reaches half as far on the fine side. With the finest-level deposits adopted
+and the lattice at the finest spacing on every block (\code{problem/lattice\_finest},
+786\,432 particles) the dump is $1.000000000000000$ in every cell of the mesh, and the
+one-orbit equilibrium errors are $7\times10^{-17}$--$1.3\times10^{-13}$ serially and $6\times10^{-16}$--$4\times10^{-14}$ on 4 ranks. The
+structured state (\code{mass\_mod\_amp} $= 0.5$, back-reaction, one orbit) agrees between
+the serial and the 4-rank run to $7\times10^{-12}$ relative in every dust history column and to $2\times10^{-14}$ absolute in the gas columns (786\,432 particles, 2697 cycles; the fold's summation order differs with the rank count): the
+exchange, the fine-image packing and the migration to coarser neighbors are
+rank-independent.
+
+\subsection{Tide $+$ drag: settling through a refined layer}
+
+\code{dust\_settle} (implementation \S10.7): an isothermal slab in hydrostatic
+equilibrium with the vertical tide ($H = c_s/\Omega = 1$) at the dust-free NSH state
+$u = (0, -\eta v_K, 0)$, and test particles of $\Omega\tau = 0.1$, $1$, $10$ released at
+rest at $z_0 = 1.75H$, spread over $(x,y)$, in a $4\times2\times6$ box of $8^3$ blocks at
+$\Delta = 0.125$ (32\,768 particles, two orbits). The SMR twin refines the bar $|x| < 1$,
+all $y$, $|z| < 1$: the particles with $|x| < 1$ settle through the level boundary at
+$z = 1$ into fine blocks, those with $|x| \ge 1$ stay on the root mesh, in the same run.
+The history splits the two populations.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+$\max_t |\langle z\rangle - z_{\rm ref}|$ (in $H$) & $\Omega\tau = 0.1$ & $\Omega\tau = 1$ & $\Omega\tau = 10$ \\
+\midrule
+uniform: in vs.\ out & $7.6\times10^{-15}$ & $8.0\times10^{-15}$ & $1.5\times10^{-14}$ \\
+uniform: in vs.\ analytic & $2.09\times10^{-2}$ & $2.10\times10^{-3}$ & $3.16\times10^{-3}$ \\
+SMR: in (through the bar) vs.\ out (root) & $1.55\times10^{-3}$ & $1.47\times10^{-3}$ & $1.0\times10^{-4}$ \\
+SMR: in vs.\ analytic & $1.99\times10^{-2}$ & $9.8\times10^{-4}$ & $2.12\times10^{-3}$ \\
+SMR: out vs.\ analytic & $2.06\times10^{-2}$ & $2.02\times10^{-3}$ & $2.15\times10^{-3}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+On the uniform mesh the two populations are the same to round-off, as they must be, and
+both follow the analytic damped oscillator to $0.1$--$0.2\%$ of $z_0$ for $\Omega\tau = 1$
+and $10$ and to $1.2\%$ for the tightly coupled $\Omega\tau = 0.1$, whose settling speed
+$\Omega^2\tau z$ is small enough for the gas's hydrostatic truncation residual
+($v_z \sim 10^{-3}$, uniform in $x,y$) to shift it. On the SMR mesh the population that
+crosses the level boundary differs from the one that does not by $1.5\times10^{-3}H$
+(a tenth of a percent of $z_0$) for the two shorter stopping times and $10^{-4}H$ for
+the longest --- below the analytic residual, and with the refined population the closer to
+the exact curve. Horizontally the particles hold the NSH velocities to $10^{-16}$ on the
+uniform mesh (the gas state is an exact discrete fixed point) and to $10^{-6}$ in the mean
+with a $5\times10^{-4}$ dispersion on the SMR mesh: the gas develops $x$-kinetic energy
+$1.3\times10^{-6}$ (from $10^{-31}$) at the level boundaries of the marginally resolved
+slab --- a property of the hydro on refined meshes, which the short-$\tau$ particles
+faithfully follow. Nothing escapes; the MeshBlock guard binds in 153 (uniform) and 195
+(SMR) of the $\sim$330 cycles with $8^3$ blocks.
+
+\subsection{The linA streaming mode with a level boundary}
+
+The YJ07 linA eigenmode ($k_x = k_z = 600$, $s = 0.4190204$) on a $64^2$ axisymmetric box
+of $16^2$ blocks, \code{nghost} $= 4$, to $t = 4$: uniform, and with the two middle
+radial columns $x \in [L/4, 3L/4]$ over the full vertical extent at level 1 --- the
+shearing-box mesh policies (face blocks at root, refined regions spanning the full $x_2$)
+apply even with the plain periodic $x_1$ of the $r$--$z$ geometry --- so the radial level
+boundaries cut through the mode and the drifting particles cross them. Growth rates from a fit of
+$\ln|\tilde\rho_p|$ (the particle-mass projection, mesh-independent by construction)
+over $t \in [1,4]$: uniform $64^2$, $0.4179$; uniform $32^2$ (the root resolution of the
+refined run), $0.4162$; with the refined columns, $0.2226$. The two uniform meshes are
+within $0.3$ and $0.7\%$ of YJ07 and grow steadily (local rates per unit time
+$0.418, 0.418, 0.418, 0.417$ and $0.417, 0.416, 0.417, 0.414$); the refined run does not:
+its local rates are $0.436, 0.484, 0.159, 0.313$, the signature of a mode that is no longer
+an eigenmode of the mixed mesh but beats against structure generated at the two radial
+level boundaries (figure \ref{fig:smr}, right). This is a \emph{finding, not a pass}: the
+particle machinery is consistent and conservative across the interfaces (the lattice and
+settling tests above), yet a linear mode of $10^{-11}$ relative amplitude and a 16-cell
+wavelength on the coarse side is disturbed at the $O(1)$ level by the interfaces. The
+likely agents are the minmod-limited (hence nonlinear in the perturbation) prolongation
+of the gas state and of $u^*$ into the fine ghost zones and the change of drag-kernel
+width across the interface; separating them (a gas-only sound wave through an interface,
+a mode with the interfaces parallel to its wavevector, a linear prolongation) is the first
+task of the next step. For the science box --- saturated turbulence, dust layer refined,
+interfaces in low-density gas --- the linear regime is not the operating point, but the
+result bounds what refined-mesh runs can say about linear growth.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/dust5_smr.png}
+\caption{Phase 5. Left: the deposited dust density across the $x_1$ level boundary of the
+SMR NSH lattice at $t = 0$, restrict/inject scheme (the predicted $9/8$ and $15/16$) and
+finest-level deposits (exactly 1). Middle: $\langle z\rangle(t)$ of the settling test
+particles, uniform mesh and SMR twin, the population that crosses into the refined bar and
+the one that stays on the root mesh, against the analytic damped oscillator. Right: the
+linA mode amplitude on the uniform $64^2$ mesh and with the two middle radial columns refined.}
+\label{fig:smr}
+\end{figure}
+
+%=========================================================================================
 \section{Summary}
 \label{sec:summary}
 
@@ -1261,5 +1407,23 @@ module's own dust density and the SC14 dust history columns are available. The d
 track is ready for the science box, and the two-stage Baehr et al.\ setup --- the
 gas to saturation, then the particles inserted on restart, back-reaction a switch ---
 is built, exercised in a small box, and scripted for Vista.
+
+Phase 5 puts the particles on statically refined meshes and, on the way, settles a
+design question: the natural conservative exchange of ghost deposits across a level jump
+leaves an $O(1)$ two-cell ripple at every interface, measured exactly as $9/8$ and
+$15/16$ of the uniform density and traced to the half-reach of the kernel on the fine
+side, so the module now deposits with the finest-level kernel everywhere. With that, the
+deposit unit test reproduces the uniform digits on refined meshes at 1, 2 and 4 ranks, a
+lattice at the finest spacing deposits an exactly uniform field and holds the NSH
+equilibrium to round-off across the level boundaries, a structured run is
+rank-independent, test particles settle through a refined layer within $10^{-3}$ of those
+that do not. One result is negative and is recorded as such: the linA streaming mode, a
+$10^{-11}$ perturbation with a 16-cell wavelength on the coarse side, grows at only half
+the uniform rate when two radial level boundaries cut through it, while the root- and
+fine-resolution uniform meshes both reproduce YJ07 to better than one percent --- the
+mixed mesh disturbs the linear mode at the interfaces, most likely through the
+minmod-limited prolongation and the kernel-width change. Disentangling that, adaptive
+refinement, more than one level of dust refinement and the gravity path on refined meshes
+remain for the next step.
 
 \end{document}

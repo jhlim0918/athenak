@@ -34,13 +34,13 @@
        \large Phase 4a: the dust-module merge; Phase 4b (i): the shear-periodic
        deposit fold; (ii): the ideal-gas energy update; (iii): the particle
        timestep under shear; Phase 4c: dust self-gravity; Phase 4d: the vertical
-       policy, restart, diagnostics}
-\author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}\\
+       policy, restart, diagnostics; Phase 5: particles on statically refined meshes}
+\author{\code{athenak-multigrid} tree, branches \code{dust-multigrid} and \code{dust-smr}\\
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6},
         \code{9a96f9f3}, \code{d39858ac}, \code{a9279dc8},
-        \code{386d5968}}
-\date{September 3--5, 2026}
+        \code{386d5968}; Phase 5 on \code{dust-smr} (uncommitted)}
+\date{September 3--8, 2026}
 
 \begin{document}
 \maketitle
@@ -119,6 +119,16 @@ physical vertical face are removed with their mass accounted (the Athena-C
 \code{zbc\_out = 1} policy); particle arrays are written to and read from restart files;
 the module's own particle-mesh density is an output variable; and the SC14 history
 gains the dust's mass, momenta, kinetic energy, Reynolds stress and escaped mass.
+\textbf{Phase 5} takes the particles onto statically refined meshes. Its central finding
+is that the natural conservative exchange of ghost deposits across a level jump
+(restrict fine, inject coarse) leaves an $O(1)$ two-cell ripple in the deposited density
+at every interface --- a particle's kernel reaches half as far on the fine side --- and
+that no local rule is both conservative per particle and consistent. The scheme adopted
+deposits with the finest-level kernel everywhere (blocks one level below it through a
+$2\times$ fine image averaged onto their cells), which is conservative, consistent, and
+exact for a uniform lattice at the finest spacing; the additive exchange, the
+prolongation of the module's copy-exchanged fields, a defect in upstream's particle
+routing to coarser neighbors and the shear machinery at the face level complete it.
 
 The document also records, for the phases that follow, the integration map derived
 from the code survey: where the gravity solve is called relative to the dust task
@@ -180,8 +190,9 @@ Phase & Status & Content \\
      reads, force gather to particles; dust-only and gas$+$dust tests \\
 4d & planned & the science configuration: SC14 box $+$ pressure gradient $+$ dust;
      particle restart; clump diagnostics \\
-5  & deferred & particles on refined meshes (deposit exchange across levels, particle
-     redistribution on remesh) \\
+5  & \textbf{done} (static) & particles on statically refined meshes: finest-level
+     deposits, the additive exchange across levels, prolongated copy exchanges, migration
+     to coarser neighbors (\S\ref{sec:phase5}); adaptive remesh deferred \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1251,6 +1262,164 @@ thereafter (the planes are now free of remap error), 4 ranks now reproduce seria
 exactly, and a $64^3$ box went from 25 s to 0.33 s per cycle.
 
 %=========================================================================================
+\section{Phase 5: particles on statically refined meshes}
+\label{sec:phase5}
+
+Branch \code{dust-smr}, off \code{dust-multigrid} at \code{fbf52141}. Static mesh
+refinement (SMR) only: adaptive refinement moves, creates and destroys MeshBlocks and
+nothing in the particle module follows (\code{PGID} would go stale, and no hook
+redistributes particles), so the dust constructor is fatal on \code{adaptive}. Within
+SMR the shearing-box policies of the gravity track apply unchanged: both shear-periodic
+$x_1$ faces at one uniform level, refined regions spanning the full $x_2$ extent under
+orbital advection, and at most one level of refinement for the dust (the reason is in
+\S\ref{sec:phase5:kernel}). Gravity-free tests first; the gravity path is wired but
+belongs to the next validation step.
+
+\subsection{What the dust module relies on, and what refinement breaks}
+
+Four things changed meaning. (1) The additive deposit exchange
+(\code{MeshBoundaryValuesDep}) only knew same-level neighbors: ghost cells of one block
+overlap active cells of the other one for one. Across a level jump a fine ghost cell
+covers a quarter (2D) or an eighth of a coarse cell, and a coarse ghost cell covers
+$2^d$ fine cells. (2) The copy exchanges of the module's own fields --- the provisional
+gas velocity $u^*$, the dust density and the gravitational force --- passed a
+one-element dummy as the ``coarse array'' that \fn{PackAndSendCC} reads for a coarser
+neighbor, and nothing prolongated their fine ghosts. (3) The particle migration of
+upstream (\fn{SetNewPrtclGID}) handles a finer neighbor by the particle's sub-block and a
+coarser one by walking the sub-block slots until one is set --- which is wrong at the
+\emph{interior} edges and corners of a coarse face, where \fn{MeshBlock::SetNeighbors}
+deliberately sets no slot (that region belongs to the block that also owns the face),
+so the walk ran into an unrelated slot or off the table. (4) The shear-periodic
+machinery of the particles (the $(\mathrm{side}, l_{x3}, l_{x2}) \to$ gid maps) and of
+the fold (the global $y$--$z$ planes) were laid out on the root grid.
+
+\subsection{The deposit kernel across a level jump}
+\label{sec:phase5:kernel}
+
+The first design was the obvious conservative one: a fine block restricts its ghost
+deposits (the volume average of the $2^d$ fine ghost cells covering each coarse cell)
+and a coarse block's ghost deposits are injected as the same density into the $2^d$
+fine cells they cover. Both directions conserve the deposited mass exactly, and the
+deposit unit test and the structured rank-independence tests pass. But the uniform NSH
+lattice does not hold: the deposited density is not uniform at the interface, because a
+particle's TSC footprint has half the reach on the fine side. Consider a planar
+interface with the coarse cell $C_0$ adjacent to it and fine cells $F_0, F_1$ beyond, all
+particles on a lattice at their own cell centres with masses $\propto$ cell volume. $C_0$
+receives $3/4 + 1/8$ from its own side, but from the fine side only the restriction of
+what the fine kernel put into the fine ghost cells, $\tfrac12(1/8 + 0) = 1/16$ instead
+of the $1/8$ a coarse-lattice neighbor would have given: $15/16$. $F_0$ receives
+$7/8$ from its side and $1/8$ by injection: $1$. $F_1$ receives its full $1$ and the
+same injected $1/8$: $9/8$. Mass is conserved ($-\tfrac1{16}V_c + \tfrac18 V_f = 0$) but
+the field carries an $O(1)$ two-cell ripple at every interface, independent of
+resolution --- in expectation over random particle positions as well, with the same
+$15/16$ and $9/8$ (the tails $\int_{1/2}^{\infty}$ of the CIC and TSC B-splines are both
+$1/8$). The dust\_dpm output of the SMR lattice showed exactly $1.125$ in the second fine
+cell (validation \S10). The NSH equilibrium drifted at the $10^{-5}$ level per orbit.
+
+No local rule repairs this while keeping per-particle conservation: depositing into the
+coarse neighbor with the \emph{coarse} kernel makes the field uniform in expectation but
+$\sum_k W_{jk} \neq 1$ per particle (momentum conservation of the back-reaction lost);
+the restrict/inject rule conserves but is inconsistent. The scheme adopted does both:
+\invariant{Finest-level deposits.}{Every MeshBlock scatters with the kernel of the
+finest level. A block one level below the finest deposits into a $2\times$ fine image of
+itself ($2n_x$ cells and $2n_g$ ghost cells per direction, cell volume $V/2^d$;
+\fn{dust::DepositStencil}), which \fn{DustGasDrag::RestrictImage} volume-averages onto the
+block's own cells, ghosts included, before the exchange. A block at the finest level
+deposits into its own cells as before. Gathers keep using the block's own cells.}
+A fine cell then receives the finest-kernel weight of every nearby particle whatever
+block it lives in, and a coarse cell the volume average of those weights: one consistent
+field, each particle's weights summing to one (the image is a partition of unity and the
+average preserves it), so the mass, the momentum antisymmetry of the back-reaction and
+the exactness of the closed-form drag solve are as on a uniform mesh. The price is the
+memory of the images (five, four and one variables at $2^d$ the block size, allocated
+only when the pack has a block below the finest level) and a consistency that holds
+across \emph{one} level jump only: a block two levels down would deposit with the kernel
+of the level above it, restricted, which differs from its finer neighbor's; hence the
+guard. With the lattice placed at the finest-level cell centres on every block (the NSH
+generator's \code{lattice\_finest}, $2^d$ particles per coarse cell with masses scaled to
+the finest volume) the deposited field is exactly uniform across the interface
+($1.000000000000000$ in every cell) and the equilibrium is held to round-off again;
+with one lattice point per cell of each block the two spacings' kernel sums differ by
+$O(1)$ at the interface (a lattice property: for random positions both are uniform in
+expectation), so that test is documented as a property of the lattice.
+
+\subsection{The additive exchange across levels}
+
+\fn{MeshBoundaryValuesDep} gains the level-dependent index sets of the cell-centered
+exchange, built in its own \fn{InitSendIndices}/\fn{InitRecvIndices} to mirror
+\fn{MeshBlock::SetNeighbors}:
+\begin{itemize}\itemsep2pt
+\item \emph{Fine sender, coarser receiver} (\code{icoar} send, \code{ifine} receive).
+      The sender packs its ghost shell restricted to coarse resolution
+      (\fn{RestrictDeposit} averages the deposit array, ghost shell included, into an
+      internal coarse copy), $n_g/2$ coarse cells deep, over its full transverse extent
+      \emph{plus} an overhang of $n_g/2$ coarse cells on the interior side of its parent
+      (the side toward its sibling): the neighbor table stores a coarser neighbor at an
+      edge or corner only when it is an \emph{exterior} edge of the coarse face, so the
+      interior overhang travels with the face buffer, exactly the adjoint of the copy
+      exchange's $(cn_x - n_g)$ overhang. The coarse receiver sums it into $n_g/2$ active
+      cells of its half of the face extended by $n_g/2$ cells across the midline.
+\item \emph{Coarse sender, finer receiver} (\code{ifine} send, \code{icoar} receive).
+      The sender packs, for each of its $n_g$ ghost cells over the quadrant $(f_1,f_2)$
+      of that fine neighbor, the $2^d$ cells of its fine image (the finest-kernel
+      deposits of its own particles); the payload is $2^d$ times the cell count. The fine
+      receiver adds each into the fine cell it covers, $2n_g$ fine cells deep.
+\item Same level: unchanged, bit for bit.
+\end{itemize}
+The rank-packed messaging sizes each payload from these index sets
+(\fn{GetVarDataSize}), so sender and receiver agree by construction; the receiver's
+scalar loop over neighbor buffers (the overlapping strips) is kept. The SMR variant needs
+$2n_g \le n_x$ in each active direction (fatal otherwise). The synchronous and coupled-solver
+paths pass the same fine image; the coupled Schur-complement solvers are fatal under
+refinement (their exchange helpers were not extended).
+
+\subsection{Copy exchanges, prolongation, and the shear machinery}
+
+$u^*$, the dust density and the force each get a real coarse array (the layout of
+\code{Hydro::coarse\_u0}). \fn{RestrictField} (\fn{MeshRefinement::RestrictCC}) runs before
+each \fn{PackAndSendCC}, and a new task after each receive chain --- \fn{ProlongateUstar}
+before the gather, \fn{ProlongateRhoDust} before the Poisson solve, \fn{ProlongateGravForce}
+before the push --- does what \fn{Hydro::Prolongate} does: \fn{FillCoarseInBndryCC}, a
+zero-gradient fill of the coarse ghosts at physical faces (so the prolongation stencil of a
+block touching both a coarser neighbor and a diode face reads defined data), then
+\fn{ProlongateCC}. All no-ops on a uniform mesh.
+
+The particle shear maps and the fold's planes are built at the (uniform) level of the
+shear-face blocks, found from any block with $l_{x1} = 0$; \fn{FindTargetMB}'s convention.
+Interior refined blocks never touch a shear face, so the fold itself is unchanged; the
+deposit unit test with the two face columns refined to level 1 reproduces the uniform
+test at that geometry to every digit.
+
+\subsection{Particle migration}
+
+\fn{DestinationSlot} (\file{bvals\_part.cpp}) replaces the slot walk. For an offset
+$(i_x,i_y,i_z)$ it takes the finer neighbor's sub-block from the particle's half of the
+block, the same-level slot $0$, or the one sub-block slot a coarser neighbor occupies; if
+none is set --- an interior edge or corner of a coarser neighbor --- it drops the offset
+components in which the block is interior to its parent (its parity within the parent,
+recovered from the block's position on the mesh) and retries with the face or edge that
+remains, at most twice. A remaining miss aborts with the particle's coordinates instead of
+routing it to a wrong block. On a uniform mesh the result is the old one.
+
+\subsection{Files, hooks, parameters}
+
+Generic (cherry-pickable to the dust fork): \file{bvals/bvals\_dep.cpp} and
+\file{bvals.hpp} (level index sets, \fn{RestrictDeposit}, fine-image packing, planes at the
+face level), \file{bvals/bvals\_part.cpp} (\fn{DestinationSlot}), \file{bvals/bvals.cpp}
+(shear maps at the face level), \file{dust/dust\_smr.cpp} (\fn{ZeroImage},
+\fn{RestrictImage}), \fn{dust::DepositStencil} in \file{dust.hpp} and its use at the six
+scatter sites (\fn{DepositDrag} twice, \fn{GatherKickPMBR}, the PC2 advance, the split-BE
+preparation, \fn{DepositMass}), \fn{RestrictField}/\fn{ProlongateField} and the three
+prolongation tasks in \file{dust\_tasks.cpp}, the coarse arrays and guards in
+\file{dust.cpp}; the test generators \code{dust\_settle} (new) and \code{dust\_nsh}
+(\code{lattice\_finest}), \code{dust\_deposit\_shear} (planes at the face level); inputs
+\file{inputs/dust/\{dust\_nsh\_shear3d\_smr, dust\_deposit\_shear\_smr,
+dust\_deposit\_shear\_smr\_faces, dust\_settle, dust\_settle\_smr, streaming\_linA\_smr\}.athinput}.
+Gravity-side: the rho\_dust and force prolongation hooks in \file{dust\_gravity.cpp}. No
+new \code{<dust>} parameter: refinement is read from \code{<mesh\_refinement>}; the module
+prints one line when it is active.
+
+%=========================================================================================
 \section{What the next phases must add}
 \label{sec:next}
 
@@ -1276,11 +1445,16 @@ The survey established these gaps; they are listed in the order they bite.
       stopping time and mass; a Roche-density / Hill-radius clump finder does not exist.
 \item \textbf{Vertical boundary policy (4c/4d).} \textbf{Done}, \S\ref{sec:phase4d}:
       outflow removal with the mass accounted.
-\item \textbf{Refinement (Phase 5).} Dust is fatal on \code{multilevel} in three
-      places, and upstream particles have no remesh handling at all (\code{PGID} goes
-      stale after the first regrid; nothing in \file{mesh\_refinement.cpp} touches
-      particles). Needs the deposit exchange across levels and a particle
-      redistribution hook next to \fn{ShearingBox::ReinitAfterMeshUpdate}.
+\item \textbf{Refinement (Phase 5).} \textbf{Done} for static refinement,
+      \S\ref{sec:phase5}: deposits with the finest-level kernel everywhere, the additive
+      exchange across one level jump, prolongated copy exchanges, the migration fix, the
+      shear machinery at the face level. Still open: adaptive refinement (a particle
+      redistribution hook next to \fn{ShearingBox::ReinitAfterMeshUpdate}), more than one
+      level of dust refinement, the coupled drag solvers under refinement, the
+      gravity path on refined meshes (wired, untested), and the linA finding of the
+      validation document (a $10^{-11}$ linear mode grows at half its rate through radial
+      level boundaries; the minmod prolongation of the gas and of $u^*$ is the first
+      suspect).
 \item \textbf{Upstream defect.} \code{Particles::dtnew} was never assigned by the
       constructor; \textbf{fixed} in Phase 4c (\S\ref{sec:phase4c}).
 \end{enumerate}
@@ -1326,6 +1500,9 @@ boundaries, or shear-periodic $x_1$ in 3D. Any EOS (the isothermal requirement f
 \code{gravity} & (\code{<gravity>} present) & dust takes part in self-gravity (3D only) \\
 \code{gravity\_source} & true & the PM dust density joins the Poisson source \\
 \code{gravity\_force} & true & particles feel $-\nabla\phi$ of the total potential \\
+\multicolumn{3}{@{}p{15.4cm}@{}}{\small Static refinement (\code{<mesh\_refinement>/refinement = static}) is
+  supported with one level, MeshBlocks of $\ge 2\,$\code{nghost} cells per direction and
+  \code{drag\_solver = local} (\S\ref{sec:phase5}); \code{adaptive} is fatal.} \\
 \code{gamma\_switch} & false & Krapp et al.\ eq.~18: $\gamma \to 1/2$ when
   $\Delta t > \max t_s$ \\
 \code{stopping\_time\_mode} & species\_fixed & or \code{particle\_static}, \code{dynamic} \\
@@ -1343,9 +1520,11 @@ boundaries, or shear-periodic $x_1$ in 3D. Any EOS (the isothermal requirement f
 Problem-generator parameters (\code{rho0}, \code{etavk}, \code{eps\_s}, placement,
 seeds, eigenmode amplitudes; \code{dust\_nsh}'s \code{mass\_mod\_amp},
 \code{mass\_mod\_phase}, \code{check\_equilibrium}; \code{dust\_deposit\_shear}'s
-\code{time0}, \code{remap}, \code{fold}) are specific to the five built-in generators
-\code{dust\_damping}, \code{dust\_nsh}, \code{dusty\_wave}, \code{streaming\_linear},
-\code{dust\_deposit\_shear};
+\code{time0}, \code{remap}, \code{fold}) and \code{dust\_nsh}'s \code{lattice\_finest} (\S\ref{sec:phase5}),
+\code{dust\_settle}'s \code{z0}, \code{etavk}, \code{xsplit}) are specific to the built-in
+generators \code{dust\_damping}, \code{dust\_nsh}, \code{dusty\_wave},
+\code{streaming\_linear}, \code{dust\_deposit\_shear}, \code{dust\_grav\_orbit},
+\code{dust\_settle};
 the files under \file{inputs/dust/} and \file{../athenak\_dust\_tests/inputs/} are
 the reference configurations. Outputs: \code{file\_type = pvtk} with
 \code{variable = prtcl\_all} (positions, gid, tag, species, velocities);
