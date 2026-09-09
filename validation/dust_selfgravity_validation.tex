@@ -1360,9 +1360,58 @@ at $2.9999$. Neither the prolongation limiter (an unlimited-linear option,
 rate $0.1936$, local rates $0.413, 0.409, 0.197, 0.213$: the same disturbance) nor the exchange is the agent; NGP deposits, tried as a kernel-width control,
 blow the eigenmode up even on the uniform mesh and are not a usable discriminator.
 
+Figure~\ref{fig:linA-alias} shows the mechanism at the outer boundary, computed rather than
+sketched: the finest-level TSC deposit of the two lattices, shown on the cells that exist
+(fine cells on one side, the $2\times2$ average on the other), with the dumps beside it.
+The finest-level kernel spreads every particle over three fine cells, with one-dimensional
+weights $1/8, 3/4, 1/8$ when the particle sits at a fine-cell centre and $1/2, 1/2, 0$
+when it sits at a fine-cell face. A lattice with one particle per fine cell sums to exactly
+one in every cell at any offset (the partition of unity of the B-spline). A lattice with
+one particle per \emph{two} fine cells does not: the columns holding the particles receive
+$3/4$ of each and nothing from their empty neighbours, the empty columns receive $1/8$
+from each side, so with the root particle's mass (four fine cells' worth) the fine image
+alternates $3/2$ // $1/2$. The root particles sit at root-cell centres in $z$, which are
+fine-cell faces, so the $z$ weights are $1/2, 1/2$ and the comb is purely radial. Inside a
+root block this is invisible: the block's own cells hold the $2\times2$ average of the fine
+image, exactly one (panel a, right of the boundary). Where the two lattices overlap in the
+kernel footprint the same sums give the interface values of the dump: the last fine column
+receives $3/4 + 1/8$ from its own lattice and nothing from the root particle sitting at its
+face, $7/8$; the first root cell averages the fine-image columns $9/8$ and $1$, $17/16$
+(panel a). Once the root particles have drifted into the fine region (panel b, a drift of
+$4.5$ fine cells, so that they sit at fine-cell centres) the comb is on real cells,
+$3/2$ // $1/2$, with a single $3/4$ column at the front where the last fine particles and
+the first root particles meet. The comb's amplitude follows the lattice phase: it is
+largest with the root particles at fine-cell centres, vanishes with them at fine faces
+(weights $1/2, 1/2$: every column receives one half from each neighbour), and returns with
+the opposite sign one fine cell later. The dumps (panel d) do exactly that:
+$1.50$ // $0.50$ at $t = 1.5$, $1.17$ // $0.83$ at $t = 2.5$, $1.40$ // $0.60$ with the
+phase reversed at $t = 3.5$, $1.50$ // $0.50$ reversed at $t = 4$ --- the NSH drift covers
+one fine cell per two time units --- and the front advances at that speed, seven columns
+deep by $t = 1.5$. An order-unity, drifting comb in the dust density is a source the
+$10^{-11}$ eigenmode cannot compete with in the projection. Panel (c) is the remedy: with
+the lattice at the finest cell size everywhere the deposit is one on both sides of the
+boundary at every drift phase.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/dust5_linA_alias.png}
+\caption{The linA loss of growth rate on the refined mesh: lattice aliasing at the outer
+level boundary ($x = 3L/4$; fine cells left, root cells right, drift inward). Panels (a)--(c)
+are the finest-level TSC deposit of the drawn lattice, on the cells that exist. (a) The
+generator's lattice, one particle per block cell (teal: fine, orange: root, four times the
+mass), at $t = 0$: $7/8$ and $17/16$ in the interface columns, one elsewhere. (b) The same
+lattice after an inward drift of $4.5$ fine cells: the root particles, now at fine-cell
+centres inside the fine region, are resolved by the fine kernel as a $3/2$ // $1/2$ comb.
+(c) \code{lattice\_finest}, the lattice at the finest cell size everywhere, after the same
+drift: one. (d) The dumps of the run with one particle per block cell: $z$-averaged dust
+density per column around the boundary at $t = 0, 1, 1.5, 2.5, 3.5$, in units of the
+uniform value, and the $3/2$ // $1/2$ prediction.}
+\label{fig:linA-alias}
+\end{figure}
+
 The remedy for the test is the one the NSH lattice already used: \code{problem/lattice\_finest}
 lays the quiet-start lattice out at the finest-level cell size on every block (four
-particles of a quarter mass per root cell). With it the interface columns are uniform at
+particles of a quarter mass per root cell; Fig.~\ref{fig:linA-alias}c). With it the interface columns are uniform at
 $t = 0$, no coarse lattice ever enters the fine region, and the growth rate is $0.4187$ with local rates $0.4187, 0.4187, 0.4189, 0.4182$ --- within $0.08\%$ of YJ07, closer than either uniform mesh. The
 lesson carries to the science box: a coarse-sampled particle population entering a
 finer level keeps its coarse sampling --- a lattice aliases coherently, a random
