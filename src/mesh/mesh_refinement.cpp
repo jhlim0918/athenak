@@ -53,6 +53,7 @@ MeshRefinement::MeshRefinement(Mesh *pm, ParameterInput *pin) :
   ncyc_check_amr(1),
   refinement_interval(5),
   prolong_prims(false),
+  prolong_linear(false),
   shearing_box_(pin->DoesBlockExist("shearing_box")),
   slab_z_(pin->DoesBlockExist("gravity") &&
       pin->GetOrAddString("gravity", "mg_bc", "none") == "slab"),
@@ -75,6 +76,19 @@ MeshRefinement::MeshRefinement(Mesh *pm, ParameterInput *pin) :
     // read prolongate primitives flag
     if (pin->DoesParameterExist("mesh_refinement", "prolong_primitives")) {
       prolong_prims = pin->GetBoolean("mesh_refinement", "prolong_primitives");
+    }
+    // slope limiter of the cell-centered prolongation: minmod (default) or none
+    // (unlimited central slopes; a diagnostic for linear-mode tests on refined meshes)
+    {
+      std::string lim = pin->GetOrAddString("mesh_refinement", "prolong_limiter", "minmod");
+      if (lim == "none") {
+        prolong_linear = true;
+      } else if (lim != "minmod") {
+        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "<mesh_refinement>/prolong_limiter = '" << lim
+                  << "' not recognized (must be minmod or none)" << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
     }
   }
 
@@ -1191,6 +1205,7 @@ void MeshRefinement::RefineCC(DualArray1D<int> &n2o, DvceArray5D<Real> &a,
   // Outer loop over (# of MeshBlocks sent)*(# of variables)
   int nmv = new_nmb*nvar;
   Kokkos::TeamPolicy<> policy(DevExeSpace(), nmv, Kokkos::AUTO);
+  const bool plin = prolong_linear;
   Kokkos::parallel_for("SendBuff", policy, KOKKOS_LAMBDA(TeamMember_t tmember) {
     const int m = (tmember.league_rank())/nvar;
     const int v = (tmember.league_rank() - m*nvar);
@@ -1217,7 +1232,7 @@ void MeshRefinement::RefineCC(DualArray1D<int> &n2o, DvceArray5D<Real> &a,
 
         // call inlined prolongation operator for CC variables
         if (!is_z4c) {
-          ProlongCC(m,v,k,j,i,fk,fj,fi,multi_d,three_d,ca,a);
+          ProlongCC(m,v,k,j,i,fk,fj,fi,multi_d,three_d,ca,a,plin);
         } else {
           switch (indcs.ng) {
             case 2: HighOrderProlongCC<2>(m,v,k,j,i,fk,fj,fi,nx1,nx2,nx3,

@@ -490,6 +490,7 @@ void MeshBoundaryValuesCC::ProlongateCC(DvceArray5D<Real> &a, DvceArray5D<Real> 
   auto &nx3 = indcs.nx3;
   auto& prolong_2nd = pmy_pack->pmesh->pmr->weights.prolong_2nd;
   auto& prolong_4th = pmy_pack->pmesh->pmr->weights.prolong_4th;
+  const bool plin = pmy_pack->pmesh->pmr->prolong_linear;
 
   // Outer loop over (# of MeshBlocks)*(# of buffers)*(# of variables)
   Kokkos::TeamPolicy<> policy(DevExeSpace(), nmnv, Kokkos::AUTO);
@@ -528,7 +529,7 @@ void MeshBoundaryValuesCC::ProlongateCC(DvceArray5D<Real> &a, DvceArray5D<Real> 
         int fk = (k - indcs.cks)*2 + indcs.ks;
         // call inlined prolongation operator for CC variables
         if (!is_z4c) {
-          ProlongCC(m,v,k,j,i,fk,fj,fi,multi_d,three_d,ca,a);
+          ProlongCC(m,v,k,j,i,fk,fj,fi,multi_d,three_d,ca,a,plin);
         } else {
           switch (indcs.ng) {
             case 2: HighOrderProlongCC<2>(m,v,k,j,i,fk,fj,fi,nx1,nx2,nx3,

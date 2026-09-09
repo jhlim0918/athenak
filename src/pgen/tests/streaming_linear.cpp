@@ -36,6 +36,10 @@
 #include <vector>
 
 // Athena++ headers
+#if MPI_PARALLEL_ENABLED
+#include <mpi.h>
+#endif
+
 #include "athena.hpp"
 #include "globals.hpp"
 #include "parameter_input.hpp"
@@ -193,8 +197,6 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
   // they are genuinely distinct phase-space samples, not coincident copies.
   particles::Particles *ppar = pmbp->ppart;
   int npart = ppar->nprtcl_thispack;
-  auto &pr = ppar->prtcl_rdata;
-  auto &pi = ppar->prtcl_idata;
   auto gids = pmbp->gids;
   int npart_permb = npart/nmb;
   int ncells = indcs.nx1*indcs.nx2*indcs.nx3;
@@ -206,23 +208,69 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
               << "(1, 4, 9, 16, ...) for the quiet-start subcell lattice" << std::endl;
     std::exit(EXIT_FAILURE);
   }
+  // SMR: with <problem>/lattice_finest the quiet-start lattice is laid out at the
+  // FINEST-level cell size on every MeshBlock (a block one level below the finest carries
+  // 4x the particles at 1/4 the mass), so the finest-kernel deposits are uniform across the
+  // level boundaries and a coarse lattice never drifts into the fine region -- a lattice at
+  // twice the cell spacing is aliased by the fine kernel into an O(1) two-cell comb
+  bool lattice_finest = pin->GetOrAddBoolean("problem","lattice_finest",false) &&
+                        pmy_mesh_->multilevel;
+  DualArray1D<int> lat_r("stream_lat_r", nmb);
+  DualArray1D<int> lat_off("stream_lat_off", nmb+1);
+  lat_off.h_view(0) = 0;
+  for (int m=0; m<nmb; ++m) {
+    int r = (lattice_finest &&
+             (pmbp->pmb->mb_lev.h_view(m) < pmy_mesh_->max_level)) ? 2 : 1;
+    lat_r.h_view(m) = r;
+    lat_off.h_view(m+1) = lat_off.h_view(m) + ppc_int*ncells*r*r;
+  }
+  lat_r.template modify<HostMemSpace>();  lat_r.template sync<DevExeSpace>();
+  lat_off.template modify<HostMemSpace>(); lat_off.template sync<DevExeSpace>();
+  if (lattice_finest) {
+    npart = lat_off.h_view(nmb);
+    Kokkos::realloc(ppar->prtcl_rdata, ppar->nrdata, std::max(npart, 1));
+    Kokkos::realloc(ppar->prtcl_idata, ppar->nidata, std::max(npart, 1));
+    ppar->nprtcl_thispack = npart;
+    Mesh *pm = pmy_mesh_;
+    pm->nprtcl_thisrank = npart;
+#if MPI_PARALLEL_ENABLED
+    MPI_Allgather(&(pm->nprtcl_thisrank), 1, MPI_INT, pm->nprtcl_eachrank, 1, MPI_INT,
+                  MPI_COMM_WORLD);
+#else
+    pm->nprtcl_eachrank[0] = npart;
+#endif
+    pm->nprtcl_total = 0;
+    for (int n=0; n<global_variable::nranks; ++n) {
+      pm->nprtcl_total += pm->nprtcl_eachrank[n];
+    }
+    ppar->CreateParticleTags(pin);
+    if (global_variable::my_rank == 0) {
+      std::cout << "# streaming lattice at the finest-level cell size: " << pm->nprtcl_total
+                << " particles" << std::endl;
+    }
+  }
+  auto &pr = ppar->prtcl_rdata;
+  auto &pi = ppar->prtcl_idata;
+  auto lat_r_ = lat_r.d_view;
+  auto lat_off_ = lat_off.d_view;
   Real ppc = pin->GetOrAddReal("particles","ppc",1.0);
   Real rhop0 = eps*rho0;
   Real taus0 = taus;
   int lnx1 = indcs.nx1, lnx2 = indcs.nx2;
   par_for("stream_part", DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
-    int m = p/npart_permb;
-    if (m > (nmb-1)) {m = nmb-1;}
+    int m = 0;
+    for (int mm=0; mm<nmb; ++mm) {if (p >= lat_off_(mm)) {m = mm;}}
+    const int r = lat_r_(m);
     pi(PGID,p) = gids + m;
-    int q = p - m*npart_permb;
+    int q = p - lat_off_(m);
     int c = q/ppc_int;
     int sub = q - c*ppc_int;
     int ip = sub % npar1d;
     int jp = sub / npar1d;
-    int i = c % lnx1;
-    int j = (c/lnx1) % lnx2;
-    Real dx1 = mbsize.d_view(m).dx1;
-    Real dx2 = mbsize.d_view(m).dx2;
+    int i = c % (r*lnx1);
+    int j = (c/(r*lnx1)) % (r*lnx2);
+    Real dx1 = mbsize.d_view(m).dx1/static_cast<Real>(r);
+    Real dx2 = mbsize.d_view(m).dx2/static_cast<Real>(r);
     // subcell quiet-start position: cell left edge + (ip+1/2) dx/Npar
     Real x0 = mbsize.d_view(m).x1min + (static_cast<Real>(i)
               + (static_cast<Real>(ip) + 0.5)/static_cast<Real>(npar1d))*dx1;
@@ -236,7 +284,7 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
     pr(IPZ,p) = 0.0;
     pi(PSP,p) = 0;
     pr(IPTS,p) = taus0;
-    Real vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
+    Real vol = dx1*dx2;   // the lattice cell (the block cell, or 1/4 of it)
     pr(IPM,p) = eps*rho0*vol/ppc;
     pr(IPVX,p) = vnx + (Vxr*ce - Vxi*se)*cz;
     pr(IPVY,p) =     - (Vzr*se + Vzi*ce)*sz;   // vertical (x2) component

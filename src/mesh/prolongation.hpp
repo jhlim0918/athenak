@@ -19,18 +19,22 @@ KOKKOS_INLINE_FUNCTION
 void ProlongCC(const int m, const int v, const int k, const int j, const int i,
                const int fk, const int fj, const int fi,
                const bool multi_d, const bool three_d,
-               const DvceArray5D<Real> &ca, const DvceArray5D<Real> &a) {
-  // calculate x1-gradient using the min-mod limiter
+               const DvceArray5D<Real> &ca, const DvceArray5D<Real> &a,
+               const bool linear = false) {
+  // calculate x1-gradient using the min-mod limiter (or, with linear = true, the
+  // unlimited central slope: <mesh_refinement>/prolong_limiter = none)
   Real dl = ca(m,v,k,j,i  ) - ca(m,v,k,j,i-1);
   Real dr = ca(m,v,k,j,i+1) - ca(m,v,k,j,i  );
-  Real dvar1 = 0.125*(SIGN(dl) + SIGN(dr))*fmin(fabs(dl), fabs(dr));
+  Real dvar1 = linear ? 0.125*(dl + dr) :
+               0.125*(SIGN(dl) + SIGN(dr))*fmin(fabs(dl), fabs(dr));
 
   // calculate x2-gradient using the min-mod limiter
   Real dvar2 = 0.0;
   if (multi_d) {
     dl = ca(m,v,k,j  ,i) - ca(m,v,k,j-1,i);
     dr = ca(m,v,k,j+1,i) - ca(m,v,k,j  ,i);
-    dvar2 = 0.125*(SIGN(dl) + SIGN(dr))*fmin(fabs(dl), fabs(dr));
+    dvar2 = linear ? 0.125*(dl + dr) :
+            0.125*(SIGN(dl) + SIGN(dr))*fmin(fabs(dl), fabs(dr));
   }
 
   // calculate x1-gradient using the min-mod limiter
@@ -38,7 +42,8 @@ void ProlongCC(const int m, const int v, const int k, const int j, const int i,
   if (three_d) {
     dl = ca(m,v,k  ,j,i) - ca(m,v,k-1,j,i);
     dr = ca(m,v,k+1,j,i) - ca(m,v,k  ,j,i);
-    dvar3 = 0.125*(SIGN(dl) + SIGN(dr))*fmin(fabs(dl), fabs(dr));
+    dvar3 = linear ? 0.125*(dl + dr) :
+            0.125*(SIGN(dl) + SIGN(dr))*fmin(fabs(dl), fabs(dr));
   }
 
   // interpolate to the finer grid

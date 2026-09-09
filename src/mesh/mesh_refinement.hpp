@@ -53,6 +53,7 @@ class MeshRefinement {
   int ncyc_check_amr;        // # of cycles between checking mesh for ref/derefinement
   int refinement_interval;   // # of cycles between allowing successive ref/derefinement
   bool prolong_prims;        // flag to enable prolongation of primitive vars
+  bool prolong_linear;       // unlimited central slopes in ProlongCC (prolong_limiter = none)
   bool shearing_box_;        // true if <shearing_box> block exists (refinement policy)
   bool slab_z_;              // true if <gravity> mg_bc = slab: x3-face MeshBlocks must
                              // stay at root level (multigrid slab planes), so never

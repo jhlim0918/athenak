@@ -38,6 +38,7 @@ nx2 = 32
 nx3 = 1
 <mesh_refinement>
 refinement = static
+prolong_limiter = minmod     # minmod (default) | none: unlimited central slopes (diagnostic)
 <refined_region1>
 level = 1
 x1min = 0.003                # strictly inside the middle two root columns (block edges at
@@ -85,6 +86,7 @@ drag_fail_policy = abort
 drag_diagnostic_interval = 0
 <problem>
 pgen_name = streaming_linear
+lattice_finest = true        # lattice at the finest-level cell size on every block (SMR)
 user_hist = true
 rho0 = 1.0
 etavk = 0.05
