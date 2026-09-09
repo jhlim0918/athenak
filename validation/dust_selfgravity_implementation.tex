@@ -1451,10 +1451,14 @@ The survey established these gaps; they are listed in the order they bite.
       shear machinery at the face level. Still open: adaptive refinement (a particle
       redistribution hook next to \fn{ShearingBox::ReinitAfterMeshUpdate}), more than one
       level of dust refinement, the coupled drag solvers under refinement, the
-      gravity path on refined meshes (wired, untested), and the linA finding of the
-      validation document (a $10^{-11}$ linear mode grows at half its rate through radial
-      level boundaries; the minmod prolongation of the gas and of $u^*$ is the first
-      suspect).
+      gravity path on refined meshes (wired, untested), and particle splitting on entry
+      into a finer level: a coarse-sampled population keeps its coarse sampling there
+      (the linA diagnosis of the validation document, \S10.5: a lattice at twice the
+      fine spacing is aliased by the fine kernel into an $O(1)$ comb). Until then the
+      particle count is set by the finest level of the dust layer; the test generators
+      \code{dust\_nsh} and \code{streaming\_linear} have \code{lattice\_finest}.
+      \code{<mesh\_refinement>/prolong\_limiter = none} (unlimited central slopes in
+      \fn{ProlongCC}) is available as a diagnostic.
 \item \textbf{Upstream defect.} \code{Particles::dtnew} was never assigned by the
       constructor; \textbf{fixed} in Phase 4c (\S\ref{sec:phase4c}).
 \end{enumerate}
@@ -1520,7 +1524,8 @@ boundaries, or shear-periodic $x_1$ in 3D. Any EOS (the isothermal requirement f
 Problem-generator parameters (\code{rho0}, \code{etavk}, \code{eps\_s}, placement,
 seeds, eigenmode amplitudes; \code{dust\_nsh}'s \code{mass\_mod\_amp},
 \code{mass\_mod\_phase}, \code{check\_equilibrium}; \code{dust\_deposit\_shear}'s
-\code{time0}, \code{remap}, \code{fold}) and \code{dust\_nsh}'s \code{lattice\_finest} (\S\ref{sec:phase5}),
+\code{time0}, \code{remap}, \code{fold}) and \code{dust\_nsh}'s and \code{streaming\_linear}'s \code{lattice\_finest}
+(\S\ref{sec:phase5}),
 \code{dust\_settle}'s \code{z0}, \code{etavk}, \code{xsplit}) are specific to the built-in
 generators \code{dust\_damping}, \code{dust\_nsh}, \code{dusty\_wave},
 \code{streaming\_linear}, \code{dust\_deposit\_shear}, \code{dust\_grav\_orbit},

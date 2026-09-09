@@ -64,7 +64,8 @@ axislegend(ax2, position=:rt, framevisible=false)
 ax3 = Axis(fig[1, 3], xlabel="t  (Ω⁻¹)", ylabel="|ρ̃_p|  (mode projection)", yscale=log10,
            title="linA streaming instability, 64²: uniform vs refined columns")
 for (f, lab, ls) in ((joinpath(RUN, "linA", "linA_u64.user.hst"), "uniform", :solid),
-                     (joinpath(RUN, "linA", "linA_s64.user.hst"), "middle columns x ∈ [L/4, 3L/4] refined", :dash))
+                     (joinpath(RUN, "linA", "linA_s64.user.hst"), "middle columns refined, one particle per block cell", :dash),
+                     (joinpath(RUN, "linA", "linA_s64_fin.user.hst"), "middle columns refined, lattice at the finest cell size", :dashdot))
     isfile(f) || continue
     d = hst(f); t = d[:, 1]; amp = hypot.(d[:, 3], d[:, 4])
     m = (t .> 1.0) .& (amp .> 0)

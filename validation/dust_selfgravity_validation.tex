@@ -142,10 +142,11 @@ finest-level deposits adopted, a lattice at the finest spacing deposits $1.00000
 in every cell and the equilibrium holds to round-off, serially and on 4 ranks, and a
 structured run is rank-independent. Test particles settling through a refined layer agree
 with those on the root mesh to $10^{-3}$ of their initial height, within the residual of
-both against the analytic damped oscillator. The linA streaming mode, however, grows at
-half the uniform rate when radial level boundaries cut through it (root and fine uniform
-meshes both within $1\%$ of YJ07): the interfaces disturb a $10^{-11}$ linear mode at the
-$O(1)$ level, an open finding recorded for the next step.
+both against the analytic damped oscillator. The linA streaming mode grew at half the
+uniform rate through radial level boundaries until the cause was found in the test's
+lattice (root-level particles entering the fine region are aliased by the fine kernel);
+with the lattice at the finest cell size everywhere it grows at $0.4187$, within $0.08\%$ of the YJ07
+rate, and the finding fixes the particle-count rule for refined science runs.
 \end{abstract}
 
 \tableofcontents
@@ -1334,22 +1335,40 @@ apply even with the plain periodic $x_1$ of the $r$--$z$ geometry --- so the rad
 boundaries cut through the mode and the drifting particles cross them. Growth rates from a fit of
 $\ln|\tilde\rho_p|$ (the particle-mass projection, mesh-independent by construction)
 over $t \in [1,4]$: uniform $64^2$, $0.4179$; uniform $32^2$ (the root resolution of the
-refined run), $0.4162$; with the refined columns, $0.2226$. The two uniform meshes are
-within $0.3$ and $0.7\%$ of YJ07 and grow steadily (local rates per unit time
-$0.418, 0.418, 0.418, 0.417$ and $0.417, 0.416, 0.417, 0.414$); the refined run does not:
-its local rates are $0.436, 0.484, 0.159, 0.313$, the signature of a mode that is no longer
-an eigenmode of the mixed mesh but beats against structure generated at the two radial
-level boundaries (figure \ref{fig:smr}, right). This is a \emph{finding, not a pass}: the
-particle machinery is consistent and conservative across the interfaces (the lattice and
-settling tests above), yet a linear mode of $10^{-11}$ relative amplitude and a 16-cell
-wavelength on the coarse side is disturbed at the $O(1)$ level by the interfaces. The
-likely agents are the minmod-limited (hence nonlinear in the perturbation) prolongation
-of the gas state and of $u^*$ into the fine ghost zones and the change of drag-kernel
-width across the interface; separating them (a gas-only sound wave through an interface,
-a mode with the interfaces parallel to its wavevector, a linear prolongation) is the first
-task of the next step. For the science box --- saturated turbulence, dust layer refined,
-interfaces in low-density gas --- the linear regime is not the operating point, but the
-result bounds what refined-mesh runs can say about linear growth.
+refined run), $0.4162$; with the refined columns and the generator's usual lattice,
+$0.2226$. The two uniform meshes are within $0.3$ and $0.7\%$ of YJ07 and grow steadily
+(local rates per unit time $0.418, 0.418, 0.418, 0.417$ and $0.417, 0.416, 0.417, 0.414$);
+the refined run does not: $0.436, 0.484, 0.159, 0.313$, and a run with the mode amplitude
+raised $100\times$ gives yet other late rates ($0.436, 0.473, 0.128, 1.357$), so whatever
+the projection sees late in the run is not the linear mode.
+
+Binary dumps of the dust density say what it is (\file{run/dust5/linA/}). The generator
+places one particle per cell \emph{of each block}, so the root blocks carry a lattice at
+twice the fine spacing. Seen by the finest-level kernel, that lattice is uniform only after
+restriction: already at $t = 0$ the last fine column before the outer boundary holds
+$7/8$ and the first root column $1 + 1/16$ of the uniform dust density (the mirror of the
+$15/16$ / $9/8$ pattern of \S10.2, now a property of the two lattice spacings rather than
+of the exchange). Then the dust drifts inward: at the outer boundary ($x = 3L/4$) root
+particles enter the fine region carrying the root spacing, and a lattice at two fine cells
+per particle is aliased by the fine TSC kernel into a two-cell comb --- $4.39$ / $1.61$
+alternating around the uniform $3$ by $t = 1$, seven columns deep, $\pm45\%$ at
+$t = 1.5$ --- an order-unity dust-density structure that drives the instability locally
+and swamps the $10^{-11}$ mode in the projection. At the inner boundary, where the fine
+lattice enters root blocks, the fine kernel plus restriction is exact and the columns stay
+at $2.9999$. Neither the prolongation limiter (an unlimited-linear option,
+\code{<mesh\_refinement>/prolong\_limiter = none}, was added as a diagnostic: growth
+rate $0.1936$, local rates $0.413, 0.409, 0.197, 0.213$: the same disturbance) nor the exchange is the agent; NGP deposits, tried as a kernel-width control,
+blow the eigenmode up even on the uniform mesh and are not a usable discriminator.
+
+The remedy for the test is the one the NSH lattice already used: \code{problem/lattice\_finest}
+lays the quiet-start lattice out at the finest-level cell size on every block (four
+particles of a quarter mass per root cell). With it the interface columns are uniform at
+$t = 0$, no coarse lattice ever enters the fine region, and the growth rate is $0.4187$ with local rates $0.4187, 0.4187, 0.4189, 0.4182$ --- within $0.08\%$ of YJ07, closer than either uniform mesh. The
+lesson carries to the science box: a coarse-sampled particle population entering a
+finer level keeps its coarse sampling --- a lattice aliases coherently, a random
+population raises its shot noise by $2^d$ --- so the particle count must be set by the
+\emph{finest} level of the dust layer (the Baehr et al.\ $0.02$ particles per root cell
+would be far too few under refinement), or particles must be split on entry.
 
 \begin{figure}[htbp]
 \centering
@@ -1417,13 +1436,13 @@ deposit unit test reproduces the uniform digits on refined meshes at 1, 2 and 4 
 lattice at the finest spacing deposits an exactly uniform field and holds the NSH
 equilibrium to round-off across the level boundaries, a structured run is
 rank-independent, test particles settle through a refined layer within $10^{-3}$ of those
-that do not. One result is negative and is recorded as such: the linA streaming mode, a
-$10^{-11}$ perturbation with a 16-cell wavelength on the coarse side, grows at only half
-the uniform rate when two radial level boundaries cut through it, while the root- and
-fine-resolution uniform meshes both reproduce YJ07 to better than one percent --- the
-mixed mesh disturbs the linear mode at the interfaces, most likely through the
-minmod-limited prolongation and the kernel-width change. Disentangling that, adaptive
-refinement, more than one level of dust refinement and the gravity path on refined meshes
-remain for the next step.
+that do not. The linA streaming mode first grew at only half the uniform rate through two
+radial level boundaries; the dumps traced that to the test's own lattice --- root-level
+particles drifting into the fine region carry twice the fine spacing and are aliased by
+the fine kernel into an order-unity two-cell comb --- and with the lattice laid out at the
+finest cell size everywhere the growth rate is $0.4187$, within $0.08\%$ of YJ07. The general lesson, that a
+coarse-sampled population entering a finer level keeps its coarse sampling, sets the
+particle count of the science box by its finest level. Adaptive refinement, more than one
+level of dust refinement and the gravity path on refined meshes remain for the next step.
 
 \end{document}
