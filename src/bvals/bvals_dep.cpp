@@ -107,16 +107,7 @@ MeshBoundaryValuesDep::MeshBoundaryValuesDep(MeshBlockPack *pp, ParameterInput *
     shear_gny_ = (pm->mesh_indcs.nx2) << lshift;   // global cell counts at shear_lev_
     shear_gnz_ = (pm->mesh_indcs.nx3) << lshift;
     x3_periodic_ = (pm->mesh_bcs[BoundaryFace::inner_x3] == BoundaryFlag::periodic);
-    int nmb = pp->nmb_thispack;
-    Kokkos::realloc(shear_goffs_, nmb, 2);
-    auto goffs_h = Kokkos::create_mirror_view(shear_goffs_);
-    for (int m=0; m<nmb; ++m) {
-      // valid (and used) for the face blocks only, which sit at shear_lev_
-      LogicalLocation &lloc = pm->lloc_eachmb[m + pp->gids];
-      goffs_h(m,0) = static_cast<int>(lloc.lx2)*pm->mb_indcs.nx2;
-      goffs_h(m,1) = static_cast<int>(lloc.lx3)*pm->mb_indcs.nx3;
-    }
-    Kokkos::deep_copy(shear_goffs_, goffs_h);
+    InitShearOffsets();
 
     // x1 direction of each buffer index, from the layout documented in
     // mesh/nghbr_index.hpp: x1 faces [0-3] (-) [4-7] (+); x2 faces [8-15] (0);
@@ -153,6 +144,26 @@ MeshBoundaryValuesDep::MeshBoundaryValuesDep(MeshBlockPack *pp, ParameterInput *
     }
     Kokkos::deep_copy(nghbr_ox1_, ox1_h);
   }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void MeshBoundaryValuesDep::InitShearOffsets()
+//! \brief Per-block global (x2, x3) cell offsets of this pack's MeshBlocks in the shear
+//! planes (used for the face blocks, which sit at shear_lev_).  Rebuilt after AMR.
+
+void MeshBoundaryValuesDep::InitShearOffsets() {
+  if (!shear_x1_) return;
+  MeshBlockPack *pp = pmy_pack;
+  Mesh *pm = pp->pmesh;
+  int nmb = pp->nmb_thispack;
+  Kokkos::realloc(shear_goffs_, std::max(nmb, 1), 2);
+  auto goffs_h = Kokkos::create_mirror_view(shear_goffs_);
+  for (int m=0; m<nmb; ++m) {
+    LogicalLocation &lloc = pm->lloc_eachmb[m + pp->gids];
+    goffs_h(m,0) = static_cast<int>(lloc.lx2)*pm->mb_indcs.nx2;
+    goffs_h(m,1) = static_cast<int>(lloc.lx3)*pm->mb_indcs.nx3;
+  }
+  Kokkos::deep_copy(shear_goffs_, goffs_h);
 }
 
 //----------------------------------------------------------------------------------------

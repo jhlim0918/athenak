@@ -515,7 +515,9 @@ void Mesh::BuildTreeFromRestart(ParameterInput *pin, IOWrapper &resfile,
 //! tree is (re)built and after every AMR update; fatal error on violation.
 
 void Mesh::CheckShearingBoxRefinement(ParameterInput *pin) {
-  if (!multilevel || !(pin->DoesBlockExist("shearing_box"))) return;
+  // (the 2D r-z shearing box has plain periodic x1 faces and no orbital advection:
+  // neither policy applies; see hydro_tasks.cpp, three_d || shearing_box_r_phi)
+  if (!multilevel || !(pin->DoesBlockExist("shearing_box")) || !three_d) return;
 
   // NOTE: with AMR, the shearing-box boundary GID lists and communication buffers
   // (built at construction) are rebuilt after every mesh update via

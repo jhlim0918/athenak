@@ -274,6 +274,16 @@ TaskStatus ParticlesBoundaryValues::SetNewPrtclGID() {
       }  // end shear/standard crossing branch
     }
   });
+  FinishSendList(npart);
+  return TaskStatus::complete;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void ParticlesBoundaryValues::FinishSendList()
+//! \brief After a kernel that appends to the device send list through UpdateGID: read
+//! the count, copy the valid prefix to the host, and validate it.
+
+void ParticlesBoundaryValues::FinishSendList(const int npart) {
 #if MPI_PARALLEL_ENABLED
   // This deep copy also synchronizes completion of the device append kernel.  Copy only
   // the valid prefix to the host; DualView::sync() would copy the full capacity.
@@ -307,8 +317,77 @@ TaskStatus ParticlesBoundaryValues::SetNewPrtclGID() {
 #else
   nprtcl_send = 0;
 #endif
+}
 
-  return TaskStatus::complete;
+//----------------------------------------------------------------------------------------
+//! \fn void ParticlesBoundaryValues::RemapAfterRemesh()
+//! \brief AMR: assigns every particle the GID of the MeshBlock that owns its position on
+//! the new tree.  The particle's old block m (of this pack, on the OLD numbering, which
+//! is still in force when this runs) maps to o2n(m): its own new gid, the new gid of its
+//! first child when the block was refined (act = +1; the child is selected from the
+//! particle's half of the block in each direction, in the tree's child order
+//! fx + 2 fy + 4 fz), or the parent's new gid when it was derefined (act = -1).
+//! Particles whose new block lives on another rank are appended to the send list, as in
+//! SetNewPrtclGID; positions are untouched.
+
+void ParticlesBoundaryValues::RemapAfterRemesh(const DualArray1D<int> &o2n,
+                                               const DualArray1D<int> &act,
+                                               const DualArray1D<int> &newrank) {
+  auto gids = pmy_part->pmy_pack->gids;
+  auto &pr = pmy_part->prtcl_rdata;
+  auto &pi = pmy_part->prtcl_idata;
+  int npart = pmy_part->nprtcl_thispack;
+  auto &mbsize = pmy_part->pmy_pack->pmb->mb_size;
+  auto myrank = global_variable::my_rank;
+  bool multi_d = pmy_part->pmy_pack->pmesh->multi_d;
+  bool three_d = pmy_part->pmy_pack->pmesh->three_d;
+  int *pcounter = nullptr;
+#if MPI_PARALLEL_ENABLED
+  int required_capacity = std::max(npart, 1);
+  if (static_cast<int>(sendlist.extent(0)) < required_capacity) {
+    Kokkos::realloc(sendlist, required_capacity);
+  }
+  Kokkos::deep_copy(send_count.d_view, 0);
+  pcounter = send_count.d_view.data();
+#endif
+  auto psendl = sendlist.d_view;
+  auto o2n_d = o2n.d_view;
+  auto act_d = act.d_view;
+  auto nrank_d = newrank.d_view;
+  par_for("part_remesh",DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
+    int m = pi(PGID,p) - gids;
+    int newgid = o2n_d(m);
+    if (act_d(m) > 0) {
+      auto &sz = mbsize.d_view(m);
+      int fx = (pr(IPX,p) < 0.5*(sz.x1min + sz.x1max)) ? 0 : 1;
+      int fy = (pr(IPY,p) < 0.5*(sz.x2min + sz.x2max)) ? 0 : 1;
+      int fz = (pr(IPZ,p) < 0.5*(sz.x3min + sz.x3max)) ? 0 : 1;
+      fy = multi_d ? fy : 0;
+      fz = three_d ? fz : 0;
+      newgid += fx + 2*fy + 4*fz;
+    }
+    NeighborBlock nb;
+    nb.gid = newgid;
+    nb.lev = 0;
+    nb.rank = nrank_d(newgid);
+    nb.dest = 0;
+    UpdateGID(pi(PGID,p), nb, myrank, pcounter, psendl, p);
+  });
+  FinishSendList(npart);
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void ParticlesBoundaryValues::ExchangeNow()
+//! \brief Runs the particle send/receive pipeline to completion outside the task list
+//! (after RemapAfterRemesh).  Collective under MPI: every rank calls it.
+
+void ParticlesBoundaryValues::ExchangeNow() {
+  (void) CountSendsAndRecvs();
+  (void) InitPrtclRecv();
+  (void) PackAndSendPrtcls();
+  while (RecvAndUnpackPrtcls() != TaskStatus::complete) {}
+  (void) ClearPrtclSend();
+  (void) ClearPrtclRecv();
 }
 
 //----------------------------------------------------------------------------------------

@@ -1,0 +1,130 @@
+# AthenaK input file: multi-species NSH drift equilibrium in a 3D SHEAR-PERIODIC box
+# with ADAPTIVE MESH REFINEMENT (dust track, particles + AMR).  Same physics and root
+# grid as dust_nsh_shear3d_smr.athinput (64x32x16 in 4x2x4 MeshBlocks of 16x16x4), but
+# the mesh starts uniform and the problem generator's test schedule (problem/amr_test)
+# refines the interior bar x in [-0.25,0.25], full y, z in [-0.25,0.25] to level 1 at
+# t = amr_t_on and derefines it at t = amr_t_off, so the particle lattice passes through
+# one refine and one derefine event (blocks are created, destroyed and, on several
+# ranks, moved between ranks).  With particles/split_on_refine = true every particle of
+# a refining block becomes 2^d children half a fine cell away: the root lattice (one
+# point per cell of each species) becomes exactly the finest-level lattice of
+# dust_nsh_shear3d_smr.athinput (problem/lattice_finest), the deposits stay exactly
+# uniform, and the NSH state must hold to round-off through both events (all -errs.dat
+# columns ~1e-16).  split_on_refine = false leaves the root lattice on the refined
+# blocks and reproduces the documented lattice artifact of the two spacings (drifts at
+# the 1e-5 level).
+#   problem/mass_mod_amp=0.5 problem/check_equilibrium=false gives the azimuthally
+#   structured initial condition; serial and multi-rank histories must agree to
+#   round-off although the load balance moves MeshBlocks between ranks at each event.
+# See validation/dust_selfgravity_validation.pdf (particles + AMR).
+
+<comment>
+problem   = multi-species NSH drift equilibrium with AMR
+
+<job>
+basename  = nsh3d_amr
+
+<mesh>
+nghost    = 2         # Number of ghost cells (even: SMR)
+nx1       = 64        # Number of zones in X1-direction (radial): 4 root columns
+x1min     = -0.5      # minimum value of X1
+x1max     = 0.5       # maximum value of X1
+ix1_bc    = shear_periodic  # 3D shearing box
+ox1_bc    = shear_periodic
+
+nx2       = 32        # Number of zones in X2-direction (azimuthal): 2 root blocks
+x2min     = -0.5      # minimum value of X2
+x2max     = 0.5       # maximum value of X2
+ix2_bc    = periodic  # inner-X2 boundary flag
+ox2_bc    = periodic  # outer-X2 boundary flag
+
+nx3       = 16        # vertical: 4 root rows
+x3min     = -0.5      # minimum value of X3
+x3max     = 0.5       # maximum value of X3
+ix3_bc    = periodic  # inner-X3 boundary flag
+ox3_bc    = periodic  # outer-X3 boundary flag
+
+<meshblock>
+nx1       = 16        # root MeshBlock edges at -0.5,-0.25,0,0.25,0.5
+nx2       = 16
+nx3       = 4         # >= 2*nghost (deposit injection from a coarser neighbour)
+
+<mesh_refinement>
+refinement = adaptive
+num_levels = 2            # root + 1 refined level (the dust module's limit)
+ncycle_check = 1          # check the criteria every cycle
+refinement_interval = 5   # min cycles between (de)refinement of the same MeshBlock
+max_nmb_per_rank = 128    # 24 root + 64 refined blocks at most
+
+<amr_criterion1>
+method = user             # DustNSHRefine: the schedule below
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = imex2+   # time integration algorithm (required for dust)
+cfl_number = 0.3      # 3D shearing-box rule
+nlim       = -1       # cycle limit
+tlim       = 6.283185307179586   # 1 orbit (2*pi/omega0)
+ndiag      = 1000     # cycles between diagnostic output
+
+<hydro>
+eos         = isothermal  # EOS type
+iso_sound_speed = 1.0     # isothermal sound speed
+reconstruct = plm         # spatial reconstruction method
+rsolver     = hlle        # Riemann-solver to be used
+
+<hydro_srcterms>
+const_accel     = true    # radial pressure-gradient mimic on the gas only
+const_accel_val = 0.1     # = 2*omega0*etavk
+const_accel_dir = 1       # radial
+
+<shearing_box>
+qshear    = 1.5           # shear parameter (Keplerian)
+omega0    = 1.0           # local orbital frequency
+
+<particles>
+particle_type = dust      # dust particles
+pusher        = imex_dust # pushed by the DustGasDrag module inside the IMEX stages
+ppc           = 3.0       # integer multiple of <dust>/nspecies
+split_on_refine = true    # AMR: 2^d children per particle when its MeshBlock refines
+
+<dust>
+coupling      = imex      # imex (imex2+) | hybrid | pc2 (rk2)
+shear_fold    = true      # fold ghost deposits across the shear-periodic x1 faces
+shear_remap   = plm       # dc | plm | ppmx y-remap of the fold
+nspecies      = 3         # number of dust species
+taus_1        = 0.01      # stopping times spanning tightly to marginally coupled
+taus_2        = 0.1
+taus_3        = 1.0
+dust_to_gas   = 1.0       # unused when eps_s are given below
+back_reaction = true      # dust drags gas (PMBR)
+deposit       = tsc       # particle-mesh deposit scheme
+gamma_switch  = false     # fixed gamma = 1+1/sqrt(2)
+dt_cfl        = 0.5       # particle transport CFL number
+dt_transport  = relative  # relative | full: azimuthal velocity of the cell limit
+dt_block_safety = 0.5     # fraction of a MeshBlock a particle may cross per stage
+
+<problem>
+lattice_finest = false    # root lattice; splitting on refinement makes the finest one
+amr_test  = true          # the refine/derefine schedule (DustNSHRefine)
+amr_x1min = -0.25         # the two middle columns; the shear-face columns stay at root
+amr_x1max = 0.25
+amr_x3min = -0.25         # the two middle rows: level jumps in x1 AND x3
+amr_x3max = 0.25
+amr_t_on  = 1.0           # refine at the first check after t = 1
+amr_t_off = 4.0           # derefine at the first check after t = 4
+mass_mod_amp = 0.0        # >0: azimuthal mass modulation (structured, rank-independent IC)
+mass_mod_phase = 0.0
+check_equilibrium = true  # set false with mass_mod_amp > 0
+pgen_name = dust_nsh      # problem generator name
+user_hist = true          # per-species drift-velocity history
+rho0      = 1.0           # uniform gas density
+etavk     = 0.05          # eta*v_K (radial forcing a_x = 2*omega0*etavk)
+eps_1     = 0.2           # per-species dust-to-gas ratios
+eps_2     = 0.5
+eps_3     = 0.3
+
+<output1>
+file_type  = hst          # History output
+dt         = 0.1          # time increment between outputs
+data_format = %.14e

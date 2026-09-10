@@ -277,6 +277,8 @@ class MeshBoundaryValuesDep : public MeshBoundaryValues {
   TaskStatus FoldShearDeposit(DvceArray5D<Real> &a, const Real yshear,
                               ReconstructionMethod rcon);
   bool ShearX1() const {return shear_x1_;}
+  // rebuild the per-block global offsets of the shear planes (AMR renumbers blocks)
+  void ReinitAfterMeshUpdate() {InitShearOffsets();}
 
   // SMR: restrict the deposit array (active zone AND ghost shell) into the internal
   // coarse copy that the sends to coarser neighbors are packed from.  Public because it
@@ -296,6 +298,7 @@ class MeshBoundaryValuesDep : public MeshBoundaryValues {
   int shear_nvar_ = 0;            // nvar the planes are currently sized for
   DvceArray4D<Real> shear_plane_; // (face, v*ng+d, gk, gj); face 0 = inner-ghost slabs
   DvceArray2D<int> shear_goffs_;  // (m, {gj0, gk0}): global index of first active cell
+  void InitShearOffsets();      // fill shear_goffs_ from the current Mesh
   DvceArray1D<int> nghbr_ox1_;    // x1 direction (-1, 0, +1) of each buffer index n
 };
 
@@ -408,9 +411,22 @@ class ParticlesBoundaryValues {
   TaskStatus PackAndSendPrtcls();
   TaskStatus ClearPrtclSend();
   TaskStatus RecvAndUnpackPrtcls();
+  // (re)build the shear-periodic routing maps from the current Mesh (constructor, and
+  // after every AMR remesh, which renumbers the face MeshBlocks and their ranks)
+  void InitShearMaps();
+  // AMR: give every particle the GID of the MeshBlock that owns its position on the
+  // NEW tree (o2n = new gid of each old block of this pack, or of its first child;
+  // act = +1 refined / -1 derefined / 0 unchanged; newrank over all new gids), listing
+  // the particles whose new block lives on another rank; then ExchangeNow moves them
+  // through the ordinary particle pipeline, synchronously.
+  void RemapAfterRemesh(const DualArray1D<int> &o2n, const DualArray1D<int> &act,
+                        const DualArray1D<int> &newrank);
+  void ExchangeNow();
 
  protected:
   particles::Particles* pmy_part;
+  // copy the valid prefix of the device send list to the host and validate it
+  void FinishSendList(const int npart);
 };
 } // namespace particles
 

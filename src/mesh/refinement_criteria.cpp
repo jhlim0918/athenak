@@ -19,6 +19,7 @@
 #include "hydro/hydro.hpp"
 #include "mhd/mhd.hpp"
 #include "radiation/radiation.hpp"
+#include "dust/dust.hpp"
 #include "refinement_criteria.hpp"
 #include "utils/utils.hpp"
 
@@ -87,6 +88,11 @@ RefinementCriteria::RefinementCriteria(Mesh *pm, ParameterInput *pin) :
       std::cout<<"### FATAL ERROR in "<<__FILE__<<" at line "<<__LINE__<<std::endl;
       Kokkos::abort("radiation refinement variable used but <radiation> not defined");
     }
+    if ((it->rvariable.compare(0, 4, "dust") == 0) &&
+        (pm->pmb_pack->pdust == nullptr)) {
+      std::cout<<"### FATAL ERROR in "<<__FILE__<<" at line "<<__LINE__<<std::endl;
+      Kokkos::abort("dust refinement variable used but <dust> not defined");
+    }
   }
 
   // count number of derived variables used for refinement
@@ -148,6 +154,12 @@ void RefinementCriteria::SetRefinementData(MeshBlockPack* pmbp, bool count_deriv
         if (!(count_derived) && !(load_derived)) {
           int n = static_cast<int>(IDN);
           it->rdata = Kokkos::subview(pmbp->pmhd->w0, ALL, n, ALL, ALL, ALL);
+        }
+      // particle-mesh dust density (dust track; deposited on the check cycles by
+      // MeshRefinement::CheckForRefinement through DustGasDrag::AssembleDustDensityNow)
+      } else if (it->rvariable.compare("dust_rho") == 0) {
+        if (!(count_derived) && !(load_derived)) {
+          it->rdata = Kokkos::subview(pmbp->pdust->rho_dust, ALL, 0, ALL, ALL, ALL);
         }
       // radiation coordinate frame energy density R^0^0
       } else if (it->rvariable.compare("rad_coord_e") == 0) {

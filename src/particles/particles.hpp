@@ -85,6 +85,16 @@ class Particles {
   // compact out particles marked dead (PGID < 0) and refresh the Mesh particle counts;
   // returns the number removed on this rank (collective under MPI)
   int RemoveDead();
+  // AMR (particles_amr.cpp): called from MeshRefinement::RedistAndRefineMeshBlocks once
+  // the new tree, load balance and per-old-block refine flags are known but before the
+  // Mesh is switched to the new numbering.  Optionally splits the particles of refined
+  // blocks into 2^d children (<particles>/split_on_refine), then routes every particle
+  // to its new MeshBlock, across ranks where needed.
+  bool split_on_refine = false;
+  void RedistributeAfterRemesh(const int *oldtonew, const int *new_rank_eachmb,
+                               const int new_nmb_total, const DualArray1D<int> &rflag,
+                               const int nleaf);
+  void SplitOnRefine(const DualArray1D<int> &act, const int nleaf);
 
  private:
   MeshBlockPack* pmy_pack;  // ptr to MeshBlockPack containing this Particles

@@ -475,6 +475,21 @@ particles::ParticlesBoundaryValues::ParticlesBoundaryValues(
   if (shear_periodic_x1) {
     qshear_sp = pin->GetReal("shearing_box","qshear");
     omega0_sp = pin->GetReal("shearing_box","omega0");
+  }
+  InitShearMaps();
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void ParticlesBoundaryValues::InitShearMaps()
+//! \brief (Re)builds the (side, lx3, lx2) -> gid/rank maps of the MeshBlocks on the two
+//! shear-periodic x1 faces from the current Mesh.  The face blocks share one refinement
+//! level (Mesh::CheckShearingBoxRefinement); AMR renumbers them and may move them
+//! between ranks, so this runs again after every remesh.
+
+void particles::ParticlesBoundaryValues::InitShearMaps() {
+  if (!shear_periodic_x1) return;
+  Mesh *pmesh = pmy_part->pmy_pack->pmesh;
+  {
     // the face blocks share one refinement level (Mesh::CheckShearingBoxRefinement);
     // build the maps at that level
     int blev = pmesh->root_level;

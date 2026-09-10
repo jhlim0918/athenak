@@ -210,7 +210,8 @@ Mesh::Mesh(ParameterInput *pin) :
   //      communicates between same-level, same-size x2-face neighbors.
   // AMR is not supported with a shearing box yet (static boundary GID lists);
   // MHD orbital advection (face-centered B remap) does not support refinement yet.
-  if (multilevel && pin->DoesBlockExist("shearing_box") && global_variable::my_rank==0) {
+  if (multilevel && pin->DoesBlockExist("shearing_box") &&
+      (pin->GetInteger("mesh","nx3") > 1) && global_variable::my_rank==0) {
     std::cout << "### WARNING in " << __FILE__ << " at line " << __LINE__ << std::endl
         << "Shearing box with mesh refinement: both x1 boundary faces must share one "
         << "uniform level, and with orbital advection refined regions must span the "

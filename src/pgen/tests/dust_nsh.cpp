@@ -188,6 +188,37 @@ void ReadNSHParams(ParameterInput *pin, MeshBlockPack *pmbp,
 } // namespace
 
 //----------------------------------------------------------------------------------------
+//! \brief AMR test schedule (<problem>/amr_test = true): MeshBlocks intersecting the box
+//! [amr_x1min, amr_x1max] x (all x2) x [amr_x3min, amr_x3max] are flagged for refinement
+//! while amr_t_on <= t < amr_t_off and for derefinement otherwise, so the lattice
+//! equilibrium passes through one refine and one derefine event.
+
+namespace {
+bool nsh_amr_test = false;
+Real nsh_amr_x1min, nsh_amr_x1max, nsh_amr_x3min, nsh_amr_x3max;
+Real nsh_amr_t_on, nsh_amr_t_off;
+
+void DustNSHRefine(MeshBlockPack *pmbp) {
+  if (!nsh_amr_test) return;
+  auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
+  int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
+  auto &size = pmbp->pmb->mb_size;
+  Real t = pmbp->pmesh->time;
+  bool on = (t >= nsh_amr_t_on) && (t < nsh_amr_t_off);
+  for (int m=0; m<(pmbp->nmb_thispack); ++m) {
+    bool inx1 = (size.h_view(m).x1max > nsh_amr_x1min) &&
+                (size.h_view(m).x1min < nsh_amr_x1max);
+    bool inx3 = (!pmbp->pmesh->three_d) ||
+                ((size.h_view(m).x3max > nsh_amr_x3min) &&
+                 (size.h_view(m).x3min < nsh_amr_x3max));
+    refine_flag.h_view(m + mbs) = (on && inx1 && inx3) ? 1 : -1;
+  }
+  refine_flag.template modify<HostMemSpace>();
+  refine_flag.template sync<DevExeSpace>();
+}
+} // namespace
+
+//----------------------------------------------------------------------------------------
 //! \fn ProblemGenerator::DustNSH()
 //! \brief Problem Generator for the multi-species NSH drift equilibrium
 
@@ -228,6 +259,17 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
   // Keep this enrolled in dust-free runs as well so an otherwise unchanged input
   // with user_hist=true remains valid; the callback emits no dust columns in that mode.
   user_hist_func = DustNSHHistory;
+  // AMR test schedule (see DustNSHRefine)
+  nsh_amr_test = pin->GetOrAddBoolean("problem","amr_test",false);
+  if (nsh_amr_test) {
+    nsh_amr_x1min = pin->GetReal("problem","amr_x1min");
+    nsh_amr_x1max = pin->GetReal("problem","amr_x1max");
+    nsh_amr_x3min = pin->GetOrAddReal("problem","amr_x3min",-1.0e300);
+    nsh_amr_x3max = pin->GetOrAddReal("problem","amr_x3max", 1.0e300);
+    nsh_amr_t_on  = pin->GetReal("problem","amr_t_on");
+    nsh_amr_t_off = pin->GetReal("problem","amr_t_off");
+    user_ref_func = DustNSHRefine;
+  }
   if (restart) return;
 
   if (pmbp->phydro == nullptr) {

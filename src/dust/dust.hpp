@@ -414,6 +414,8 @@ class DustGasDrag {
   void DepositMass();                // the deposit kernel (rho_dust, active + ghosts)
   void ComputeForceField();          // gforce on active cells from phi
   void AssembleDustDensityNow();   // synchronous deposit + exchanges (static solves)
+  void SetRefinementFactors();     // rfac/any_coarse from the current block levels
+  void ReinitAfterMeshUpdate();    // AMR: per-block state after a remesh
   void ComputeGravForceNow();        // synchronous force field + exchanges
   // ...in "after_stagen" list
   TaskStatus ClearParticleSend(Driver *pdrive, int stage);

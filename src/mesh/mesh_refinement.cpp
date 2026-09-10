@@ -35,6 +35,9 @@
 #include "z4c/z4c.hpp"
 #include "z4c/z4c_amr.hpp"
 #include "shearing_box/shearing_box.hpp"
+#include "particles/particles.hpp"
+#include "bvals/bvals.hpp"
+#include "dust/dust.hpp"
 #include "prolongation.hpp"
 #include "restriction.hpp"
 
@@ -54,10 +57,13 @@ MeshRefinement::MeshRefinement(Mesh *pm, ParameterInput *pin) :
   refinement_interval(5),
   prolong_prims(false),
   prolong_linear(false),
-  shearing_box_(pin->DoesBlockExist("shearing_box")),
+  // the shear-periodic remap and orbital advection run only in 3D (or 2D r-phi, not
+  // implemented): the 2D r-z shearing box has plain periodic x1 faces and needs neither
+  // policy
+  shearing_box_(pin->DoesBlockExist("shearing_box") && pm->three_d),
   slab_z_(pin->DoesBlockExist("gravity") &&
       pin->GetOrAddString("gravity", "mg_bc", "none") == "slab"),
-  sbox_ring_policy_(pin->DoesBlockExist("shearing_box") &&
+  sbox_ring_policy_(pin->DoesBlockExist("shearing_box") && pm->three_d &&
       pin->GetOrAddBoolean("shearing_box", "orbital_advection", true)),
   refine_flag("rflag",pm->nmb_total),
   fc_amr_repair("fc_amr_repair",pm->nmb_total),
@@ -202,6 +208,11 @@ void MeshRefinement::AdaptiveMeshRefinement(Driver *pdriver, ParameterInput *pin
         pmbp->pmhd->psbox_b->ReinitAfterMeshUpdate();
       }
     }
+    // dust: per-block refinement factors of the finest-level deposits, the deposit
+    // exchange's per-block shear offsets and the shear remaps of u*, rho_dust and g
+    if (pmbp->pdust != nullptr) {
+      pmbp->pdust->ReinitAfterMeshUpdate();
+    }
 
     pdriver->InitBoundaryValuesAndPrimitives(pmy_mesh);
 
@@ -255,6 +266,16 @@ void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
   // calculate derived refinement variables
   if (pmrc->nderived > 0) {
     pmrc->SetRefinementData(pmbp, false, true);
+  }
+  // dust track: a criterion on the particle-mesh dust density needs the deposit of the
+  // current particle positions (synchronous: deposit, exchanges, fold, prolongation)
+  if (pmbp->pdust != nullptr) {
+    bool need_dust = false;
+    for (auto it = pmrc->rcrit.begin(); it != pmrc->rcrit.end(); ++it) {
+      if ((it->rmethod != RefCritMethod::location) && (it->rmethod != RefCritMethod::user)
+          && (it->rvariable.compare("dust_rho") == 0)) {need_dust = true;}
+    }
+    if (need_dust) {pmbp->pdust->AssembleDustDensityNow();}
   }
 
   // iterate through list of refinement criteria and apply methods
@@ -657,6 +678,14 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
   refine_flag.template modify<HostMemSpace>();
   refine_flag.template sync<DevExeSpace>();
 
+  // Particles (dust track): give every particle the GID of its MeshBlock on the new
+  // tree and move it to that block's rank, while this pack still carries the old
+  // numbering (see Particles::RedistributeAfterRemesh)
+  if (pm->pmb_pack->ppart != nullptr) {
+    pm->pmb_pack->ppart->RedistributeAfterRemesh(oldtonew, new_rank_eachmb,
+                                                 new_nmb_total, refine_flag, nleaf);
+  }
+
   hydro::Hydro* phydro = pm->pmb_pack->phydro;
   mhd::MHD* pmhd = pm->pmb_pack->pmhd;
   radiation::Radiation* prad = pm->pmb_pack->prad;
@@ -807,6 +836,10 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
   pm->pmb_pack->AddMeshBlocks(pin);
   pm->pmb_pack->AddCoordinates(pin);
   pm->pmb_pack->pmb->SetNeighbors(pm->ptree, pm->rank_eachmb);
+  // particle routing across the shear-periodic x1 faces uses the face-block GIDs/ranks
+  if (pm->pmb_pack->ppart != nullptr) {
+    pm->pmb_pack->ppart->pbval_part->InitShearMaps();
+  }
 
   Kokkos::realloc(fc_amr_repair, new_nmb_total);
   for (int m=0; m<new_nmb_total; ++m) {

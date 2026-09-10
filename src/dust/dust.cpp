@@ -104,12 +104,8 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   // ProlongateField).  Adaptive refinement is not supported: nothing redistributes the
   // particles when MeshBlocks are created, destroyed or moved between ranks.
   multilevel = pmy_pack->pmesh->multilevel;
-  if (pmy_pack->pmesh->adaptive) {
-    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "Dust drag supports static mesh refinement only (no AMR: particles are "
-              << "not redistributed when the mesh changes)" << std::endl;
-    std::exit(EXIT_FAILURE);
-  }
+  // adaptive refinement: Particles::RedistributeAfterRemesh routes the particles when
+  // MeshBlocks change, ReinitAfterMeshUpdate rebuilds the per-block state below
   if (multilevel && (pmy_pack->pmesh->max_level - pmy_pack->pmesh->root_level) > 1) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
               << "Dust drag supports ONE level of static refinement: every MeshBlock "
@@ -477,15 +473,10 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   Kokkos::realloc(qdep,  nmb, 5, ncells3, ncells2, ncells1);
   Kokkos::realloc(ustar, nmb, 3, ncells3, ncells2, ncells1);
   // finest-level deposits: per-block factor and the fine images of the deposit fields
-  rfac = DualArray1D<int>("dust_rfac", std::max(pmy_pack->nmb_thispack, 1));
-  for (int m=0; m<(pmy_pack->nmb_thispack); ++m) {
-    int lev = pmy_pack->pmb->mb_lev.h_view(m);
-    rfac.h_view(m) = (multilevel && (lev < pmy_pack->pmesh->max_level)) ? 2 : 1;
-    if (rfac.h_view(m) > 1) {any_coarse = true;}
-  }
-  rfac.template modify<HostMemSpace>();
-  rfac.template sync<DevExeSpace>();
-  if (any_coarse) {
+  // (with AMR any block may become the coarser one later, so the images always exist)
+  rfac = DualArray1D<int>("dust_rfac", nmb);
+  SetRefinementFactors();
+  if (any_coarse || pmy_pack->pmesh->adaptive) {
     int rx = 2, ry = (indcs.nx2 > 1) ? 2 : 1, rz = (indcs.nx3 > 1) ? 2 : 1;
     Kokkos::realloc(fimg_q, nmb, 5, rz*ncells3, ry*ncells2, rx*ncells1);
     Kokkos::realloc(fimg_d, nmb, 4, rz*ncells3, ry*ncells2, rx*ncells1);
@@ -500,11 +491,18 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
     Kokkos::realloc(coarse_rd, nmb, 1, n_cc3, n_cc2, n_cc1);
     if (gravity) {Kokkos::realloc(coarse_g, nmb, 3, n_cc3, n_cc2, n_cc1);}
     if (global_variable::my_rank == 0) {
-      std::cout << "# dust: static mesh refinement active: every MeshBlock deposits "
+      std::cout << "# dust: " << (pmy_pack->pmesh->adaptive ? "adaptive" : "static")
+                << " mesh refinement active: every MeshBlock deposits "
                 << "with the finest-level kernel (2x fine image on the coarser blocks, "
                 << "volume-averaged onto their cells); ghost deposits are exchanged "
                 << "conservatively across level boundaries; u*, rho_dust and g are "
                 << "prolongated" << std::endl;
+      if (pmy_pack->pmesh->adaptive) {
+        std::cout << "# dust: particles are routed to their new MeshBlocks after every "
+                  << "remesh" << (pmy_pack->ppart->split_on_refine ?
+                  ", and split into 2^d children when their block refines" : "")
+                  << std::endl;
+      }
     }
   }
   Kokkos::realloc(dmom,  nmb, 4, ncells3, ncells2, ncells1);
@@ -551,6 +549,42 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
     pbval_g->InitializeBuffers(3);
     if (shear_x1) {psbox_g = new ShearingBoxCC(pmy_pack, pin, 3);}
   }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void DustGasDrag::SetRefinementFactors()
+//! \brief rfac(m) = 2 for the blocks one level below the finest (they deposit through a
+//! 2x fine image), 1 otherwise; any_coarse = some block of this pack has rfac = 2.
+
+void DustGasDrag::SetRefinementFactors() {
+  any_coarse = false;
+  int nmb = pmy_pack->nmb_thispack;
+  if (static_cast<int>(rfac.extent(0)) < nmb) {Kokkos::resize(rfac, nmb);}
+  for (int m=0; m<nmb; ++m) {
+    int lev = pmy_pack->pmb->mb_lev.h_view(m);
+    rfac.h_view(m) = (multilevel && (lev < pmy_pack->pmesh->max_level)) ? 2 : 1;
+    if (rfac.h_view(m) > 1) {any_coarse = true;}
+  }
+  rfac.template modify<HostMemSpace>();
+  rfac.template sync<DevExeSpace>();
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void DustGasDrag::ReinitAfterMeshUpdate()
+//! \brief After an AMR remesh (new MeshBlocks, levels and ranks): the per-block
+//! refinement factors, the deposit exchanges' per-block shear offsets, and the shear
+//! remaps of the copy-exchanged fields.  The field and buffer arrays are sized for
+//! max_nmb_per_rank and need no reallocation.
+
+void DustGasDrag::ReinitAfterMeshUpdate() {
+  SetRefinementFactors();
+  pbval_qp->ReinitAfterMeshUpdate();
+  pbval_dm->ReinitAfterMeshUpdate();
+  if (pbval_rd != nullptr) {pbval_rd->ReinitAfterMeshUpdate();}
+  if (pbval_solver_add != nullptr) {pbval_solver_add->ReinitAfterMeshUpdate();}
+  if (psbox_us != nullptr) {psbox_us->ReinitAfterMeshUpdate();}
+  if (psbox_rc != nullptr) {psbox_rc->ReinitAfterMeshUpdate();}
+  if (psbox_g != nullptr) {psbox_g->ReinitAfterMeshUpdate();}
 }
 
 //----------------------------------------------------------------------------------------

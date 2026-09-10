@@ -106,6 +106,9 @@ Particles::Particles(MeshBlockPack *ppack, ParameterInput *pin) :
   Kokkos::realloc(prtcl_rdata, nrdata, nprtcl_thispack);
   Kokkos::realloc(prtcl_idata, nidata, nprtcl_thispack);
 
+  // AMR: split the particles of a MeshBlock that refines (see particles_amr.cpp)
+  split_on_refine = pin->GetOrAddBoolean("particles","split_on_refine",false);
+
   // allocate boundary object
   pbval_part = new ParticlesBoundaryValues(this, pin);
 }
