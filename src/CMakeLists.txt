@@ -142,6 +142,7 @@ add_executable(
         pgen/tests/dust_damping.cpp
         pgen/tests/dust_nsh.cpp
         pgen/tests/dust_grav_orbit.cpp
+        pgen/tests/dust_jeans.cpp
         pgen/tests/dusty_wave.cpp
         pgen/tests/dust_deposit_shear.cpp
         pgen/tests/gr_bondi.cpp
