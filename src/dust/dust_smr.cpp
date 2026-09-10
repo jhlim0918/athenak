@@ -32,9 +32,9 @@ void DustGasDrag::ZeroImage(DvceArray5D<Real> &fimg) {
 
 //----------------------------------------------------------------------------------------
 //! \fn DustGasDrag::RestrictImage
-//! \brief On blocks with rfac = 2, a(m,v,k,j,i) = mean of the 2^d fine-image cells of
-//! every block cell, ghosts included (the image and the block have the same ghost depth
-//! in coarse units).  Blocks with rfac = 1 deposited into a directly and are skipped.
+//! \brief On blocks with rfac = r > 1, a(m,v,k,j,i) = mean of the r^d fine-image cells
+//! of every block cell, ghosts included (the image and the block have the same ghost
+//! depth in coarse units).  Blocks with rfac = 1 deposited into a directly, skipped.
 
 void DustGasDrag::RestrictImage(DvceArray5D<Real> &fimg, DvceArray5D<Real> &a) {
   if (!any_coarse) {return;}
@@ -47,21 +47,19 @@ void DustGasDrag::RestrictImage(DvceArray5D<Real> &fimg, DvceArray5D<Real> &a) {
   par_for("dust_restrict_image", DevExeSpace(), 0, nmb1, 0, nvar-1, 0, n3-1, 0, n2-1,
           0, n1-1,
   KOKKOS_LAMBDA(const int m, const int v, const int k, const int j, const int i) {
-    if (rf(m) == 1) {return;}
-    const int fi = 2*i;
-    if (three_d) {
-      const int fj = 2*j, fk = 2*k;
-      a(m,v,k,j,i) = 0.125*(fimg(m,v,fk  ,fj  ,fi) + fimg(m,v,fk  ,fj  ,fi+1)
-                          + fimg(m,v,fk  ,fj+1,fi) + fimg(m,v,fk  ,fj+1,fi+1)
-                          + fimg(m,v,fk+1,fj  ,fi) + fimg(m,v,fk+1,fj  ,fi+1)
-                          + fimg(m,v,fk+1,fj+1,fi) + fimg(m,v,fk+1,fj+1,fi+1));
-    } else if (multi_d) {
-      const int fj = 2*j;
-      a(m,v,k,j,i) = 0.25*(fimg(m,v,k,fj  ,fi) + fimg(m,v,k,fj  ,fi+1)
-                         + fimg(m,v,k,fj+1,fi) + fimg(m,v,k,fj+1,fi+1));
-    } else {
-      a(m,v,k,j,i) = 0.5*(fimg(m,v,k,j,fi) + fimg(m,v,k,j,fi+1));
+    const int r = rf(m);
+    if (r == 1) {return;}
+    const int rj = multi_d ? r : 1, rk = three_d ? r : 1;
+    const int fi = r*i, fj = multi_d ? r*j : j, fk = three_d ? r*k : k;
+    Real sum = 0.0;
+    for (int kk=0; kk<rk; ++kk) {
+      for (int jj=0; jj<rj; ++jj) {
+        for (int ii=0; ii<r; ++ii) {
+          sum += fimg(m,v,fk+kk,fj+jj,fi+ii);
+        }
+      }
     }
+    a(m,v,k,j,i) = sum/static_cast<Real>(r*rj*rk);
   });
 }
 

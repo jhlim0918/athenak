@@ -277,6 +277,9 @@ class MeshBoundaryValuesDep : public MeshBoundaryValues {
   TaskStatus FoldShearDeposit(DvceArray5D<Real> &a, const Real yshear,
                               ReconstructionMethod rcon);
   bool ShearX1() const {return shear_x1_;}
+  // per-block factor of the fine image passed to PackAndSendDeposit (2^(lmax - l));
+  // without it the image is taken to be 2x (one level of refinement)
+  void SetImageFactors(const DualArray1D<int> &rf) {rfac_ = rf; have_rfac_ = true;}
   // rebuild the per-block global offsets of the shear planes (AMR renumbers blocks)
   void ReinitAfterMeshUpdate() {InitShearOffsets();}
 
@@ -298,6 +301,8 @@ class MeshBoundaryValuesDep : public MeshBoundaryValues {
   int shear_nvar_ = 0;            // nvar the planes are currently sized for
   DvceArray4D<Real> shear_plane_; // (face, v*ng+d, gk, gj); face 0 = inner-ghost slabs
   DvceArray2D<int> shear_goffs_;  // (m, {gj0, gk0}): global index of first active cell
+  DualArray1D<int> rfac_;       // fine-image factor per block (SetImageFactors)
+  bool have_rfac_ = false;
   void InitShearOffsets();      // fill shear_goffs_ from the current Mesh
   DvceArray1D<int> nghbr_ox1_;    // x1 direction (-1, 0, +1) of each buffer index n
 };

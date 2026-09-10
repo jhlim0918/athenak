@@ -195,23 +195,69 @@ void ReadNSHParams(ParameterInput *pin, MeshBlockPack *pmbp,
 
 namespace {
 bool nsh_amr_test = false;
+bool nsh_amr_density = false;
 Real nsh_amr_x1min, nsh_amr_x1max, nsh_amr_x3min, nsh_amr_x3max;
 Real nsh_amr_t_on, nsh_amr_t_off;
+Real nsh_amr_hold, nsh_amr_rho_lev[8];
+int nsh_amr_nthr = 0;
 
 void DustNSHRefine(MeshBlockPack *pmbp) {
-  if (!nsh_amr_test) return;
+  if (!nsh_amr_test && !nsh_amr_density) return;
   auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
   int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
-  auto &size = pmbp->pmb->mb_size;
+  int nmb = pmbp->nmb_thispack;
   Real t = pmbp->pmesh->time;
-  bool on = (t >= nsh_amr_t_on) && (t < nsh_amr_t_off);
-  for (int m=0; m<(pmbp->nmb_thispack); ++m) {
-    bool inx1 = (size.h_view(m).x1max > nsh_amr_x1min) &&
-                (size.h_view(m).x1min < nsh_amr_x1max);
-    bool inx3 = (!pmbp->pmesh->three_d) ||
-                ((size.h_view(m).x3max > nsh_amr_x3min) &&
-                 (size.h_view(m).x3min < nsh_amr_x3max));
-    refine_flag.h_view(m + mbs) = (on && inx1 && inx3) ? 1 : -1;
+  if (nsh_amr_test) {
+    auto &size = pmbp->pmb->mb_size;
+    bool on = (t >= nsh_amr_t_on) && (t < nsh_amr_t_off);
+    for (int m=0; m<nmb; ++m) {
+      bool inx1 = (size.h_view(m).x1max > nsh_amr_x1min) &&
+                  (size.h_view(m).x1min < nsh_amr_x1max);
+      bool inx3 = (!pmbp->pmesh->three_d) ||
+                  ((size.h_view(m).x3max > nsh_amr_x3min) &&
+                   (size.h_view(m).x3min < nsh_amr_x3max));
+      refine_flag.h_view(m + mbs) = (on && inx1 && inx3) ? 1 : -1;
+    }
+  } else {
+    // density mode: before the hold time every block refines (the linear growth needs
+    // the finest resolution everywhere); after it the target level of a block is the
+    // number of thresholds amr_rho_lev1 < amr_rho_lev2 < ... its maximum PM dust density
+    // exceeds, and the flag moves the block one level toward the target
+    int root = pmbp->pmesh->root_level;
+    if (t < nsh_amr_hold) {
+      for (int m=0; m<nmb; ++m) {refine_flag.h_view(m + mbs) = 1;}
+    } else {
+      pmbp->pdust->AssembleDustDensityNow();   // collective
+      auto &indcs = pmbp->pmesh->mb_indcs;
+      int is = indcs.is, ie = indcs.ie, js = indcs.js, je = indcs.je;
+      int ks = indcs.ks, ke = indcs.ke;
+      auto &rho = pmbp->pdust->rho_dust;
+      DvceArray1D<Real> bmax("nsh_amr_bmax", nmb);
+      par_for_outer("nsh_amr_max", DevExeSpace(), 0, 0, 0, nmb-1,
+      KOKKOS_LAMBDA(TeamMember_t tmember, const int m) {
+        Real mx = 0.0;
+        int nkji = (ke-ks+1)*(je-js+1)*(ie-is+1);
+        int nji = (je-js+1)*(ie-is+1);
+        Kokkos::parallel_reduce(Kokkos::TeamThreadRange(tmember, nkji),
+        [=](const int idx, Real &q) {
+          int k = idx/nji;
+          int j = (idx - k*nji)/(ie-is+1);
+          int i = (idx - k*nji - j*(ie-is+1)) + is;
+          q = fmax(q, rho(m,0,k+ks,j+js,i));
+        }, Kokkos::Max<Real>(mx));
+        bmax(m) = mx;
+      });
+      auto bmax_h = Kokkos::create_mirror_view(bmax);
+      Kokkos::deep_copy(bmax_h, bmax);
+      for (int m=0; m<nmb; ++m) {
+        int target = 0;
+        for (int n=0; n<nsh_amr_nthr; ++n) {
+          if (bmax_h(m) > nsh_amr_rho_lev[n]) {target = n + 1;}
+        }
+        int lev = pmbp->pmb->mb_lev.h_view(m) - root;
+        refine_flag.h_view(m + mbs) = (target > lev) ? 1 : ((target < lev) ? -1 : 0);
+      }
+    }
   }
   refine_flag.template modify<HostMemSpace>();
   refine_flag.template sync<DevExeSpace>();
@@ -268,6 +314,19 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
     nsh_amr_x3max = pin->GetOrAddReal("problem","amr_x3max", 1.0e300);
     nsh_amr_t_on  = pin->GetReal("problem","amr_t_on");
     nsh_amr_t_off = pin->GetReal("problem","amr_t_off");
+    user_ref_func = DustNSHRefine;
+  }
+  // AMR density mode (see DustNSHRefine): amr_hold_time, amr_rho_lev1..N thresholds
+  nsh_amr_density = pin->GetOrAddBoolean("problem","amr_density",false);
+  if (nsh_amr_density) {
+    nsh_amr_hold = pin->GetOrAddReal("problem","amr_hold_time",0.0);
+    nsh_amr_nthr = 0;
+    for (int n=1; n<=8; ++n) {
+      std::string key = "amr_rho_lev" + std::to_string(n);
+      if (!pin->DoesParameterExist("problem", key)) break;
+      nsh_amr_rho_lev[n-1] = pin->GetReal("problem", key);
+      nsh_amr_nthr = n;
+    }
     user_ref_func = DustNSHRefine;
   }
   if (restart) return;
@@ -391,7 +450,7 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
   for (int m=0; m<nmb; ++m) {
     int r = 1;
     if (lattice_finest) {
-      r = (pmbp->pmb->mb_lev.h_view(m) < pmy_mesh_->max_level) ? 2 : 1;
+      r = 1 << (pmy_mesh_->max_level - pmbp->pmb->mb_lev.h_view(m));
     }
     lat_r.h_view(m) = r;
     int rd = r*r*(three_d ? r : 1);

@@ -456,6 +456,8 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a,
   const int nsub = nsub_;
   const bool multi_d = pmy_pack->pmesh->multi_d;
   const bool three_d = pmy_pack->pmesh->three_d;
+  const bool have_rfac = have_rfac_;
+  auto rf = rfac_.d_view;
 #if MPI_PARALLEL_ENABLED
   // Build (or refresh) the rank-packed metadata before the kernel writes off-rank
   // payloads directly into the aggregate send buffer.
@@ -496,14 +498,30 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a,
       int dm = nghbr.d_view(m,n).gid - mbgid.d_view(0);
       int dn = nghbr.d_view(m,n).dest;
 
-      // value of cell (k,j,i) of the range, sub-cell q of its fine image when to_fine
+      // value of cell (k,j,i) of the range; when to_fine, sub-cell q of the cell at the
+      // NEIGHBOUR's level (2^d per cell) = mean of the (r/2)^d image cells it covers,
+      // r = this block's image factor (2 with one level: the image cells themselves)
+      const int r = have_rfac ? rf(m) : 2;
+      const int h = r/2;
       auto value = [&](const int k, const int j, const int i, const int q) -> Real {
         if (to_coarse) {return ca(m,v,k,j,i);}
         if (!to_fine) {return a(m,v,k,j,i);}
         const int si = q & 1;
         const int sj = multi_d ? ((q >> 1) & 1) : 0;
         const int sk = three_d ? ((q >> 2) & 1) : 0;
-        return fimg(m, v, (three_d ? 2*k + sk : k), (multi_d ? 2*j + sj : j), 2*i + si);
+        const int i0 = r*i + si*h;
+        const int j0 = multi_d ? r*j + sj*h : j;
+        const int k0 = three_d ? r*k + sk*h : k;
+        const int hj = multi_d ? h : 1, hk = three_d ? h : 1;
+        Real sum = 0.0;
+        for (int kk=0; kk<hk; ++kk) {
+          for (int jj=0; jj<hj; ++jj) {
+            for (int ii=0; ii<h; ++ii) {
+              sum += fimg(m, v, k0 + kk, j0 + jj, i0 + ii);
+            }
+          }
+        }
+        return sum/static_cast<Real>(h*hj*hk);
       };
 
       // Middle loop over k,j

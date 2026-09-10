@@ -1,0 +1,134 @@
+# AthenaK input file: nonlinear streaming instability, run BA of Johansen & Youdin (2007,
+# Table 1: tau_s = 1, eps = 0.2, box 40 eta r = 2 H square, 2D r-z, eta v_K = 0.05 c_s,
+# Omega = c_s = 1), with THREE LEVELS of adaptive mesh refinement (root 64^2 in 16^2
+# MeshBlocks, finest level 256^2 = JY07's resolution).  The mesh starts fully refined
+# (<refined_region1> at level 2 over the whole box) and the generator's density
+# criterion (problem/amr_density; <amr_criterion1> method = user) keeps it so until
+# amr_hold_time, because the root grid alone does not resolve the growing modes (the
+# AMR lesson of the AB run); afterwards a MeshBlock's target level is the number of
+# thresholds amr_rho_lev1 < amr_rho_lev2 its maximum particle-mesh dust density exceeds,
+# so the finest cells follow the dense filaments and the voids fall back to the root
+# grid.  Particles are split on refinement; nothing merges them on derefinement, so the
+# particle count stays that of the initial finest mesh (ppc per level-2 cell).
+# The figure: validation/figures/plot_dust6_ba_amr3.jl.
+
+<comment>
+problem   = JY07 BA streaming instability, 2D r-z, three AMR levels
+
+<job>
+basename  = si_BA3
+
+<mesh>
+nghost    = 4             # even (refinement); ppmx needs >= 3
+nx1       = 64            # radial (root)
+x1min     = -1.0
+x1max     = 1.0
+ix1_bc    = periodic      # 2D r-z: no azimuthal shift, plain periodic
+ox1_bc    = periodic
+nx2       = 64            # vertical (root)
+x2min     = -1.0
+x2max     = 1.0
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16            # 4x4 root MeshBlocks (>= 2*nghost for the deposit injection)
+nx2       = 16
+nx3       = 1
+
+<mesh_refinement>
+refinement = adaptive
+num_levels = 3            # root + 2 refined levels (finest 256^2)
+ncycle_check = 50         # cycles between criterion checks (each deposits rho_dust)
+refinement_interval = 100 # min cycles between (de)refinement of the same MeshBlock
+max_nmb_per_rank = 400    # 16 root blocks, up to 256 at level 2
+
+<refined_region1>
+level = 2                 # start fully refined
+x1min = -1.0
+x1max = 1.0
+x2min = -1.0
+x2max = 1.0
+x3min = -0.5
+x3max = 0.5
+
+<amr_criterion1>
+method    = user          # DustNSHRefine in density mode (problem/amr_density)
+
+<time>
+evolution  = dynamic
+integrator = imex2+       # required for dust
+cfl_number = 0.3
+nlim       = -1
+tlim       = 300.0
+ndiag      = 1000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = ppmx
+rsolver     = roe
+
+<hydro_srcterms>
+const_accel     = true    # radial pressure-gradient mimic on the gas only
+const_accel_val = 0.1     # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 4.0       # per cell of the initial (level-2) mesh: 2.6e5 particles
+split_on_refine = true    # 2^d children per particle when its MeshBlock refines
+
+<dust>
+coupling      = imex
+nspecies      = 1
+taus_1        = 1.0
+dust_to_gas   = 0.2
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+drag_solver   = local
+
+<problem>
+pgen_name     = dust_nsh
+particle_placement = random   # warm start: shot noise seeds the instability
+random_seed   = 1
+check_equilibrium = false
+amr_density   = true      # the density criterion below (method = user)
+amr_hold_time = 100.0     # fully refined until the instability has saturated
+amr_rho_lev1  = 0.5       # level 1 where max rho_p > 2.5 x the mean (0.2)
+amr_rho_lev2  = 1.0       # level 2 where max rho_p > 5 x the mean
+user_hist     = true
+rho0          = 1.0
+etavk         = 0.05
+eps_1         = 0.2
+
+<output1>
+file_type  = hst
+dt         = 2.0
+data_format = %.14e
+
+<output2>
+file_type  = phst         # particle history: dpm_max, per-species dispersions
+dt         = 2.0
+
+<output3>
+file_type  = bin
+variable   = dust_dpm     # PM dust density on the (refined) mesh
+dt         = 10.0
+
+<output4>
+file_type  = bin
+variable   = hydro_w
+dt         = 10.0
