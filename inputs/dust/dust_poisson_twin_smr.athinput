@@ -1,0 +1,113 @@
+# AthenaK input file: the DUST TWIN of the Tomida & Stone (2023) sec. 4.1 triple-sine
+# Poisson test on a STATICALLY REFINED mesh (dust track, gravity on SMR).  Same
+# construction as inputs/dust/dust_poisson_twin.athinput -- a fraction
+# <problem>/dust_frac of the density profile rho0 + A sin sin sin is carried by one dust
+# particle per MeshBlock cell at the cell centres (mass f*rho*V), the gas keeps the rest
+# -- on a root grid of 64^3 in 16^3 MeshBlocks (4x4x4) with the central cube
+# |x|,|y|,|z| < 0.25 (the middle 2x2x2 root blocks) refined to level 1: the level jumps
+# in all three directions, so the coarse-fine faces, edges and corners are all exercised.
+#
+# With <dust>/deposit = ngp the particle-mesh dust density is the profile to round-off on
+# EVERY level: a coarse block deposits with the finest-level kernel into its 2x fine
+# image, NGP puts the whole mass m_p = f*rho*V_coarse into one fine-image cell
+# (rho = m_p/V_fine), and the restriction averages the 2^3 fine cells back onto the
+# coarse cell, returning m_p/V_coarse = f*rho.  So every metric the generator prints
+# (# FFT-POISSON ERRORS, # TS41-EPS) must equal the gas-only run's ON THIS SAME MESH,
+# and the force gathered at the particles (# DUST-GRAVITY FORCE ERROR) must equal it too.
+# The refined mesh is NOT compared with the uniform one: the discretisation differs.
+#   dust_frac = 0 with dust/gravity = false : the gas-only reference on this mesh
+#   dust/deposit = ngp | tsc, dust_frac = 0.5 | 1, mpirun -np 4
+# Static: nlim = 0.  See validation/dust_selfgravity_validation.pdf (gravity on SMR).
+
+<comment>
+problem   = dust twin of the TS23 sec. 4.1 triple-sine Poisson test, SMR
+
+<job>
+basename  = twin_smr
+
+<mesh>
+nghost    = 2         # even (SMR)
+nx1       = 64
+x1min     = -0.5
+x1max     = 0.5
+ix1_bc    = periodic
+ox1_bc    = periodic
+nx2       = 64
+x2min     = -0.5
+x2max     = 0.5
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 64
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16        # 4x4x4 root blocks; >= 2*nghost (deposit injection)
+nx2       = 16
+nx3       = 16
+
+<mesh_refinement>
+refinement = static
+
+<refined_region1>
+level = 1
+x1min = -0.25         # the central 2x2x2 root blocks: level jumps in x1, x2 and x3
+x1max = 0.25
+x2min = -0.25
+x2max = 0.25
+x3min = -0.25
+x3max = 0.25
+
+<time>
+evolution  = dynamic
+integrator = imex2+   # required by the dust module (coupling = imex)
+cfl_number = 0.2
+nlim       = 0        # static test: pgen-only, no evolution
+tlim       = 1.0
+ndiag      = 1
+
+<hydro>
+eos         = isothermal
+reconstruct = plm
+rsolver     = llf
+iso_sound_speed = 1.0
+
+<gravity>
+solver    = multigrid
+four_pi_G = 12.566370614359172   # 4*pi (G = 1)
+niteration = 12
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 1.0       # one particle per cell (lattice at the cell centres)
+
+<dust>
+coupling      = imex      # imex (imex2+) | pc2 (rk2)
+nspecies      = 1
+taus_1        = 1.0
+back_reaction = false
+deposit       = ngp       # ngp: exact twin; tsc: filtered source
+gravity       = true      # dust in the Poisson source and subject to -grad(phi)
+gravity_source = true
+gravity_force  = true
+dt_cfl        = 0.5
+
+<problem>
+pgen_name = fft_poisson
+profile   = sin3
+amp       = 1.0       # A
+rho0      = 2.0
+dust_frac = 1.0       # fraction of the profile carried by the particles
+dust_part = all       # all | blob (profile = modes): dust carries only the Gaussian blob
+dust_gas_floor = 1.0e-10  # gas density floor (x rho0) where the dust carries everything
+conv_niter = 0
+probe_line = false    # true: print phi and -dphi/dx1 along the row of the worst force

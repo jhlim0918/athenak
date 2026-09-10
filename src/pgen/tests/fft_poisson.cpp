@@ -45,6 +45,20 @@
 #include "particles/particles.hpp"
 #include "dust/dust.hpp"
 
+namespace {
+//----------------------------------------------------------------------------------------
+//! \fn LevelWeight
+//! \brief volume of a cell on logical level lev relative to a root-level cell, for the
+//! volume weighting of the diagnostic reductions below on a refined mesh.  wdim is the
+//! number of refined dimensions.  Exactly 1.0 on the root level (a power of two, so the
+//! weighting is exact and leaves an unrefined mesh's numbers bit for bit unchanged).
+
+KOKKOS_INLINE_FUNCTION
+Real LevelWeight(int lev, int rootlev, int wdim) {
+  return 1.0/static_cast<Real>(1ULL << (wdim*(lev - rootlev)));
+}
+}  // namespace
+
 //----------------------------------------------------------------------------------------
 //! \fn ProblemGenerator::FFTPoisson()
 //! \brief sets up density field, solves for Phi, and reports discrete residual norms
@@ -273,6 +287,34 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
   //   delta  = rms(phi - phi_fully_converged)    (their eq. 5; reference = the solution
   //            after conv_niter iterations, built by a bit-identical first pass)
   //   defect = rms(4piG*(rho-rho_mean) - L[phi]) (their eq. 7)
+  // ---- volume weights of the diagnostic reductions -----------------------------------
+  // Every reduction below runs over the active cells of every MeshBlock on the mesh, and
+  // on a refined mesh those cells are not all the same size: a cell on logical level l
+  // occupies LevelWeight = 2^{-d(l - l_root)} of a root cell.  Each summand therefore
+  // carries that weight and each mean is normalised by their total, wcells_tot ("root
+  // cell equivalents"), rather than by the root-grid cell count.  Without the weighting
+  // the subtracted mean density -- and with it the whole Poisson right-hand side of the
+  // residual metric -- comes out too large by the refinement volume ratio (1.875 for a
+  // 64^3 root grid with its central octant refined), which reads as an O(1) relative
+  // residual everywhere and hides whatever the solver actually did.  On a mesh with no
+  // refinement every weight is exactly 1.0 and wcells_tot is exactly the root cell
+  // count, so every number printed below is unchanged bit for bit.
+  auto &mblev = pmbp->pmb->mb_lev;
+  const int rootlev = pmy_mesh_->root_level;
+  const int wdim = pmy_mesh_->three_d ? 3 : (pmy_mesh_->multi_d ? 2 : 1);
+  Real wcells_tot = 0.0;
+  {
+    Real ncell_blk = static_cast<Real>(indcs.nx1)*static_cast<Real>(indcs.nx2)
+                    *static_cast<Real>(indcs.nx3);
+    for (int m=0; m<nmb; ++m) {
+      wcells_tot += ncell_blk*LevelWeight(mblev.h_view(m), rootlev, wdim);
+    }
+#if MPI_PARALLEL_ENABLED
+    MPI_Allreduce(MPI_IN_PLACE, &wcells_tot, 1, MPI_ATHENA_REAL, MPI_SUM,
+                  MPI_COMM_WORLD);
+#endif
+  }
+
   int conv_niter = pin->GetOrAddInteger("problem", "conv_niter", 0);
   bool conv_study = (conv_niter > 0) && (pmbp->pgrav->pmgd != nullptr) && sin3;
   if (conv_study) {
@@ -282,9 +324,7 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
 
     int ni = ie - is + 1, nj = je - js + 1, nk = ke - ks + 1;
     int nmkji = nmb*nk*nj*ni;
-    Real ncells_tot = static_cast<Real>(pmy_mesh_->mesh_indcs.nx1)
-                     *static_cast<Real>(pmy_mesh_->mesh_indcs.nx2)
-                     *static_cast<Real>(pmy_mesh_->mesh_indcs.nx3);
+    Real ncells_tot = wcells_tot;
     Real phi_amp3 = -four_pi_G*amp/(SQR(2.0*M_PI/lx) + SQR(2.0*M_PI/ly)
                                     + SQR(2.0*M_PI/lz));
 
@@ -296,7 +336,8 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       int j = js + ((idx/ni) % nj);
       int k = ks + ((idx/(ni*nj)) % nk);
       int m = idx/(ni*nj*nk);
-      lsum += src(m,isrc,k,j,i);
+      Real w = LevelWeight(mblev.d_view(m), rootlev, wdim);
+      lsum += src(m,isrc,k,j,i)*w;
     }, Kokkos::Sum<Real>(rsum));
 #if MPI_PARALLEL_ENABLED
     MPI_Allreduce(MPI_IN_PLACE, &rsum, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
@@ -323,8 +364,9 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
         Real x = CellCenterX(i-is, indcs.nx1, x1min, x1max);
         Real y = CellCenterX(j-js, indcs.nx2, x2min, x2max);
         Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
-        ln += phi(m,0,k,j,i);
-        la += phi_amp3*sin(2.0*M_PI*x/lx_c)*sin(2.0*M_PI*y/ly_c)*sin(2.0*M_PI*z/lz_c);
+        Real w = LevelWeight(mblev.d_view(m), rootlev, wdim);
+        ln += phi(m,0,k,j,i)*w;
+        la += phi_amp3*sin(2.0*M_PI*x/lx_c)*sin(2.0*M_PI*y/ly_c)*sin(2.0*M_PI*z/lz_c)*w;
       }, Kokkos::Sum<Real>(snum), Kokkos::Sum<Real>(sana));
 #if MPI_PARALLEL_ENABLED
       Real ms[2] = {snum, sana};
@@ -348,7 +390,8 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
         Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
         Real ana = phi_amp3*sin(2.0*M_PI*x/lx_c)*sin(2.0*M_PI*y/ly_c)
                           *sin(2.0*M_PI*z/lz_c);
-        lsq += SQR((phi(m,0,k,j,i) - mnum) - (ana - mana));
+        lsq += SQR((phi(m,0,k,j,i) - mnum) - (ana - mana))
+                  *LevelWeight(mblev.d_view(m), rootlev, wdim);
       }, Kokkos::Sum<Real>(ssq));
 #if MPI_PARALLEL_ENABLED
       MPI_Allreduce(MPI_IN_PLACE, &ssq, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
@@ -364,7 +407,8 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
         int j = js + ((idx/ni) % nj);
         int k = ks + ((idx/(ni*nj)) % nk);
         int m = idx/(ni*nj*nk);
-        lsq += SQR(phi(m,0,k,j,i) - phi_ref(m,0,k,j,i));
+        lsq += SQR(phi(m,0,k,j,i) - phi_ref(m,0,k,j,i))
+                  *LevelWeight(mblev.d_view(m), rootlev, wdim);
       }, Kokkos::Sum<Real>(ssq));
 #if MPI_PARALLEL_ENABLED
       MPI_Allreduce(MPI_IN_PLACE, &ssq, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
@@ -386,7 +430,8 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
         Real lap = (phi(m,0,k,j,i+1) - 2.0*phi(m,0,k,j,i) + phi(m,0,k,j,i-1))/SQR(dx1)
                  + (phi(m,0,k,j+1,i) - 2.0*phi(m,0,k,j,i) + phi(m,0,k,j-1,i))/SQR(dx2)
                  + (phi(m,0,k+1,j,i) - 2.0*phi(m,0,k,j,i) + phi(m,0,k-1,j,i))/SQR(dx3);
-        lsq += SQR(four_pi_G*(src(m,isrc,k,j,i) - rmean) - lap);
+        lsq += SQR(four_pi_G*(src(m,isrc,k,j,i) - rmean) - lap)
+                  *LevelWeight(mblev.d_view(m), rootlev, wdim);
       }, Kokkos::Sum<Real>(ssq));
 #if MPI_PARALLEL_ENABLED
       MPI_Allreduce(MPI_IN_PLACE, &ssq, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
@@ -435,9 +480,7 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
 
   int ni = ie - is + 1, nj = je - js + 1, nk = ke - ks + 1;
   int nmkji = nmb*nk*nj*ni;
-  Real ncells_tot = static_cast<Real>(pmy_mesh_->mesh_indcs.nx1)
-                   *static_cast<Real>(pmy_mesh_->mesh_indcs.nx2)
-                   *static_cast<Real>(pmy_mesh_->mesh_indcs.nx3);
+  Real ncells_tot = wcells_tot;
 
   // mean density (subtracted from the RHS in the triply-periodic solve)
   Real rho_sum = 0.0;
@@ -447,7 +490,8 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
     int j = js + ((idx/ni) % nj);
     int k = ks + ((idx/(ni*nj)) % nk);
     int m = idx/(ni*nj*nk);
-    lsum += src(m,isrc,k,j,i);
+    Real w = LevelWeight(mblev.d_view(m), rootlev, wdim);
+    lsum += src(m,isrc,k,j,i)*w;
   }, Kokkos::Sum<Real>(rho_sum));
 #if MPI_PARALLEL_ENABLED
   MPI_Allreduce(MPI_IN_PLACE, &rho_sum, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
@@ -476,8 +520,9 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
              + (phi(m,0,k+1,j,i) - 2.0*phi(m,0,k,j,i) + phi(m,0,k-1,j,i))/SQR(dx3);
     Real rhs = four_pi_G*(src(m,isrc,k,j,i) - rho_mean);
     Real res = fabs(lap - rhs);
+    Real w = LevelWeight(mblev.d_view(m), rootlev, wdim);
     lmax = fmax(lmax, res);
-    lsq += SQR(res);
+    lsq += SQR(res)*w;
     lrhs = fmax(lrhs, fabs(rhs));
     // interior norms: exclude cells whose stencil touches approximate ghosts --
     // the x1 boundary layers when shearing (remap-interpolated shear-periodic ghosts)
@@ -490,8 +535,8 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
     bool edge_x3 = open_z && ((z < dom_x3min + dx3) || (z > dom_x3max - dx3));
     if (!edge_x1 && !edge_x3) {
       lmax_i = fmax(lmax_i, res);
-      lsq_i += SQR(res);
-      lnint += 1.0;
+      lsq_i += SQR(res)*w;
+      lnint += w;
     }
   }, Kokkos::Max<Real>(res_max), Kokkos::Sum<Real>(res_sq), Kokkos::Max<Real>(rhs_max),
      Kokkos::Max<Real>(res_max_int), Kokkos::Sum<Real>(res_sq_int),
@@ -537,8 +582,9 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       Real x = CellCenterX(i-is, indcs.nx1, x1min, x1max);
       Real y = CellCenterX(j-js, indcs.nx2, x2min, x2max);
       Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
-      ln += phi(m,0,k,j,i);
-      la += phi_amp3*sin(2.0*M_PI*x/lx_c)*sin(2.0*M_PI*y/ly_c)*sin(2.0*M_PI*z/lz_c);
+      Real w = LevelWeight(mblev.d_view(m), rootlev, wdim);
+      ln += phi(m,0,k,j,i)*w;
+      la += phi_amp3*sin(2.0*M_PI*x/lx_c)*sin(2.0*M_PI*y/ly_c)*sin(2.0*M_PI*z/lz_c)*w;
     }, Kokkos::Sum<Real>(snum), Kokkos::Sum<Real>(sana));
 #if MPI_PARALLEL_ENABLED
     {
@@ -563,13 +609,152 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
       Real ana = phi_amp3*sin(2.0*M_PI*x/lx_c)*sin(2.0*M_PI*y/ly_c)
                         *sin(2.0*M_PI*z/lz_c);
-      lsq += SQR((phi(m,0,k,j,i) - snum/ncells_tot) - (ana - sana/ncells_tot));
+      lsq += SQR((phi(m,0,k,j,i) - snum/ncells_tot) - (ana - sana/ncells_tot))
+                *LevelWeight(mblev.d_view(m), rootlev, wdim);
     }, Kokkos::Sum<Real>(ssq));
 #if MPI_PARALLEL_ENABLED
     MPI_Allreduce(MPI_IN_PLACE, &ssq, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
 #endif
     if (global_variable::my_rank == 0) {
       std::cout << "# TS41-EPS: rms_eps= " << std::sqrt(ssq/ncells_tot) << std::endl;
+    }
+
+    // ---- the MESH force, -grad(phi) by the same centred difference the gas source
+    // term and the dust gather both use, against the analytic -grad(phi) of the sin3
+    // potential.  This needs no particles, so it separates what the gravity solver
+    // delivers from anything the dust module does with it.  The split by level and the
+    // count of cells above 1% of the peak force matter on a refined mesh: the composite
+    // solution carries a boundary layer of degraded accuracy at every coarse-fine
+    // interface, and a gradient taken across one cell there does not converge even
+    // though the potential and the Laplacian residual do.
+    {
+      Real gmax_a = fabs(phi_amp3)*fmax(2.0*M_PI/lx, fmax(2.0*M_PI/ly, 2.0*M_PI/lz));
+      int maxlev_g = pmy_mesh_->max_level;
+      Real gemax = 0.0, gemax_f = 0.0, gemax_c = 0.0;
+      Real gesq = 0.0, gnbad = 0.0, gntot = 0.0;
+      Real gebad = 1.0e-2*gmax_a;
+      Real kxg = 2.0*M_PI/lx, kyg = 2.0*M_PI/ly, kzg = 2.0*M_PI/lz;
+      Kokkos::parallel_reduce("fftp_meshforce",
+          Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+      KOKKOS_LAMBDA(int idx, Real &lmax, Real &lmaxf, Real &lmaxc,
+                    Real &lsq, Real &lbad, Real &ltot) {
+        int i = is + (idx % ni);
+        int j = js + ((idx/ni) % nj);
+        int k = ks + ((idx/(ni*nj)) % nk);
+        int m = idx/(ni*nj*nk);
+        Real &x1min = size.d_view(m).x1min, &x1max = size.d_view(m).x1max;
+        Real &x2min = size.d_view(m).x2min, &x2max = size.d_view(m).x2max;
+        Real &x3min = size.d_view(m).x3min, &x3max = size.d_view(m).x3max;
+        Real x = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+        Real y = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+        Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+        Real gx = -(phi(m,0,k,j,i+1) - phi(m,0,k,j,i-1))/(2.0*size.d_view(m).dx1);
+        Real gy = -(phi(m,0,k,j+1,i) - phi(m,0,k,j-1,i))/(2.0*size.d_view(m).dx2);
+        Real gz = -(phi(m,0,k+1,j,i) - phi(m,0,k-1,j,i))/(2.0*size.d_view(m).dx3);
+        Real ax = -phi_amp3*kxg*cos(kxg*x)*sin(kyg*y)*sin(kzg*z);
+        Real ay = -phi_amp3*kyg*sin(kxg*x)*cos(kyg*y)*sin(kzg*z);
+        Real az = -phi_amp3*kzg*sin(kxg*x)*sin(kyg*y)*cos(kzg*z);
+        Real e = fmax(fabs(gx - ax), fmax(fabs(gy - ay), fabs(gz - az)));
+        Real w = LevelWeight(mblev.d_view(m), rootlev, wdim);
+        lmax = fmax(lmax, e);
+        if (mblev.d_view(m) == maxlev_g) {
+          lmaxf = fmax(lmaxf, e);
+        } else {
+          lmaxc = fmax(lmaxc, e);
+        }
+        lsq += SQR(e)*w;
+        ltot += w;
+        if (e > gebad) {
+          lbad += w;
+        }
+      }, Kokkos::Max<Real>(gemax), Kokkos::Max<Real>(gemax_f),
+         Kokkos::Max<Real>(gemax_c), Kokkos::Sum<Real>(gesq),
+         Kokkos::Sum<Real>(gnbad), Kokkos::Sum<Real>(gntot));
+#if MPI_PARALLEL_ENABLED
+      {
+        Real mx[3] = {gemax, gemax_f, gemax_c};
+        Real sm[3] = {gesq, gnbad, gntot};
+        MPI_Allreduce(MPI_IN_PLACE, mx, 3, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, sm, 3, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+        gemax = mx[0]; gemax_f = mx[1]; gemax_c = mx[2];
+        gesq = sm[0]; gnbad = sm[1]; gntot = sm[2];
+      }
+#endif
+      if (global_variable::my_rank == 0) {
+        std::cout << "# TS41-MESH-FORCE: max_rel= " << gemax/gmax_a
+                  << " rms_rel= " << std::sqrt(gesq/gntot)/gmax_a
+                  << " max_rel_finest= " << gemax_f/gmax_a
+                  << " max_rel_coarser= " << gemax_c/gmax_a
+                  << " frac_above_1pct= " << gnbad/gntot << std::endl;
+      }
+    }
+
+    // ---- <problem>/probe_line: phi and -dphi/dx1 along the x1 row through the cell
+    // with the largest mesh-force error, numerical against analytic, one line per cell
+    // including the ghost layers.  On a refined mesh this shows the width and the
+    // profile of the boundary layer that the composite solve leaves at a coarse-fine
+    // interface: the error of phi grows by a factor of a few per cell over the last
+    // three or four active cells and is largest in the ghost the other level filled.
+    if (pin->GetOrAddBoolean("problem", "probe_line", false)) {
+      Real gmax_a = fabs(phi_amp3)*fmax(2.0*M_PI/lx, fmax(2.0*M_PI/ly, 2.0*M_PI/lz));
+      Real kxg = 2.0*M_PI/lx, kyg = 2.0*M_PI/ly, kzg = 2.0*M_PI/lz;
+      using MaxLocT = Kokkos::MaxLoc<Real, int>::value_type;
+      MaxLocT amax;
+      amax.val = 0.0;
+      amax.loc = 0;
+      Kokkos::parallel_reduce("fftp_probe_find",
+          Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+      KOKKOS_LAMBDA(int idx, MaxLocT &lm) {
+        int i = is + (idx % ni);
+        int j = js + ((idx/ni) % nj);
+        int k = ks + ((idx/(ni*nj)) % nk);
+        int m = idx/(ni*nj*nk);
+        Real &x1min = size.d_view(m).x1min, &x1max = size.d_view(m).x1max;
+        Real &x2min = size.d_view(m).x2min, &x2max = size.d_view(m).x2max;
+        Real &x3min = size.d_view(m).x3min, &x3max = size.d_view(m).x3max;
+        Real x = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+        Real y = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+        Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+        Real gx = -(phi(m,0,k,j,i+1) - phi(m,0,k,j,i-1))/(2.0*size.d_view(m).dx1);
+        Real ax = -phi_amp3*kxg*cos(kxg*x)*sin(kyg*y)*sin(kzg*z);
+        Real e = fabs(gx - ax);
+        if (e > lm.val) {
+          lm.val = e;
+          lm.loc = idx;
+        }
+      }, Kokkos::MaxLoc<Real, int>(amax));
+      int idx = amax.loc;
+      int iw = is + (idx % ni);
+      int jw = js + ((idx/ni) % nj);
+      int kw = ks + ((idx/(ni*nj)) % nk);
+      int mw = idx/(ni*nj*nk);
+      auto phi_h = Kokkos::create_mirror_view_and_copy(HostMemSpace(), phi);
+      Real x1min = size.h_view(mw).x1min, x1max = size.h_view(mw).x1max;
+      Real x2min = size.h_view(mw).x2min, x2max = size.h_view(mw).x2max;
+      Real x3min = size.h_view(mw).x3min, x3max = size.h_view(mw).x3max;
+      Real yw = CellCenterX(jw-js, indcs.nx2, x2min, x2max);
+      Real zw = CellCenterX(kw-ks, indcs.nx3, x3min, x3max);
+      Real dxw = size.h_view(mw).dx1;
+      if (global_variable::my_rank == 0) {
+        std::cout << "# TS41-PROBE: lev= " << mblev.h_view(mw) << " dx1= " << dxw
+                  << " y= " << yw << " z= " << zw << " active_i= " << is << ".." << ie
+                  << " (x1 block edges " << x1min << " " << x1max << ")" << std::endl;
+        std::cout << "# TS41-PROBE-COLS: i x phi phi_ana err_phi g g_ana err_g_rel"
+                  << " (ghost rows: err_g_rel = -1, the second ghost layer is unfilled)"
+                  << std::endl;
+        for (int i=is-1; i<=ie+1; ++i) {
+          Real x = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+          Real pa = phi_amp3*sin(kxg*x)*sin(kyg*yw)*sin(kzg*zw);
+          Real ga = -phi_amp3*kxg*cos(kxg*x)*sin(kyg*yw)*sin(kzg*zw);
+          bool act = (i >= is) && (i <= ie);
+          Real gn = act ?
+              -(phi_h(mw,0,kw,jw,i+1) - phi_h(mw,0,kw,jw,i-1))/(2.0*dxw) : 0.0;
+          std::cout << "# TS41-PROBE-ROW " << i << " " << x << " "
+                    << phi_h(mw,0,kw,jw,i) << " " << pa << " "
+                    << fabs(phi_h(mw,0,kw,jw,i) - pa) << " " << gn << " " << ga << " "
+                    << (act ? fabs(gn - ga)/gmax_a : -1.0) << std::endl;
+        }
+      }
     }
   }
 
@@ -660,10 +845,19 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
                                       + SQR(2.0*M_PI/lz));
       Real kx = 2.0*M_PI/lx, ky = 2.0*M_PI/ly, kz = 2.0*M_PI/lz;
       Real gmax = fabs(phi_amp3)*fmax(kx, fmax(ky, kz));
-      Real emax = 0.0;
+      // On a refined mesh the error is split by the level of the particle's own block
+      // (maxlev = the finest), and the particles whose error exceeds 1% of the peak
+      // force are counted: the gather is second-order accurate in the interior of every
+      // level but only first-order in the cells whose stencil crosses a coarse-fine
+      // boundary, and this says how many particles sit in that shell.
+      int maxlev = pmy_mesh_->max_level;
+      Real emax = 0.0, emax_fine = 0.0, emax_crse = 0.0;
+      Real esq = 0.0, nbad = 0.0, ntot = 0.0;
+      Real ebad = 1.0e-2*gmax;
       Kokkos::parallel_reduce("fftp_dust_force",
           Kokkos::RangePolicy<>(DevExeSpace(), 0, npart),
-      KOKKOS_LAMBDA(const int p, Real &lmax) {
+      KOKKOS_LAMBDA(const int p, Real &lmax, Real &lmaxf, Real &lmaxc,
+                    Real &lsq, Real &lbad, Real &ltot) {
         int m = pi(PGID,p) - gids;
         int ip, jp, kp;
         Real wx[3], wy[3], wz[3];
@@ -692,12 +886,92 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
         Real az = -phi_amp3*kz*sin(kx*x)*sin(ky*y)*cos(kz*z);
         Real e = fmax(fabs(gx - ax), fmax(fabs(gy - ay), fabs(gz - az)));
         lmax = fmax(lmax, e);
-      }, Kokkos::Max<Real>(emax));
+        if (mblev.d_view(m) == maxlev) {
+          lmaxf = fmax(lmaxf, e);
+        } else {
+          lmaxc = fmax(lmaxc, e);
+        }
+        lsq += SQR(e);
+        ltot += 1.0;
+        if (e > ebad) {
+          lbad += 1.0;
+        }
+      }, Kokkos::Max<Real>(emax), Kokkos::Max<Real>(emax_fine),
+         Kokkos::Max<Real>(emax_crse), Kokkos::Sum<Real>(esq),
+         Kokkos::Sum<Real>(nbad), Kokkos::Sum<Real>(ntot));
 #if MPI_PARALLEL_ENABLED
-      MPI_Allreduce(MPI_IN_PLACE, &emax, 1, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+      {
+        Real mx[3] = {emax, emax_fine, emax_crse};
+        Real sm[3] = {esq, nbad, ntot};
+        MPI_Allreduce(MPI_IN_PLACE, mx, 3, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, sm, 3, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+        emax = mx[0]; emax_fine = mx[1]; emax_crse = mx[2];
+        esq = sm[0]; nbad = sm[1]; ntot = sm[2];
+      }
 #endif
       if (global_variable::my_rank == 0) {
-        std::cout << "# DUST-GRAVITY FORCE ERROR: max_rel= " << emax/gmax << std::endl;
+        std::cout << "# DUST-GRAVITY FORCE ERROR: max_rel= " << emax/gmax
+                  << " rms_rel= " << std::sqrt(esq/ntot)/gmax
+                  << " max_rel_finest= " << emax_fine/gmax
+                  << " max_rel_coarser= " << emax_crse/gmax
+                  << " frac_above_1pct= " << nbad/ntot << std::endl;
+      }
+      // where the worst error sits: the position, the level of its block, and the cell
+      // index within the block, so a refined run says whether the outliers are at a
+      // coarse-fine boundary and on which side of it
+      {
+        using MaxLocT = Kokkos::MaxLoc<Real, int>::value_type;
+        MaxLocT amax;
+        amax.val = 0.0;
+        amax.loc = 0;
+        Kokkos::parallel_reduce("fftp_dust_force_loc",
+            Kokkos::RangePolicy<>(DevExeSpace(), 0, npart),
+        KOKKOS_LAMBDA(const int p, MaxLocT &lm) {
+          int m = pi(PGID,p) - gids;
+          int ip, jp, kp;
+          Real wx[3], wy[3], wz[3];
+          Real x = pr(IPX,p), y = pr(IPY,p), z = pr(IPZ,p);
+          dust::PMWeights(x, size.d_view(m).x1min, size.d_view(m).x1max, indcs.nx1, is,
+                          scheme, ip, wx);
+          dust::PMWeights(y, size.d_view(m).x2min, size.d_view(m).x2max, indcs.nx2, js,
+                          scheme, jp, wy);
+          dust::PMWeights(z, size.d_view(m).x3min, size.d_view(m).x3max, indcs.nx3, ks,
+                          scheme, kp, wz);
+          Real gx = 0.0, gy = 0.0, gz = 0.0;
+          for (int c=0; c<3; ++c) {
+            for (int b=0; b<3; ++b) {
+              Real wcb = wz[c]*wy[b];
+              if (wcb == 0.0) continue;
+              for (int a=0; a<3; ++a) {
+                Real w = wcb*wx[a];
+                gx += w*gforce(m,0,kp+c-1,jp+b-1,ip+a-1);
+                gy += w*gforce(m,1,kp+c-1,jp+b-1,ip+a-1);
+                gz += w*gforce(m,2,kp+c-1,jp+b-1,ip+a-1);
+              }
+            }
+          }
+          Real ax = -phi_amp3*kx*cos(kx*x)*sin(ky*y)*sin(kz*z);
+          Real ay = -phi_amp3*ky*sin(kx*x)*cos(ky*y)*sin(kz*z);
+          Real az = -phi_amp3*kz*sin(kx*x)*sin(ky*y)*cos(kz*z);
+          Real e = fmax(fabs(gx - ax), fmax(fabs(gy - ay), fabs(gz - az)));
+          if (e > lm.val) {
+            lm.val = e;
+            lm.loc = p;
+          }
+        }, Kokkos::MaxLoc<Real, int>(amax));
+        int pw = amax.loc;
+        auto pr_h = Kokkos::create_mirror_view_and_copy(HostMemSpace(), pr);
+        auto pi_h = Kokkos::create_mirror_view_and_copy(HostMemSpace(), pi);
+        int mw = pi_h(PGID,pw) - gids;
+        Real xw = pr_h(IPX,pw), yw = pr_h(IPY,pw), zw = pr_h(IPZ,pw);
+        int iw = static_cast<int>((xw - size.h_view(mw).x1min)/size.h_view(mw).dx1);
+        int jw = static_cast<int>((yw - size.h_view(mw).x2min)/size.h_view(mw).dx2);
+        int kw = static_cast<int>((zw - size.h_view(mw).x3min)/size.h_view(mw).dx3);
+        std::cout << "# DUST-GRAVITY FORCE ARGMAX: rank= " << global_variable::my_rank
+                  << " err_rel= " << amax.val/gmax << " lev= " << mblev.h_view(mw)
+                  << " x= " << xw << " y= " << yw << " z= " << zw
+                  << " cell= (" << iw << " " << jw << " " << kw << ")"
+                  << " of " << indcs.nx1 << "^3" << std::endl;
       }
     }
   }
@@ -738,8 +1012,9 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       Real y = CellCenterX(j-js, indcs.nx2, x2min, x2max);
       Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
       Real arg = 2.0*M_PI*(n1_c*x/lx_c + n2_c*(y + qomt_c*x)/ly_c + n3_c*z/lz_c);
-      lnum += phi(m,0,k,j,i);
-      lana += phi_amp*cos(arg);
+      Real w = LevelWeight(mblev.d_view(m), rootlev, wdim);
+      lnum += phi(m,0,k,j,i)*w;
+      lana += phi_amp*cos(arg)*w;
     }, Kokkos::Sum<Real>(sum_num), Kokkos::Sum<Real>(sum_ana));
 #if MPI_PARALLEL_ENABLED
     {
@@ -768,7 +1043,7 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       Real arg = 2.0*M_PI*(n1_c*x/lx_c + n2_c*(y + qomt_c*x)/ly_c + n3_c*z/lz_c);
       Real diff = (phi(m,0,k,j,i) - mean_num) - (phi_amp*cos(arg) - mean_ana);
       lmax = fmax(lmax, fabs(diff));
-      lsq += SQR(diff);
+      lsq += SQR(diff)*LevelWeight(mblev.d_view(m), rootlev, wdim);
     }, Kokkos::Max<Real>(dmax), Kokkos::Sum<Real>(dsq));
 #if MPI_PARALLEL_ENABLED
     MPI_Allreduce(MPI_IN_PLACE, &dmax, 1, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
@@ -833,7 +1108,7 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
                              *(static_cast<Real>(nz_c)-kgr));
       Real diff = phi(m,0,k,j,i) - ana;
       lmax = fmax(lmax, fabs(diff));
-      lsq += SQR(diff);
+      lsq += SQR(diff)*LevelWeight(mblev.d_view(m), rootlev, wdim);
     }, Kokkos::Max<Real>(dmax), Kokkos::Sum<Real>(dsq));
 #if MPI_PARALLEL_ENABLED
     MPI_Allreduce(MPI_IN_PLACE, &dmax, 1, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
@@ -904,8 +1179,9 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       int j = js + ((idx/ni) % nj);
       int k = ks + ((idx/(ni*nj)) % nk);
       int m = idx/(ni*nj*nk);
-      l1 += phi_mg(m,0,k,j,i);
-      l2s += phi(m,0,k,j,i);
+      Real w = LevelWeight(mblev.d_view(m), rootlev, wdim);
+      l1 += phi_mg(m,0,k,j,i)*w;
+      l2s += phi(m,0,k,j,i)*w;
     }, Kokkos::Sum<Real>(s1), Kokkos::Sum<Real>(s2));
     Real m1 = s1/ncells_tot, m2 = s2/ncells_tot;
 
@@ -918,9 +1194,10 @@ void ProblemGenerator::FFTPoisson(ParameterInput *pin, const bool restart) {
       int k = ks + ((idx/(ni*nj)) % nk);
       int m = idx/(ni*nj*nk);
       Real diff = (phi_mg(m,0,k,j,i) - m1) - (phi(m,0,k,j,i) - m2);
+      Real w = LevelWeight(mblev.d_view(m), rootlev, wdim);
       lmax = fmax(lmax, fabs(diff));
-      lsq += SQR(diff);
-      lref += SQR(phi(m,0,k,j,i) - m2);
+      lsq += SQR(diff)*w;
+      lref += SQR(phi(m,0,k,j,i) - m2)*w;
     }, Kokkos::Max<Real>(dmax), Kokkos::Sum<Real>(dsq), Kokkos::Sum<Real>(refsq));
 
     Real ref_rms = std::sqrt(refsq/ncells_tot);

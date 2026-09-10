@@ -348,6 +348,16 @@ int main(int argc, char *argv[]) {
   // is fully constructed.
 
   pmesh->AddCoordinatesAndPhysics(pinput);
+
+  // Construct MeshRefinement object only after physics modules have been added because
+  // size of buffers for load balancing, refinement criteria, etc. depend on physics.
+  // It is built BEFORE the ProblemGenerator because a generator may restrict or
+  // prolongate a field while setting the initial conditions (a static gravity solve over
+  // a particle deposit, say), and its constructor needs nothing from the ICs.
+  if (pmesh->multilevel) {
+    pmesh->pmr = new MeshRefinement(pmesh, pinput);
+  }
+
   if (!res_flag) {
     // set ICs using ProblemGenerator constructor for new runs
     pmesh->pgen = std::make_unique<ProblemGenerator>(pinput, pmesh);
@@ -358,12 +368,6 @@ int main(int argc, char *argv[]) {
                                                      restartfile,
                                                      single_file_per_rank);
     restartfile.Close(single_file_per_rank);
-  }
-
-  // Construct MeshRefinement object only after physics modules have been added because
-  // size of buffers for load balancing, refinement criteria, etc. depend on physics
-  if (pmesh->multilevel) {
-    pmesh->pmr = new MeshRefinement(pmesh, pinput);
   }
 
   //--- Step 6. --------------------------------------------------------------------------

@@ -90,3 +90,4 @@ dust_frac = 1.0       # fraction of the profile carried by the particles
 dust_part = all       # all | blob (profile = modes): dust carries only the Gaussian blob
 dust_gas_floor = 1.0e-10  # gas density floor (x rho0) where the dust carries everything
 conv_niter = 0
+probe_line = false    # true: print phi and -dphi/dx1 along the row of the worst force

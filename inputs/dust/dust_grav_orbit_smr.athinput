@@ -1,0 +1,121 @@
+# AthenaK input file: test particles oscillating in a self-gravitating isothermal slab
+# whose MIDPLANE IS REFINED (dust track, gravity on SMR).  Same physics and generator as
+# inputs/dust/dust_grav_orbit.athinput; the root grid 32x32x64 in 16^3 MeshBlocks
+# (2x2x4) has the midplane region |z| < 0.25 (the two middle z-rows) refined to level 1,
+# so the coarse-fine planes sit at z = +-0.25 = 1.77 h.  The particles are released at
+# rest at z0 = 0.30 (2.12 h), OUTSIDE the refined region, and fall through the level
+# boundary into the refined midplane and back out twice per period: the configuration of
+# the science box, where the settled dust layer is the refined region and dust arrives
+# from above.
+#
+# The measurable is the period and the amplitude against the exact anharmonic values of
+# phi = 2 c_s^2 ln cosh(z/h) (quadrature, in the analysis script), and the rms spread of
+# z over the 64 particles, which are scattered over (x,y) and must all trace the same
+# trajectory because the potential is a function of z alone.  This is the DYNAMIC probe
+# of the coarse-fine force: the converged multigrid potential is second-order accurate
+# but its one-cell-wide gradient at a level boundary is not, so the crossing costs the
+# orbit a fixed increment of momentum each time.  Compare with the uniform twin at the
+# same root and at the finest resolution (mesh_refinement/refinement = none, mesh/nx3 =
+# 64 resp. 128).  Note the gas slab is also perturbed at the planes, so the reference is
+# the uniform run, not the analytic value alone.
+# See validation/dust_selfgravity_validation.pdf (gravity on SMR).
+
+<comment>
+problem   = test particles in a self-gravitating slab with a refined midplane
+
+<job>
+basename  = orbit_smr
+
+<mesh>
+nghost    = 2         # even (SMR)
+nx1       = 32        # cubic CELLS (dx = 1/64 in all directions): a multigrid requirement
+x1min     = -0.25
+x1max     = 0.25
+ix1_bc    = periodic
+ox1_bc    = periodic
+nx2       = 32
+x2min     = -0.25
+x2max     = 0.25
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 64
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = diode     # no-inflow outflow: plain outflow lets boundary gas fall in
+ox3_bc    = diode
+
+<meshblock>
+nx1       = 16        # cubic MeshBlocks (multigrid requirement); >= 2*nghost
+nx2       = 16
+nx3       = 16        # 2x2x4 root blocks
+
+<mesh_refinement>
+refinement = static
+prolong_limiter = minmod   # minmod | none (diagnostic)
+
+<refined_region1>
+level = 1
+x1min = -0.25         # full x1 extent (only 2 root blocks across)
+x1max = 0.25
+x2min = -0.25         # full x2 extent
+x2max = 0.25
+x3min = -0.25         # the two middle z-rows: coarse-fine planes at z = +-0.25
+x3max = 0.25
+
+<time>
+evolution  = dynamic
+integrator = imex2+   # coupling = imex; use rk2 with coupling = pc2
+cfl_number = 0.45
+dtmax      = 1.0      # cap for the temporal-order scan
+nlim       = -1
+tlim       = 31.4159265358979   # five harmonic periods
+ndiag      = 500
+
+<hydro>
+eos         = isothermal
+reconstruct = plm
+rsolver     = hlle
+iso_sound_speed = 0.1   # h = 0.1/sqrt(0.5) = 0.1414
+
+<gravity>
+solver    = multigrid
+four_pi_G = 1.0
+mg_bc     = slab
+threshold = -1.0
+niteration = 12
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 0.0009765625 # 64 particles in the 32x32x64 root box (1/1024)
+
+<dust>
+coupling      = imex
+nspecies      = 2         # species 1 = -z0 mirror orbit on ranks without +z0 blocks
+taus_1        = 1.0e10    # test particles: drag negligible
+taus_2        = 1.0e10
+back_reaction = false
+deposit       = tsc
+gravity       = true
+gravity_source = false    # test particles: the gas alone sources phi
+gravity_force  = true
+dt_cfl        = 0.5
+
+<problem>
+pgen_name = dust_grav_orbit
+rho0      = 1.0
+z0        = 0.30          # z0/h = 2.12: released outside the refined region
+vz0       = 0.0
+floor     = 1.0e-6
+user_hist = true
+
+<output1>
+file_type  = hst
+dt         = 0.05
+data_format = %.14e

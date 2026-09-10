@@ -1,0 +1,144 @@
+# AthenaK input file: the 3D shear-periodic NSH box WITH SELF-GRAVITY on a STATICALLY
+# REFINED mesh (dust track, gravity on SMR).  inputs/dust/dust_nsh_shear3d_grav.athinput
+# reshaped to a root grid of 32x32x16 in 8^3 MeshBlocks (4x4x2, cubic cells dx = 1/32
+# with Lz = 0.5, both multigrid requirements) with the two middle radial columns
+# x in [-0.25,0.25] refined to level 1, full y (annular policy for orbital advection)
+# and full z.  The shear-periodic face columns stay at root level.
+#
+# WHY this is the sharp test of the gravity path across a level boundary: with
+# problem/lattice_finest = true the particle lattice sits at the finest-level cell
+# centres on every block, so the particle-mesh dust density is EXACTLY uniform across
+# the level boundaries (Phase 5), the gas is uniform, and a uniform total density in a
+# triply-periodic box has a constant potential and therefore zero force.  Every stage of
+# the coupling -- the deposit, the additive ghost exchange, the shear fold, the
+# restriction and prolongation of rho_dust, the multigrid solve on the refined
+# hierarchy, the exchange and prolongation of g, and the gather at the particles --
+# must return zero to round-off, so the NSH drift equilibrium must hold to round-off
+# (all -errs.dat columns ~1e-16) exactly as it does with gravity inert.  Unlike the
+# static twin, the answer here is known exactly and is level-independent, so this
+# isolates the plumbing from the O(1) interface error that a NON-uniform potential's
+# gradient carries at a coarse-fine boundary (validation document, gravity on SMR).
+#   dust/gravity = false          : the drag-only control
+#   problem/mass_mod_amp = 0.5, problem/check_equilibrium = false,
+#   hydro_srcterms/const_accel_val = 0, gravity/four_pi_G = 2 : the structured state at
+#   rest, whose only forces are drag and self-gravity (serial vs 4 ranks)
+# See validation/dust_selfgravity_validation.pdf (gravity on SMR).
+
+<comment>
+problem   = multi-species NSH drift equilibrium with self-gravity and SMR
+
+<job>
+basename  = nsh3dg_smr
+
+<mesh>
+nghost    = 2         # even (SMR)
+nx1       = 32        # radial: 4 root columns of 8 cells
+x1min     = -0.5
+x1max     = 0.5
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+
+nx2       = 32        # azimuthal: 4 root blocks
+x2min     = -0.5
+x2max     = 0.5
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 16        # vertical: Lz = 0.5 keeps the cells cubic (dx = 1/32)
+x3min     = -0.25
+x3max     = 0.25
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 8         # cubic (multigrid); >= 2*nghost (deposit injection)
+nx2       = 8
+nx3       = 8
+
+<mesh_refinement>
+refinement = static
+prolong_limiter = minmod   # minmod | none (diagnostic)
+
+<refined_region1>
+level = 1
+x1min = -0.25         # the two middle radial columns; the shear faces stay at root
+x1max = 0.25
+x2min = -0.5          # full azimuthal extent (annular policy, orbital advection)
+x2max = 0.5
+x3min = -0.25         # full vertical extent: the level jump is in x1 only
+x3max = 0.25
+
+<time>
+evolution  = dynamic
+integrator = imex2+   # required for dust
+cfl_number = 0.3      # 3D cubic cells: the shearing-box checkerboard grows at cfl >~ 0.4
+nlim       = -1
+tlim       = 6.283185307179586   # 1 orbit
+ndiag      = 1000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = plm
+rsolver     = hlle
+
+<hydro_srcterms>
+self_gravity    = true    # gas feels the total (gas + dust) potential
+const_accel     = true    # radial pressure-gradient mimic on the gas only
+const_accel_val = 0.1     # = 2*omega0*etavk
+const_accel_dir = 1
+
+<gravity>
+solver    = multigrid
+four_pi_G = 0.1           # small G: Toomre Q ~ 40 (stable)
+threshold = -1.0
+niteration = 12
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 3.0       # integer multiple of <dust>/nspecies
+
+<dust>
+coupling      = imex
+shear_fold    = true
+shear_remap   = plm
+nspecies      = 3
+taus_1        = 0.01
+taus_2        = 0.1
+taus_3        = 1.0
+dust_to_gas   = 1.0
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+gravity       = true      # dust in the Poisson source and subject to -grad(phi)
+gravity_source = true
+gravity_force  = true
+dt_transport  = relative
+dt_block_safety = 0.5
+
+<problem>
+lattice_finest = true     # lattice at the finest-level cell centres on every block
+mass_mod_amp = 0.0
+mass_mod_phase = 0.0
+check_equilibrium = true
+pgen_name = dust_nsh
+user_hist = true
+rho0      = 1.0
+etavk     = 0.05
+eps_1     = 0.2
+eps_2     = 0.5
+eps_3     = 0.3
+
+<output1>
+file_type  = hst
+dt         = 0.1
+data_format = %.14e
