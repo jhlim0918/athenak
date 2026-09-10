@@ -14,13 +14,19 @@
 
 # Slurm/Vista twin of gt_sc14_full.pbs (NAS).  Submit from the RUN directory in
 # $SCRATCH -- outputs land there and Slurm starts the job in the submit directory:
-#     cd $SCRATCH/gt_sc14_stndrd/b10 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_sc14_full.slurm
+#     cd $SCRATCH/gt_sc14_stndrd/b10 && sbatch $HOME/athenak-sc14/scripts/cluster/gt_sc14_full.slurm
 # To continue a run after a walltime kill, replace the -i line with:
 #     -r $(ls rst/*.rst | tail -1) \
 # Per-run parameters go on the ibrun line, e.g.  hydro_srcterms/bcool_beta=5
 # Hi-res twin: INPUT=.../gravito_turb_sc14_hi.athinput with -N 6 -n 768 (README sec. 2).
 
-ATHENAK=$HOME/athenak-multigrid
+# Point this at the tree holding the MULTIGRID branch.  Keep the SC14 (gas-only) and
+# dust branches in separate worktrees with separate build-cluster/ directories: one tree
+# switched between branches leaves a binary that silently belongs to whichever branch was
+# compiled last, and building SC14 stages from the dust branch poisons their restart files
+# (an empty <particles> block, see scripts/fix_rst_particles.py).  Override per job with
+#     sbatch --export=ALL,ATHENAK=/some/other/tree ...
+ATHENAK=${ATHENAK:-$HOME/athenak-sc14}
 INPUT=$ATHENAK/inputs/shearing_box/gravito_turb_sc14.athinput
 
 # the modules the binary was built with -- mirror `module list` from the cmake shell

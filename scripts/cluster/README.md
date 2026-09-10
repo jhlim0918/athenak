@@ -34,6 +34,23 @@ cd <rundir> && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_sc14_full.slurm
 Set `#SBATCH -A` to your allocation first.  256 ranks = 2 nodes x 128 of 144
 cores (3 MeshBlocks per rank, as on NAS); the hi-res twin is `-N 6 -n 768`.
 
+Keep the SC14 (gas-only) and dust branches in **separate worktrees**, each with its
+own `build-cluster/`.  One tree switched between branches leaves a binary that
+silently belongs to whichever branch was compiled last; a gas-only stage built from
+the dust branch writes an empty `<particles>` block into every restart it produces,
+and the next restart dies with "Parameter name 'particle_type' not found in block
+'particles'".  `scripts/fix_rst_particles.py` repairs restart files already affected.
+
+```bash
+git worktree add $HOME/athenak-sc14 multigrid
+cd $HOME/athenak-sc14 && git submodule update --init   # kokkos is NOT carried over
+cmake -B build-cluster -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON \
+      -D Kokkos_ARCH_ARMV9_GRACE=ON && cmake --build build-cluster -j 16
+```
+
+`gt_sc14_full.slurm` defaults to `ATHENAK=$HOME/athenak-sc14`; override per job with
+`sbatch --export=ALL,ATHENAK=<tree> ...`.
+
 `ATHENAK` and `INPUT` are variables at the top.  Ranks and ranks-per-node come
 from `$PBS_NODEFILE`, so changing only the `select=` line changes the launch --
 and every allocated core is used (NAS charges whole nodes, so `mpiprocs=256`
