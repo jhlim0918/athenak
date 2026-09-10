@@ -34,13 +34,15 @@
        \large Phase 4a: the dust-module merge; Phase 4b (i): the shear-periodic
        deposit fold; (ii): the ideal-gas energy update; (iii): the particle
        timestep under shear; Phase 4c: dust self-gravity; Phase 4d: the vertical
-       policy, restart, diagnostics; Phase 5: particles on statically refined meshes}
+       policy, restart, diagnostics; Phase 5: particles on statically refined meshes;
+       gravity on statically refined meshes}
 \author{\code{athenak-multigrid} tree, branches \code{dust-multigrid} and \code{dust-smr}\\
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6},
         \code{9a96f9f3}, \code{d39858ac}, \code{a9279dc8},
-        \code{386d5968}; Phase 5 on \code{dust-smr} (uncommitted)}
-\date{September 3--8, 2026}
+        \code{386d5968}; Phase 5 and gravity on refined meshes on \code{dust-smr}:
+        \code{04dbd3dd}, \code{af45c756}, \code{c3d7b308}}
+\date{September 3--10, 2026}
 
 \begin{document}
 \maketitle
@@ -238,6 +240,20 @@ Commit & Phase & Content \\
               Vista scripts \\
 \code{386d5968} & science & the particle history output (\code{phst}) and
               \file{scripts/analysis/baehr\_table1.py} \\
+\code{04dbd3dd} & 5 & \file{bvals/bvals\_dep.cpp} level index sets and fine-image packing,
+              \fn{DestinationSlot} in \file{bvals\_part.cpp}, particle shear maps at the
+              face level, \file{dust/dust\_smr.cpp} (\fn{ZeroImage},
+              \fn{RestrictImage}), \fn{dust::DepositStencil} at the six scatter sites,
+              \fn{RestrictField}/\fn{ProlongateField} and the three prolongation tasks,
+              the coarse arrays and guards; \code{dust\_settle}, \code{lattice\_finest},
+              six inputs \\
+\code{af45c756} & 5 & \code{streaming\_linear} \code{lattice\_finest} and
+              \code{<mesh\_refinement>/prolong\_limiter} (the linA aliasing diagnosis) \\
+\code{c3d7b308} & gravity/SMR & \code{MeshRefinement} before the \code{ProblemGenerator}
+              in \file{main.cpp}; volume weighting (\fn{LevelWeight}) of every
+              \code{fft\_poisson} reduction; \code{\# TS41-MESH-FORCE}, the force-error
+              split and argmax, \code{<problem>/probe\_line}; three refined inputs and
+              \file{scripts/analysis/grav\_orbit\_period.py} \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -1420,6 +1436,143 @@ new \code{<dust>} parameter: refinement is read from \code{<mesh\_refinement>}; 
 prints one line when it is active.
 
 %=========================================================================================
+\section{Gravity on statically refined meshes}
+\label{sec:gravsmr}
+
+Phase 5 wired the gravity path through the refined mesh and left it untested. The wiring
+is small, because the gravity fields ride the machinery the drag already needed:
+$\rho_{\rm dust}$ is deposited with the finest-level kernel like every other deposit
+field, its copy exchange is restricted and prolongated like $u^*$
+(\fn{SendRhoDustCopy}, \fn{ProlongateRhoDust}), and the force is restricted, exchanged
+and prolongated the same way (\fn{SendGravForce}, \fn{ProlongateGravForce}), all in
+\file{dust\_gravity.cpp} with \code{coarse\_rd} and \code{coarse\_g} allocated in
+\file{dust.cpp}. Exercising it (validation document \S11) required two
+fixes and turned up one limitation that belongs to the gravity solver.
+
+\subsection{\fn{MeshRefinement} now precedes the \fn{ProblemGenerator}}
+
+\file{main.cpp} step 5 built \code{Mesh::pmr} after the generator, with the comment that
+its buffer sizes depend on the physics modules. They do, and
+\fn{Mesh::AddCoordinatesAndPhysics} has already run at that point; nothing in the
+constructor reads the initial conditions. But a generator that restricts or prolongates
+while setting them up --- the dust twin does, through \fn{AssembleDustDensityNow}, which
+must hand the multigrid a $\rho_{\rm dust}$ whose ghost layer is filled across levels ---
+then dereferences a null pointer: \fn{DustGasDrag::RestrictField} calls
+\code{pmesh->pmr->RestrictCC} and every such run died with \code{SIGSEGV} inside
+\fn{MeshRefinement::RestrictCC}. The object is now constructed immediately after
+\fn{AddCoordinatesAndPhysics} and before either \code{ProblemGenerator} branch. No code
+uses a null \code{pmr} as a flag for ``not refined'' (\code{Mesh::multilevel} is that
+flag), and the change moves no arithmetic: every number on every mesh is unchanged.
+
+\subsection{Volume weighting of the \code{fft\_poisson} diagnostics}
+
+The generator's reductions run over the active cells of every MeshBlock on the mesh but
+normalised by \code{mesh\_indcs.nx1*nx2*nx3}, the root-grid cell count. On a refined mesh
+those differ by the refinement volume ratio, and the quantity that suffers is not a norm
+but the physics: the mean density subtracted from the triply-periodic right-hand side. At
+$1.875$ (a $64^3$ root grid, central octant refined) the reference run reported a
+relative residual of $0.6366 = 1.75/2.75$, uniform over every cell, while the solver's own
+volume-weighted \fn{Multigrid::CalculateAverage} had done the right thing and its defect
+norm was $2.6\times10^{-7}$.
+
+Each summand now carries \fn{LevelWeight}$(l, l_{\rm root}, d) = 2^{-d(l-l_{\rm root})}$,
+the cell's volume relative to a root cell, and each mean and rms is normalised by
+\code{wcells\_tot}, their sum (``root-cell equivalents''). The weight is a power of two,
+so the weighting is exact; on an unrefined mesh every weight is exactly $1.0$ and
+\code{wcells\_tot} is exactly the root cell count, which keeps every uniform number bit
+for bit as it was. All five reduction groups are weighted: the convergence study
+(\S\ref{sec:phase4c}), the residual and TS23 \S4.1 error, the shearing-wave and sheet
+comparisons, and the MG-versus-FFT difference. The same normalisation issue exists in
+\code{dust\_nsh}'s \fn{DustNSHErrors}, whose gas mean is $\sum\rho v/\sum\rho$ over cells
+and whose dust mean is per particle: both are exact for the uniform states the equilibrium
+test uses (and for \code{lattice\_finest}, where every particle has the same mass), so
+they were left alone, but they would be biased for a structured state on a refined mesh.
+
+\subsection{New diagnostics}
+
+\begin{itemize}\itemsep3pt
+\item \code{\# TS41-MESH-FORCE} forms $-\nabla\phi$ on the mesh with the same centred
+      difference the gas source term (\file{srcterms.cpp}, as $\tfrac12(\delta\phi_l +
+      \delta\phi_r)/\Delta x$) and the dust gather both use, against the analytic
+      gradient of the triple-sine potential: max, volume-weighted rms, max on the finest
+      level, max on coarser levels, and the volume fraction of cells above $1\%$ of the
+      peak force. It needs no particles, which is what makes it able to say whether a
+      force defect is the solver's or the dust module's.
+\item \code{\# DUST-GRAVITY FORCE ERROR} gained the same five fields over the particles,
+      and \code{\# DUST-GRAVITY FORCE ARGMAX} reports the position, block level and
+      in-block cell index of the worst particle.
+\item \code{<problem>/probe\_line} prints $\phi$, $\phi_{\rm analytic}$,
+      $-\partial\phi/\partial x_1$ and its analytic value for every cell of the $x_1$ row
+      through the worst cell, ghost layers included, which is how the interface boundary
+      layer of \S\ref{sec:gravsmr-layer} was measured. Off by default.
+\end{itemize}
+
+\subsection{The coarse-fine boundary layer of the potential}
+\label{sec:gravsmr-layer}
+
+The measured result (validation document \S11.4) is that the
+converged multigrid potential on a statically refined mesh is second-order accurate in
+the $L_2$ sense --- better at a given root resolution than the uniform mesh --- and that
+its \emph{gradient} within a few cells of a coarse-fine interface is not accurate at all:
+the maximum relative force error is $9\times10^{-2}$ and stays there as the mesh is
+refined ($9.53, 9.03, 8.74 \times10^{-2}$ at root $32^3, 64^3, 128^3$), while the uniform
+mesh converges at second order ($3.17\times10^{-3}, 8.00\times10^{-4},
+2.01\times10^{-4}$). It is not an iteration artifact: driving the defect norm to
+$7\times10^{-10}$ leaves the number identical to seven digits, and V-cycles alone, four
+ghost zones and an unlimited prolongation limiter all reproduce it.
+
+The mechanism is that the interface values the solver leaves behind are consistent with
+the operator it inverted, not pointwise samples of $\phi$. The discrete Laplacian
+residual is at round-off in the interface cells, yet $\phi$ there carries an error that
+grows geometrically toward the boundary --- about $7\times10^{-6}$ in the interior of a
+$\Delta x = 1/128$ block, $3.5\times10^{-5}$ three cells out, $2.9\times10^{-4}$ in the
+last active cell, $1.05\times10^{-3}$ in the ghost the coarser level filled. A gradient
+taken across one cell divides such an error by $2\Delta x$ and turns a few times the
+truncation level into an $O(1)$ fraction of the peak force. Nothing local repairs it:
+one-sided second-order differences read the same degraded active cells, and the ghost is
+not a value one may difference. The repair has to be in the solver's own interface
+treatment (\fn{MultigridBoundaryValues::ProlongateFCMG} and its restriction counterpart),
+which is shared by gas and dust and is not a dust-track file, so it is recorded here and
+left.
+
+Two properties limit the damage and are worth stating precisely, because they are what
+make the science box usable at all. First, gas and dust take the \emph{same} discrete
+force --- the gas source term differences $\phi$, the dust gathers $g = -\nabla\phi$ built
+from the same $\phi$ with the same stencil --- so the pair conserves momentum exactly
+even where both are wrong: the structured self-gravitating state at rest holds its total
+momentum at $10^{-16}$ on the refined mesh. Second, the interface reproduces constants
+exactly, so a uniform density gives no force at all and the NSH lattice with gravity holds
+its equilibrium to round-off across level boundaries. What a level boundary does cost is
+measurable in orbital terms: test particles falling through a refined midplane twenty
+times over five periods lose $0.64\%$ of their amplitude where the uniform runs that
+bracket the same resolution lose $0.06$--$0.09\%$, and their period error is worse than
+either, so refinement across a trajectory buys negative accuracy. They also spread over
+$(x,y)$ by $3\times10^{-4}$, eight times the uniform run at the same finest spacing
+($3.9\times10^{-5}$; the coarse uniform run holds them to $2.5\times10^{-8}$, so part of
+that growth is the multigrid block decomposition rather than refinement), because the
+discrete force acquires a transverse structure that the physical potential does not have.
+
+\paragraph{Operating rule for now.} Do not place a coarse-fine boundary where the
+self-gravitating dynamics is delicate: keep the refined region large enough that its
+boundary sits in gas whose self-gravity does not matter, and prefer refinement that
+follows the density rather than cutting through the layer being studied. Momentum and
+uniform states are safe; a resolved gradient across a level plane is not.
+
+\subsection{Files, inputs, parameters}
+
+Generic: \file{main.cpp} (the \code{MeshRefinement} ordering), \file{pgen/tests/fft\_poisson.cpp}
+(\fn{LevelWeight} and the weighting of every reduction, \code{\# TS41-MESH-FORCE}, the
+force-error split and argmax, \code{<problem>/probe\_line}). Inputs
+\file{inputs/dust/\{dust\_poisson\_twin\_smr, dust\_nsh\_shear3d\_grav\_smr,
+dust\_grav\_orbit\_smr\}.athinput}, and \code{<problem>/probe\_line} added to the two twin
+inputs so the command line can set it. Analysis:
+\file{scripts/analysis/grav\_orbit\_period.py} (the period by quadrature at an arbitrary
+release amplitude, the amplitude drift and the $(x,y)$ spread; it generalises the
+Phase-4c \file{orbit\_period.py} that hard-coded $z_0 = 0.03$). No change to
+\file{dust\_gravity.cpp} or to any other dust file: the gravity path as Phase 5 built it
+is what these tests certify.
+
+%=========================================================================================
 \section{What the next phases must add}
 \label{sec:next}
 
@@ -1450,8 +1603,8 @@ The survey established these gaps; they are listed in the order they bite.
       exchange across one level jump, prolongated copy exchanges, the migration fix, the
       shear machinery at the face level. Still open: adaptive refinement (a particle
       redistribution hook next to \fn{ShearingBox::ReinitAfterMeshUpdate}), more than one
-      level of dust refinement, the coupled drag solvers under refinement, the
-      gravity path on refined meshes (wired, untested), and particle splitting on entry
+      level of dust refinement, the coupled drag solvers under refinement,
+      and particle splitting on entry
       into a finer level: a coarse-sampled population keeps its coarse sampling there
       (the linA diagnosis of the validation document, \S10.5: a lattice at twice the
       fine spacing is aliased by the fine kernel into an $O(1)$ comb). Until then the
@@ -1459,8 +1612,23 @@ The survey established these gaps; they are listed in the order they bite.
       \code{dust\_nsh} and \code{streaming\_linear} have \code{lattice\_finest}.
       \code{<mesh\_refinement>/prolong\_limiter = none} (unlimited central slopes in
       \fn{ProlongCC}) is available as a diagnostic.
-\item \textbf{Upstream defect.} \code{Particles::dtnew} was never assigned by the
+\item \textbf{Gravity on refined meshes.} \textbf{Tested},
+      \S\ref{sec:gravsmr}: the dust source is exact on every level (the NGP twin
+      reproduces the gas-only reference on the same refined mesh to every digit, on 4
+      ranks too), the momentum antisymmetry survives at round-off, and the NSH lattice
+      with gravity holds its equilibrium across level boundaries to round-off. Still
+      open, and \emph{not} the dust module's: the converged multigrid potential leaves a
+      boundary layer at every coarse-fine interface whose gradient does not converge
+      (\S\ref{sec:gravsmr-layer}), so neither gas nor dust feels the right force within
+      a few cells of a level jump. The fix belongs in
+      \fn{MultigridBoundaryValues::ProlongateFCMG} and its restriction counterpart, and
+      would want its own test ladder (a gas-only sound wave and a Jeans mode through an
+      interface) before anything in the dust track depends on it.
+\item \textbf{Upstream defects.} \code{Particles::dtnew} was never assigned by the
       constructor; \textbf{fixed} in Phase 4c (\S\ref{sec:phase4c}).
+      \code{Mesh::pmr} was constructed after the \code{ProblemGenerator}, so any
+      generator that restricts or prolongates while setting the initial conditions
+      crashed on a refined mesh; \textbf{fixed} in \S\ref{sec:gravsmr}.
 \end{enumerate}
 
 %=========================================================================================

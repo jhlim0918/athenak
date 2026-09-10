@@ -1432,6 +1432,270 @@ linA mode amplitude on the uniform $64^2$ mesh and with the two middle radial co
 \end{figure}
 
 %=========================================================================================
+\section{Gravity on statically refined meshes}
+\label{sec:gravsmr}
+
+Mechanism: implementation document \S11. Data: \file{run/dust5g/} (README). Branch
+\code{dust-smr}. Phase 5 wired the gravity path through the refined mesh --- the
+particle-mesh dust density is restricted and prolongated like $u^*$, the force
+$-\nabla\phi$ is exchanged and prolongated by \code{ProlongateGravForce} --- but never
+exercised it. The ladder here does: (1) the Phase-4c static twin on a refined mesh, (2)
+the NSH lattice with gravity and a refined bar, where the answer is exactly zero, (3) the
+structured self-gravitating state at rest, for momentum and rank independence, (4) test
+particles oscillating through a refined midplane. Two defects were found and fixed
+before any of it could run or be read, and one limitation was found that is not the dust
+module's and is not fixed.
+
+\subsection{Two defects in the way}
+
+\paragraph{The refinement object did not exist yet.} A generator that restricts or
+prolongates while setting the initial conditions --- the twin does, through
+\code{AssembleDustDensityNow} --- dereferenced a null \code{Mesh::pmr}: \file{main.cpp}
+built \code{MeshRefinement} \emph{after} the \code{ProblemGenerator}. Every dust twin on
+a refined mesh died in \code{MeshRefinement::RestrictCC} with \code{SIGSEGV}. The
+constructor needs the physics modules, which \code{AddCoordinatesAndPhysics} has already
+added, and nothing from the initial conditions, so it now runs before the generator.
+
+\paragraph{The diagnostics divided by the wrong number of cells.} The \code{fft\_poisson}
+reductions run over the active cells of every MeshBlock but normalised by the
+\emph{root-grid} cell count, so on a refined mesh the subtracted mean density was too
+large by the refinement volume ratio ($1.875$ for a $64^3$ root grid with its central
+octant refined) and every $L_2$ norm was inflated by its square root. The reference run
+reported a relative Laplacian residual of $6.365727\times10^{-1}$ --- the constant
+$4\pi G(\bar\rho_{\rm wrong} - \bar\rho)$ divided by $\max|{\rm rhs}|$, which is
+$1.75/2.75$ --- while the solver's own defect norm was $2.6\times10^{-7}$. Every sum is
+now weighted by the cell's volume relative to a root cell, exactly $2^{-d(l-l_{\rm
+root})}$, and normalised by their total. On a mesh without refinement every weight is
+exactly $1$: the uniform numbers are unchanged bit for bit, and the Phase-4c table's
+entries reproduce ($2.742348\times10^{-13}$ residual, ${\rm rms}\,\epsilon =
+3.014475\times10^{-5}$, NGP force error $8.004201\times10^{-4}$).
+
+\subsection{The static twin on a refined mesh}
+
+\file{inputs/dust/dust\_poisson\_twin\_smr.athinput}: the TS23 \S4.1 triple-sine profile
+on a $64^3$ root grid of $16^3$ blocks with the central cube $|x|,|y|,|z| < 0.25$ (the
+middle $2\times2\times2$ root blocks) at level 1 --- 120 blocks, level jumps in all three
+directions, so faces, edges and corners all take part. With NGP deposits the twin is
+still exact on \emph{every} level: a coarse block deposits with the finest-level kernel
+into its $2\times$ fine image, the whole mass $f\rho V_{\rm coarse}$ lands in one
+fine-image cell as $m_p/V_{\rm fine}$, and the restriction averages the $2^3$ fine cells
+back to $m_p/V_{\rm coarse} = f\rho$. The comparison is against the gas-only run on the
+\emph{same} refined mesh; the uniform mesh is a different discretisation and is not the
+reference.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+refined mesh, $64^3$ root & Laplacian residual & analytic error & $|F_g + F_d|/\sum_p m|g|$ \\
+\midrule
+none (reference)              & $9.435823\times10^{-10}$ & $2.315954\times10^{-5}$ & --- \\
+NGP, $f = 0.5$                & $9.435823\times10^{-10}$ & $2.315954\times10^{-5}$ & $3.4\times10^{-16}$ \\
+NGP, $f = 1$, gas floor $0$   & $9.435823\times10^{-10}$ & $2.315954\times10^{-5}$ & $1.6\times10^{-16}$ \\
+NGP, $f = 1$, floor $10^{-10}$& $9.435243\times10^{-10}$ & $2.315954\times10^{-5}$ & $1.6\times10^{-16}$ \\
+NGP, $f = 0.5$, 4 ranks       & $9.436225\times10^{-10}$ & $2.315954\times10^{-5}$ & $3.1\times10^{-16}$ \\
+TSC, $f = 1$                  & $7.368382\times10^{-10}$ & $1.000259\times10^{-4}$ & $6.8\times10^{-16}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The source is exact on the refined mesh: the NGP twins reproduce the reference to every
+printed digit, the one exception being the $f = 1$ gas density floor, exactly as in the
+uniform slab run of \S\ref{sec:phase4c} (with the floor at zero the digits return). The
+momentum antisymmetry of implementation \S8.2 survives refinement at round-off. The
+analytic error is \emph{better} than the uniform mesh's $3.014475\times10^{-5}$ at the
+same root resolution, as it should be with the central octant refined, and the TSC twin's
+is again the filter's. Multigrid is not bitwise rank-independent here --- the 4-rank
+residual differs in the sixth digit, i.e.\ the potential agrees to $\sim10^{-14}$ ---
+whereas the analytic error and the force error agree to every digit.
+
+\subsection{The NSH lattice with gravity: exactly zero, exactly held}
+\label{sec:gravsmr-nsh}
+
+\file{inputs/dust/dust\_nsh\_shear3d\_grav\_smr.athinput}: the 3D shear-periodic NSH box
+with a periodic multigrid solve, root grid $32\times32\times16$ in $8^3$ blocks (cubic
+cells $\Delta = 1/32$ with $L_z = 0.5$), the two middle radial columns refined to level 1,
+full $x_2$ (the annular policy) and full $x_3$. With \code{problem/lattice\_finest} the
+particle lattice sits at the finest-level cell centres on every block, so the
+particle-mesh dust density is exactly uniform across the level boundaries (Phase 5), the
+gas is uniform, and a uniform total density in a triply-periodic box has a constant
+potential and therefore no force. Everything in the chain --- deposit, additive ghost
+exchange, shear fold, restriction and prolongation of $\rho_{\rm dust}$, the multigrid
+solve on the refined hierarchy, the exchange and prolongation of $g$, the gather --- must
+return zero, and the equilibrium must hold to round-off. Over one orbit (1377 cycles):
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+ & $\delta u_{g,x}$ & $\delta u_{g,\phi}$ & $\max_s \delta v_{x,s}$ & $\max_s \delta v_{\phi,s}$ \\
+\midrule
+gravity inert & $8.45\times10^{-15}$ & $4.91\times10^{-15}$ & $1.05\times10^{-14}$ & $7.40\times10^{-14}$ \\
+gravity on    & $8.49\times10^{-15}$ & $4.92\times10^{-15}$ & $9.43\times10^{-15}$ & $7.42\times10^{-14}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Identical cycle counts and the same round-off, so the gravity coupling adds nothing to a
+state it must not disturb. This is the plumbing test: the answer is known exactly and is
+level-independent, which is what separates it from everything that follows.
+
+\paragraph{The structured state at rest.} With \code{mass\_mod\_amp} $= 0.5$, the drift
+and the radial forcing switched off and $4\pi G = 2$, drag and self-gravity are the only
+forces between gas and dust, both momentum-conserving in the continuum. On the refined
+mesh the total (gas $+$ dust) momentum stays at $1.10\times10^{-16}$ serially and
+$1.28\times10^{-16}$ on 4 ranks, with the individual momenta themselves at $10^{-16}$
+throughout: the coarse-fine machinery does not leak momentum between the components. The
+gas kinetic energies (peaks $8.122\times10^{-5}$ radial, $9.787\times10^{-5}$ azimuthal)
+agree between serial and 4 ranks to $3.2\times10^{-14}$ relative, the Phase-4c figure. The
+structured state \emph{with} the drift retained (\code{mass\_mod\_amp} $= 0.5$ alone,
+small $G$) agrees serial against 4 ranks to $3.5\times10^{-12}$ relative in every history
+column, with identical timesteps and particle counts.
+
+\subsection{What is not right: the force at a coarse-fine boundary}
+\label{sec:gravsmr-interface}
+
+The twin's gathered force error jumps from $8.004\times10^{-4}$ on the uniform mesh to
+$9.03\times10^{-2}$ on the refined one, and it does not converge. A new diagnostic
+(\code{\# TS41-MESH-FORCE}) forms $-\nabla\phi$ on the mesh by the same centred
+difference the gas source term and the dust gather both use and compares it with the
+analytic gradient, with \emph{no particles involved}, which settles whose defect it is:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+root grid, gas only & $32^3$ & $64^3$ & $128^3$ \\
+\midrule
+uniform, $\max$ force error      & $3.169\times10^{-3}$ & $8.004\times10^{-4}$ & $2.006\times10^{-4}$ \\
+refined, $\max$ force error      & $9.528\times10^{-2}$ & $9.029\times10^{-2}$ & $8.743\times10^{-2}$ \\
+refined, rms force error         & $6.938\times10^{-3}$ & $3.395\times10^{-3}$ & $1.697\times10^{-3}$ \\
+refined, ${\rm rms}\,\epsilon(\phi)$ & $9.015\times10^{-5}$ & $2.316\times10^{-5}$ & $5.998\times10^{-6}$ \\
+uniform, ${\rm rms}\,\epsilon(\phi)$ & $1.208\times10^{-4}$ & $3.014\times10^{-5}$ & $7.533\times10^{-6}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The potential converges at second order on the refined mesh, better than the uniform mesh
+at the same root resolution. The maximum force error does not converge at all. The rms
+force error falls at first order, which is the signature of a fixed-amplitude error
+confined to a shell whose volume fraction shrinks like $\Delta x$. The particle gather
+reproduces the mesh numbers to every digit ($9.528264\times10^{-2}$,
+$9.029359\times10^{-2}$, $8.742761\times10^{-2}$), so the dust module contributes nothing
+of its own: it delivers exactly the force the gas feels.
+
+It is not under-convergence. Raising \code{niteration} from 12 to 40 to 100 drives the
+solver's defect norm from $2.6\times10^{-7}$ to $7.3\times10^{-10}$ and the discrete
+residual from $9.4\times10^{-10}$ to $5\times10^{-13}$, and leaves the force error at
+$9.029359\times10^{-2}$, identical to seven digits. V-cycles without the FMG sweep,
+\code{nghost} $= 4$, and \code{prolong\_limiter} $=$ \code{none} all give the same number.
+
+\code{<problem>/probe\_line} prints $\phi$ and $-\partial\phi/\partial x_1$ along the row
+through the worst cell. On the $64^3$ refined mesh the worst cell is the first active cell
+of a fine block whose inner $x_1$ face is the interface, $\Delta x = 1/128$:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccccccc@{}}
+\toprule
+cells from the interface & ghost & 0 & 1 & 2 & 3 & 5 & interior \\
+\midrule
+$|\phi - \phi_{\rm ana}|$   & $1.05\!\times\!10^{-3}$ & $2.93\!\times\!10^{-4}$
+  & $1.12\!\times\!10^{-4}$ & $5.68\!\times\!10^{-5}$ & $3.49\!\times\!10^{-5}$
+  & $1.88\!\times\!10^{-5}$ & $\sim\!7\!\times\!10^{-6}$ \\
+force error & --- & $9.03\!\times\!10^{-2}$ & $2.27\!\times\!10^{-2}$
+  & $7.42\!\times\!10^{-3}$ & $3.14\!\times\!10^{-3}$ & $9.31\!\times\!10^{-4}$
+  & $2.7\!\times\!10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+So the converged composite solution carries a boundary layer at every coarse-fine
+interface: the error of $\phi$ grows by a factor of two to three per cell over the last
+few active cells and is worst in the ghost the coarser level filled, decaying
+geometrically into the interior over eight to ten cells to the $\Delta x = 1/128$
+truncation floor ($2.7\times10^{-4}$, matching the uniform $128^3$ value
+$2.006\times10^{-4}$). Because the force is a difference of $\phi$ across one cell, a
+$\phi$ error that is merely a few times the truncation level becomes an $O(1)$ relative
+force error. The discrete Laplacian residual stays at round-off throughout, so the
+interface values are consistent with the operator the solver inverted --- they are simply
+not pointwise-accurate samples of $\phi$, and no local differencing recipe recovers the
+gradient from them: the one-sided alternatives read the same degraded active cells. The
+remedy would have to be in the solver's interface treatment, which is common to gas and
+dust and outside this branch's scope. Two consolations: gas and dust take the same
+discrete force, so momentum stays conserved (\S\ref{sec:gravsmr-nsh}), and a uniform
+density is unaffected because the interface reproduces constants exactly, which is why
+the NSH lattice holds to round-off.
+
+\subsection{Test particles through a refined midplane}
+
+\file{inputs/dust/dust\_grav\_orbit\_smr.athinput} puts the cost in orbital terms.
+The self-gravitating $\mathrm{sech}^2$ slab of \S\ref{sec:phase4c} on a
+$32\times32\times64$ root grid of $16^3$ blocks with the midplane $|z| < 0.25 = 1.77\,h$
+refined, so the coarse-fine planes are horizontal; the test particles are released at rest
+at $z_0 = 0.30 = 2.12\,h$, outside the refined region, and fall through a plane into the
+refined midplane and out again twice per period --- the geometry of the science box, where
+the settled dust layer is what one refines and the dust arrives from above. Exact
+anharmonic period at this amplitude $T = 8.633619$ (the harmonic value is $6.283185$),
+five periods:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+ & uniform, $\Delta = 1/64$ & uniform, $\Delta = 1/128$ & refined midplane \\
+\midrule
+$T$                              & $8.614110$ & $8.621921$ & $8.602523$ \\
+$T/T_{\rm exact} - 1$            & $-2.260\times10^{-3}$ & $-1.355\times10^{-3}$
+                                                          & $-3.602\times10^{-3}$ \\
+amplitude after 5 periods        & $-8.6\times10^{-4}$ & $-6.0\times10^{-4}$
+                                                       & $-6.4\times10^{-3}$ \\
+spread of $z$ over the particles & $2.5\times10^{-8}$ & $3.9\times10^{-5}$
+                                                      & $3.1\times10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The reference is the uniform runs, not the analytic period: at $2.12\,h$ the particle is
+sensitive to the slab's own slow breathing ($\langle\rho z^2\rangle$ drifts by
+$-0.10$ to $-0.23\%$), which is most of the uniform runs' period error. Those two
+bracket the refined run's resolution, and they converge as they should, from
+$-2.26\times10^{-3}$ to $-1.36\times10^{-3}$, with the amplitude drift falling too. The
+refined run is worse than both, and worse than the \emph{coarser} of them: its period
+error is $-3.60\times10^{-3}$ and it loses $0.64\%$ of its amplitude over five periods
+against $0.06$--$0.09\%$, an order of magnitude more. Twenty plane crossings take a fixed
+bite out of the orbit each time, as a non-converging force error in a fixed number of
+cells must, and refinement placed across the trajectory therefore buys negative accuracy.
+
+The transverse spread needs care. The physical potential is a function of $z$ alone, so
+all the particles, scattered over $(x,y)$, should trace one trajectory --- and on the
+coarse uniform mesh they do, to $2.5\times10^{-8}$. But the uniform run at the finest
+spacing already spreads by $3.9\times10^{-5}$, with four times as many MeshBlocks across
+each horizontal direction, so most of that growth is the multigrid block decomposition and
+the distributed slab planes, not refinement. Refinement adds a further factor of eight,
+to $3.1\times10^{-4}$, or $10^{-3}$ of the amplitude. The honest statement is that a
+horizontal level boundary imprints transverse structure on a force field that has none,
+and that it is the larger but not the only such imprint; the block-boundary part of it
+deserves its own gas-only test.
+
+\subsection{Regression}
+
+Every uniform-mesh number is unchanged. The Phase-4d structured one-orbit NSH restart
+box reproduces \file{run/dust4d/rst/base.\{user,hydro\}.hst} bit for bit on the
+Phase-5 binary with these changes in it, the Phase-4c twin table reproduces to every
+printed digit on both the original $32^3$-block input and the $16^3$-block geometry used
+here, and the reordering of \code{MeshRefinement} in \file{main.cpp} changes no number on
+any mesh, refined or not: it only makes the object exist when a generator asks for it. That
+was checked where it could plausibly matter, on \emph{adaptive} refinement, since the
+reordering also moves \code{RefinementCriteria} ahead of the initial conditions: twenty
+cycles of \file{inputs/shearing\_box/gravito\_turb\_amr\_test.athinput}, remeshing
+included, are bit-identical before and after (\file{run/dust5g/amr\_reorder/}). Neither
+constructor reads the initial conditions --- \code{MeshRefinement} reads the mesh and which
+physics modules exist, \code{RefinementCriteria} reads only \code{<amr\_criterion>}
+parameters --- and no code uses a null \code{pmr} as a stand-in for
+\code{Mesh::multilevel}.
+
+%=========================================================================================
 \section{Summary}
 \label{sec:summary}
 
