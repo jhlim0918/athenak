@@ -212,7 +212,13 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   // <particles>/restart_insert = true: the restart file carries NO particles (a gas-only
   // stage); the problem generator inserts them (dust track, the two-stage science runs)
   particles::Particles *ppart = pm->pmb_pack->ppart;
-  bool prtcl_insert = pin->GetOrAddBoolean("particles", "restart_insert", false);
+  // NB: short-circuit on ppart first.  GetOrAdd* CREATES the block when it is absent,
+  // so calling this unconditionally gave every gas-only run an empty <particles> block,
+  // which ParameterDump then wrote into each restart it produced; the next restart saw
+  // the block, built the particles module, and died in Particles::Particles with
+  // "Parameter name 'particle_type' not found in block 'particles'".
+  bool prtcl_insert = (ppart != nullptr) &&
+                      pin->GetOrAddBoolean("particles", "restart_insert", false);
   if (ppart != nullptr && prtcl_insert) {
     for (int r=0; r<global_variable::nranks; ++r) {pm->nprtcl_eachrank[r] = 0;}
     pm->nprtcl_thisrank = 0;
