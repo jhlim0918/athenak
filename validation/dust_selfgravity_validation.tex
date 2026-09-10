@@ -24,7 +24,7 @@
        Dust Self-Gravity (Phase 4c), and the Vertical Policy, Restart\\
        and Diagnostics (Phase 4d)}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}}
-\date{September 3--5, 2026}
+\date{September 3--10, 2026}
 
 \begin{document}
 \maketitle
@@ -248,6 +248,10 @@ athena -i nsh_gasonly.athinput mesh/nx3=32 meshblock/nx3=32 problem/gas_vpert=1e
 # escape, restart, dust_dpm
 athena -i inputs/dust/dust_grav_orbit.athinput problem/vz0=0.3 dust/gravity_force=false time/tlim=3
 athena -i nsh_rst.athinput; athena -r nsh3d.00001.rst          # structured NSH, dumps every 3.0
+# the dusty Jeans instability: eigenmode parameters from the script, growth rate from the history
+python3 scripts/analysis/dust_jeans.py eig --k 0.6 --eps 1.0 --ts 1 > ov.txt
+athena -i inputs/dust/dust_jeans.athinput -d jeans $(cat ov.txt)
+python3 scripts/analysis/dust_jeans.py fit jeans/jeans.user.hst --tmin 1.0
 athena -i <input with an <output> block variable = dust_dpm>
 # the two-stage science setup (mini box): gas alone, then restart + insert
 athena -i inputs/shearing_box/gravito_turb_baehr.athinput <mesh overrides> hydro_srcterms/beta_cooling=false \
@@ -1183,6 +1187,154 @@ filter ($3.6\times10^{-3}$ maximum), with the mean exactly $2$ in both. On the 3
 shear-periodic NSH lattice ($\epsilon = 1$) the output is $1.000000000000000$ in every
 cell, serially and on 4 ranks --- the additive exchange and the fold are in it.
 
+\subsection{The dusty Jeans instability: the coupled linear dynamics}
+\label{sec:jeans}
+
+The static twins certify the Poisson source and the force, the orbit the push; the
+dusty Jeans instability of Krapp et al.\ (2024, \S3.5) certifies the \emph{coupled}
+linear dynamics of gas, particles, drag and the multigrid potential against an exact
+dispersion relation. Their multifluid test translates directly: in the linear regime a
+cold pressureless dust fluid and a lattice of superparticles obey the same equations,
+and the lattice is the cleaner instrument. A uniform isothermal gas ($\rho_0 = c_s = 1$)
+and a dust lattice (one particle of each species per cell) fill a periodic box; the
+periodic multigrid subtracts the mean, which is the Jeans swindle;
+\code{four\_pi\_G} is set so that the dusty Jeans wavenumber
+$k_J = \sqrt{4\pi G\rho_0(1+\epsilon_0)}/c_s = 1$. The script
+\file{scripts/analysis/dust\_jeans.py} solves the $(2N+2)$-dimensional eigenproblem of
+Krapp's Eqs.\ 50--54 for $N$ species, emits the fastest-growing eigenvector as the
+generator's parameters (the dust density perturbation is carried by the particle
+\emph{masses}, exact and noise-free; the dust velocity by the lattice velocities), and
+fits the growth rate from the generator's history --- the $\cos/\sin$ projections of the
+gas density and of each species' mass on the mode. Runs start on the eigenmode at
+amplitude $10^{-4}$ and grow by $e^{6}$; the fit uses $t > 1$. Cubic cells throughout,
+32 transverse cells (16 with 8-cell MeshBlocks for the 16-cell and 128-species runs),
+two MeshBlocks across every direction, IMEX unless stated,
+\file{inputs/dust/dust\_jeans.athinput}, data \file{run/dust4c/jeans/} (93 runs,
+\file{battery.sh}).
+
+\begin{center}
+\small
+\begin{tabular}{@{}llccccc@{}}
+\toprule
+case & $k/k_J$ & $\epsilon_0$, $t_s$ & $\sigma_{\rm analytic}$ & $\sigma$ (gas mode) & $\sigma$ (dust mode) & $|\sigma/\sigma_{\rm an}-1|$ \\
+\midrule
+gas only ($\epsilon_0 = 10^{-8}$) & 0.6 & --- & 0.800000 & 0.799832 & 0.799788 & $2.1\times10^{-4}$ \\
+Krapp's $\epsilon_0$ & 0.6 & 0.01, 1 & 0.802767 & 0.802593 & 0.802549 & $2.2\times10^{-4}$ \\
+strong dust & 0.6 & 1, 1 & 0.911827 & 0.911430 & 0.911391 & $4.4\times10^{-4}$ \\
+\quad stiff species & 0.6 & 1, 0.01 & 0.905637 & 0.905234 & 0.905181 & $4.5\times10^{-4}$ \\
+\quad loose species & 0.6 & 1, 100 & 0.922430 & 0.922037 & 0.922015 & $4.3\times10^{-4}$ \\
+\quad three species & 0.6 & (0.4,0.3,0.3), (0.01,1,100) & 0.911300 & 0.910902 & 0.910864 & $4.4\times10^{-4}$ \\
+\quad no back-reaction & 0.6 & 1, 1 & 0.866746 & 0.866281 & 0.866248 & $5.4\times10^{-4}$ \\
+\quad PC2/\code{rk2} & 0.6 & 1, 1 & 0.911827 & 0.909713 & 0.909834 & $2.3\times10^{-3}$ \\
+\quad FFT solver & 0.6 & 1, 1 & 0.911827 & 0.911430 & 0.911391 & (= multigrid, every digit) \\
+\quad 4 ranks & 0.6 & 1, 1 & 0.911827 & 0.911430 & 0.911391 & (= serial, every digit) \\
+\quad 256 cells per $\lambda$ & 0.6 & 1, 1 & 0.911827 & 0.911717 & 0.911703 & $1.2\times10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The $k$ scans, each at 16, 32, 64 and 128 cells per wavelength (gas-mode rate; the
+last column is the 128-cell error). First the strong-dust case, $\epsilon_0 = 1$,
+$t_s = 1$: the gas alone is stable beyond $k/k_J = 1/\sqrt2$, and the dust-driven mode
+that remains carries the test past the gas Jeans length.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+$k/k_J$ & $\sigma_{\rm analytic}$ & 16 & 32 & 64 & 128 & error \\
+\midrule
+0.2 & 0.9900 & 0.9408 & 0.9757 & 0.9862 & 0.9890 & $1.0\times10^{-3}$ \\
+0.4 & 0.9603 & 0.9315 & 0.9532 & 0.9585 & 0.9599 & $4.7\times10^{-4}$ \\
+0.6 & 0.9118 & 0.8843 & 0.9054 & 0.9103 & 0.9114 & $4.4\times10^{-4}$ \\
+0.8 & 0.8470 & 0.8166 & 0.8399 & 0.8453 & 0.8466 & $5.1\times10^{-4}$ \\
+1.0 & 0.7712 & 0.7370 & 0.7630 & 0.7692 & 0.7707 & $6.6\times10^{-4}$ \\
+1.05 & 0.7515 & 0.7165 & 0.7431 & 0.7494 & 0.7510 & $7.0\times10^{-4}$ \\
+1.2 & 0.6931 & 0.6567 & 0.6841 & 0.6909 & 0.6926 & $8.2\times10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Then Krapp's own mixture: 128 species sharing $\epsilon_0 = 0.01$, $t_s$ spread over
+$[10^{-4}, 10]$ --- one particle of each species in every cell, up to $4\times10^6$
+particles in a run. Their text says a linear distribution; their plotted Fig.\ 6 is
+the \emph{log-uniform} one ($\sigma = 0.205$ at the gas cutoff and $0.017$ at
+$k/k_J = 1.4$, against $0.28$ and $0.07$ for the linear spacing --- a tail three times
+stronger, since a linear spacing puts most species at $t_s \gg 1$, barely coupled to
+the gas). Both were run. The linear mixture, at our wavenumbers (their $\sigma$ carries
+a factor $\sqrt{1+\epsilon_0}$; here $\sigma$ is in $c_s k_J$ as above):
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+$k/k_J$ & $\sigma_{\rm analytic}$ & 16 & 32 & 64 & 128 & error \\
+\midrule
+0.2 & 0.9800 & 0.9403 & 0.9688 & 0.9770 & 0.9792 & $8.2\times10^{-4}$ \\
+0.4 & 0.9175 & 0.8986 & 0.9135 & 0.9166 & 0.9173 & $2.5\times10^{-4}$ \\
+0.6 & 0.8031 & 0.7843 & 0.7996 & 0.8024 & 0.8029 & $2.2\times10^{-4}$ \\
+0.8 & 0.6112 & 0.5845 & 0.6060 & 0.6101 & 0.6109 & $4.2\times10^{-4}$ \\
+0.9 & 0.4649 & 0.4293 & 0.4578 & 0.4633 & 0.4645 & $8.1\times10^{-4}$ \\
+1.0 & 0.2715 & 0.2296 & 0.2623 & 0.2693 & 0.2710 & $2.0\times10^{-3}$ \\
+1.1 & 0.1420 & 0.1249 & 0.1373 & 0.1402 & 0.1409 & $7.6\times10^{-3}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+And the replica of their Fig.\ 6: the log-uniform mixture at their six wavenumbers ---
+the last, $k/k_J = 1/\sqrt{1+\epsilon_0} = 0.995$, is the cutoff of the dust-free
+problem --- with $\sigma$ in their units, $\sigma\sqrt{1+\epsilon_0}$:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+$k/k_J$ & $\sigma_{\rm analytic}$ & 16 & 32 & 64 & 128 & error \\
+\midrule
+0.1 & 1.0000 & 0.8988 & 0.9648 & 0.9894 & 0.9971 & $2.9\times10^{-3}$ \\
+0.25 & 0.9734 & 0.9435 & 0.9656 & 0.9714 & 0.9729 & $5.4\times10^{-4}$ \\
+0.5 & 0.8719 & 0.8541 & 0.8684 & 0.8711 & 0.8717 & $2.1\times10^{-4}$ \\
+0.75 & 0.6699 & 0.6458 & 0.6653 & 0.6689 & 0.6697 & $3.3\times10^{-4}$ \\
+0.9 & 0.4525 & 0.4143 & 0.4448 & 0.4508 & 0.4521 & $8.8\times10^{-4}$ \\
+0.995 & 0.2053 & 0.1369 & 0.1910 & 0.2020 & 0.2045 & $4.0\times10^{-3}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Every case reproduces its eigenvalue, converging at second order from 16 to 256 cells
+per wavelength: to $2$--$8\times10^{-4}$ at 128 cells where the mode is strong, and to
+$2\times10^{-3}$, $8\times10^{-3}$ and $4\times10^{-3}$ for the weak modes beyond or at
+the gas cutoff ($\sigma \sim 0.14$--$0.27$, where the same absolute error is a larger
+fraction), with the gas and dust modes growing at the same rate as a single eigenmode
+must. The dust physics is resolved, not merely tolerated: at $\epsilon_0 = 1$ the
+growth exceeds the gas-only value by $14\%$, back-reaction off lands on the
+no-back-reaction eigenvalue ($0.8667$, a different number), the stiff ($t_s = 0.01$,
+$\Delta t/t_s \approx 2.5$) and loose ($t_s = 100$) species and the three-species
+mixture each hit their own rates, and beyond the gas Jeans length the dust-driven modes
+grow at their predicted rates --- $0.751$ and $0.693$ for the strong dust at
+$k/k_J = 1.05$ and $1.2$; $0.2715$ and $0.1420$ for Krapp's one-percent mixture at
+$1.0$ and $1.1$, where the gas alone is stable (measured $0.2710$, $0.1409$). The
+linear and log-uniform mixtures, which differ by a factor three in that tail, are each
+reproduced. The FFT and multigrid solvers, and one and four ranks, agree to every
+printed digit. PC2 at the \code{rk2} step is $2\times10^{-3}$ low --- the same
+temporal-order footprint as in \S7. Figure \ref{fig:jeans}; its middle panel is
+Krapp's Fig.\ 6 with superparticles in place of the 128 fluids, down to the 16-cell
+point falling short at the cutoff mode.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/dust4c_jeans.png}
+\caption{The dusty Jeans instability with superparticle dust. Left: $\epsilon_0 = 1$,
+$t_s = 1/(c_s k_J)$ --- the eigenproblem with and without back-reaction, the gas-only
+curve, and the gas-mode rates measured at 16 to 128 cells per wavelength. Middle: the
+replica of Krapp et al.\ (2024) Fig.\ 6 --- 128 species, $\epsilon_0 = 0.01$,
+$t_s$ log-uniform in $[10^{-4}, 10]$, $\sigma$ in their units --- at their six
+wavenumbers and four resolutions; the dotted line is the dust-free cutoff. Right:
+convergence at fixed $k$ (the strong-dust case, the linear 128-species mixture, and the
+replica's cutoff mode) with the other couplings and solvers at $k/k_J = 0.6$.}
+\label{fig:jeans}
+\end{figure}
+
 \subsection{The two-stage science setup, exercised}
 
 The Baehr et al.\ runs (implementation \S9.5) are a gas-only stage to saturation and
@@ -1257,7 +1409,12 @@ Phase 4d supplies those and closes the one open numerical question: the instabil
 the hydro scheme's 3D checkerboard mode at \code{cfl} $\gtrsim 0.4$, not the dust
 coupling's, so the Courant rule is understood; particles leave through the vertical
 faces with their mass accounted; restart chains carry the particles exactly; and the
-module's own dust density and the SC14 dust history columns are available. The dust
+module's own dust density and the SC14 dust history columns are available. The dusty
+Jeans instability closes the loop on the coupled linear dynamics: 93 cases ---
+$k$ scans at four resolutions, stiff and loose species, back-reaction off, both
+solvers, four ranks, and Krapp et al.'s own 128-species mixture as a replica of their
+Fig.\ 6 --- reproduce the dispersion relation to $10^{-4}$--$10^{-3}$, converging at
+second order. The dust
 track is ready for the science box, and the two-stage Baehr et al.\ setup --- the
 gas to saturation, then the particles inserted on restart, back-reaction a switch ---
 is built, exercised in a small box, and scripted for Vista.

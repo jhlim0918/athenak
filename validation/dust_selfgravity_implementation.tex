@@ -39,8 +39,8 @@
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6},
         \code{9a96f9f3}, \code{d39858ac}, \code{a9279dc8},
-        \code{386d5968}}
-\date{September 3--5, 2026}
+        \code{386d5968}, \code{538fb43b}}
+\date{September 3--10, 2026}
 
 \begin{document}
 \maketitle
@@ -227,6 +227,8 @@ Commit & Phase & Content \\
               Vista scripts \\
 \code{386d5968} & science & the particle history output (\code{phst}) and
               \file{scripts/analysis/baehr\_table1.py} \\
+\code{538fb43b} & 4c & the dusty Jeans test: \fn{ProblemGenerator::DustJeans},
+              \file{scripts/analysis/dust\_jeans.py}, the input and the figure \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -1203,6 +1205,23 @@ snapshots ($x$ wrapped over $L_x$, $z$ unwrapped; $y$ is sheared and unused),
 $Sc = (\alpha_R+\alpha_G)/\delta_{d,z}$, and, with \code{--roche}, a census of the
 cells above the Roche density $3.5\,\Omega^2/G$ in the \code{dust\_dpm} dumps
 (connected components and their masses).
+
+\subsection{The dusty Jeans test}
+
+\fn{ProblemGenerator::DustJeans} (\file{pgen/tests/dust\_jeans.cpp}) with
+\file{scripts/analysis/dust\_jeans.py}: the generator takes every component of the
+eigenmode as a parameter (gas density and velocity amplitude and phase, per species the
+dust density --- carried by the particle masses --- and velocity), the script solves the
+$(2N+2)$ linear system of Krapp et al.\ (2024, Eqs.\ 50--54) for the fastest-growing
+mode and prints the command-line overrides (including \code{four\_pi\_G} for
+$k_J = 1$, the mesh and box for the requested $k/k_J$ and cells per wavelength ---
+cubic cells, \code{--nx1}, \code{--ny} --- the species and \code{tlim}), and fits
+the growth rate from the generator's history of mode projections. \code{--nspec N}
+builds Krapp's many-fluid mixture ($N$ species sharing $\epsilon_0$, $t_s$ linear ---
+or log-uniform with \code{--ts-log}, which is what their Fig.\ 6 actually shows ---
+between \code{--ts-min} and \code{--ts-max}); since the command line cannot add keys
+absent from the input, \code{--input}/\code{--out} then writes a complete input file
+with the $5N$ species keys in place. Validation \S8.
 
 \subsection{The science setup: Baehr, Zhu \& Yang (2022) in two stages}
 \label{sec:science}
