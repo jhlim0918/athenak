@@ -1,0 +1,156 @@
+# AthenaK input file: Yang & Zhu (2021, MNRAS 508, 5538) Model As, SINGLE SPECIES, on a
+# UNIFORM grid, seeded with a linear streaming-instability eigenmode.  This is the exact
+# twin of the Athena (C) run tst/particle/athinput.streaming2d_modelAs, so the two codes
+# can be compared from identical initial conditions.
+#
+# Model As is the slow-growth case: tau_s in [1e-3, 0.1] with eps = 0.2.  The
+# single-species representative is the LINEAR centre of that bin (Zhu & Yang 2021 Table 1,
+# Nsp = 1, q = -3.5): tau_s = (0.001 + 0.1)/2 = 0.0505.  Box 0.2 H = 4 eta r square at
+# 256^2, 4 particles per cell -- Model As's own resolution.
+#
+# Units Omega = c_s = rho0 = 1, eta v_K = 0.05 c_s (so eta r = 0.05 H); the radial
+# pressure gradient acts on the gas alone as a_x = 2*Omega*eta v_K = 0.1.  2D r-z: x1 =
+# radial, x2 = vertical, azimuthal in IM3/IPVZ, plain periodic x1.
+#
+# SEEDED MODE: the fastest well-resolved box mode, (n_x, n_z) = (6, 6), i.e.
+# k_x = k_z = 2*pi*6/0.2 = 188.4955592153876 (K = k*eta r = 9.4247779608), with
+# omega_R = -0.4430916398169856 and s = 0.007129389503998228 (the 8x8 YG05/YJ07
+# two-fluid eigenproblem; Athena's vis/julia/si_linear_mode.jl).  The eigenvector below
+# is that solution, normalised to drho_p/rho_p = 1 and then scaled to the Athena run's
+# amplitude drho_p/rho_p = 2e-7 (its amp = 1e-6 with the pre-existing quirk amp *=
+# mratio), converted to code units: the density amplitudes are multiplied by the
+# background density and the velocity amplitudes by eta v_K.  omega_re is carried for
+# reference only -- the generator evaluates the mode at t = 0, where it does not enter.
+#
+# Diagnostics: <problem>/user_hist = true writes the complex Fourier projection of the
+# particle mass distribution and of the gas density and radial momentum onto the seeded
+# (k_x, k_z) mode, so the growth rate is a linear regression of ln|amplitude| -- the
+# mesh-independent measure, and the one that rejects the grid-scale sideband.
+#
+# WHAT TO EXPECT.  At 256^2 this box gives ~43 cells per wavelength of the seeded mode,
+# which is marginal for a second-order scheme: in Athena the same setup grew at
+# s = 0.0026-0.0029, i.e. 36-40% of the analytic 0.0071294, reaching saturation only at
+# t ~ 1000 P, while 512^2 recovered 95%.  A slow measured rate here is therefore the
+# expected code-to-code agreement, not a defect; for a converged growth rate run the
+# same file with mesh/nx1 = mesh/nx2 = 512 (and, if the sideband is to stay below the
+# mode, particles/ppc = 4 kept).
+#
+# Vista: scripts/cluster/si_modelAs.slurm (1 node, 64 ranks).  tlim = 1000 P needs
+# several 48 h jobs; the script chains restarts, written every 50 P.
+
+<comment>
+problem   = YZ21 Model As (Nsp = 1), seeded (6,6) eigenmode, uniform 256^2
+
+<job>
+basename  = si_modelAs
+
+<mesh>
+nghost    = 3             # ppmx needs 3
+nx1       = 256           # radial
+x1min     = -0.1          # 0.2 H = 4 eta r
+x1max     = 0.1
+ix1_bc    = periodic
+ox1_bc    = periodic
+nx2       = 256           # vertical
+x2min     = -0.1
+x2max     = 0.1
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16            # 16 x 16 = 256 MeshBlocks: 4 per rank at 64 ranks
+nx2       = 16
+nx3       = 1
+
+<time>
+evolution  = dynamic
+integrator = imex2+
+cfl_number = 0.3
+nlim       = -1
+tlim       = 6283.185307179586   # 1000 P  (P = 2 pi / Omega)
+ndiag      = 10000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = ppmx        # Athena C: --with-order=3p
+rsolver     = roe
+
+<hydro_srcterms>
+const_accel     = true
+const_accel_val = 0.1     # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 4.0       # 2x2 quiet-start sublattice per cell -> 262144 particles
+
+<dust>
+coupling      = imex
+nspecies      = 1
+taus_1        = 0.0505    # ZY21 Table 1, Nsp = 1 for Ts in [1e-3, 0.1], q = -3.5
+dust_to_gas   = 0.2
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+drag_solver   = local
+
+<problem>
+pgen_name  = streaming_linear
+user_hist  = true         # Fourier projection onto the seeded mode -> growth rate
+rho0       = 1.0
+etavk      = 0.05
+eps        = 0.2
+kx         = 188.49555921538757    # 2*pi*6/0.2  (K_x = k_x*eta r = 9.4247779608)
+kz         = 188.49555921538757
+omega_re   = -0.4430916398169856   # reference only (unused at t = 0)
+# eigenvector, drho_p/rho_p = 2e-7, in code units
+drhog_re   = -5.926810829465186e-14
+drhog_im   = -5.723390838915022e-12
+dugx_re    = 1.343597157913508e-11
+dugx_im    = -2.028604705385107e-09
+dugp_re    = 2.2870762883379288e-09
+dugp_im    = -2.6116268834428298e-11
+dugz_re    = -1.343557428918091e-11
+dugz_im    = 2.028622164196286e-09
+drhop_re   = 4e-08
+dvpx_re    = 2.6563302170891043e-10
+dvpx_im    = -2.0199377368455242e-09
+dvpp_re    = 2.279003142557302e-09
+dvpp_im    = 4.9818723797996564e-11
+dvpz_re    = -3.561893288376279e-11
+dvpz_im    = 2.0275022540507533e-09
+
+<output1>
+file_type  = hst              # gas history
+dt         = 0.06283185307179586   # 0.01 P, as in the Athena run
+data_format = %.14e
+
+<output2>
+file_type  = phst             # particle history
+dt         = 0.06283185307179586   # 0.01 P
+
+<output3>
+file_type  = bin              # particle-mesh dust density
+variable   = dust_dpm
+dt         = 31.41592653589793     # 5 P
+
+<output4>
+file_type  = bin              # gas primitives
+variable   = hydro_w
+dt         = 31.41592653589793     # 5 P
+
+<output5>
+file_type  = rst
+dt         = 314.1592653589793     # 50 P
