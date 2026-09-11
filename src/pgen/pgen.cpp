@@ -722,8 +722,12 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
           hi(n,q) = static_cast<int>(std::lround(buf[(nrd+n)*npart + q]));
         }
       }
+      // integers the file did not carry: the sampling level PLEV of a dust particle is
+      // the level of its block now (a file from before PLEV existed)
       for (int n=nid_f; n<nid; ++n) {
-        for (int q=0; q<npart; ++q) {hi(n,q) = -1;}
+        for (int q=0; q<npart; ++q) {
+          hi(n,q) = (n == PLEV) ? pm->lloc_eachmb[hi(PGID,q)].level : -1;
+        }
       }
       Kokkos::deep_copy(ppart->prtcl_rdata, hr);
       Kokkos::deep_copy(ppart->prtcl_idata, hi);

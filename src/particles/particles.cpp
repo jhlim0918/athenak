@@ -125,12 +125,16 @@ Particles::~Particles() {
 // those with tag numbers less than ntrack.
 
 void Particles::CreateParticleTags(ParameterInput *pin) {
-  // dust: the sampling level starts unset (the block's level applies until a split)
+  // dust: the sampling level starts at the level of the block the particle sits in (the
+  // generators set PGID before creating the tags); a block that later derefines and
+  // refines again must not split its particles a second time
   if (particle_type == ParticleType::dust && nprtcl_thispack > 0) {
     auto &pi0 = prtcl_idata;
+    auto &mblev = pmy_pack->pmb->mb_lev;
+    int gids = pmy_pack->gids;
     par_for("plev_init",DevExeSpace(),0,(nprtcl_thispack-1),
     KOKKOS_LAMBDA(const int p) {
-      pi0(PLEV,p) = -1;
+      pi0(PLEV,p) = mblev.d_view(pi0(PGID,p) - gids);
     });
   }
   std::string assign = pin->GetOrAddString("particles","assign_tag","index_order");
