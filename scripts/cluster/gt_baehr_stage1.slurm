@@ -19,13 +19,22 @@
 # t = 50 -> a few hours.  Stage 2 (particles, PC2 coupling, dust exchanges) ~1.3x.  Submit from the RUN directory in
 # $SCRATCH -- outputs land there and Slurm starts the job in the submit directory:
 #     cd $SCRATCH/gt_sc14_stndrd/b10 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_sc14_full.slurm
-# To continue a run after a walltime kill, replace the -i line with:
-#     -r $(ls rst/*.rst | tail -1) \
+# To continue a run (walltime kill, or to run past tlim), resubmit from the same
+# directory with CONT=1 (and TLIM if the target time changes); see below.
 # Per-run parameters go on the ibrun line, e.g.  hydro_srcterms/bcool_beta=5
 # Hi-res twin: INPUT=.../gravito_turb_sc14_hi.athinput with -N 6 -n 768 (README sec. 2).
 
 ATHENAK=$HOME/athenak-multigrid
 INPUT=$ATHENAK/inputs/shearing_box/gravito_turb_baehr.athinput
+
+# CONTINUE an existing stage-1 run instead of starting one: set RST (or CONT=1 to pick
+# the run's own last dump) and, to run past the input's tlim, TLIM.  Every key overridden
+# here is present in the tracked input, so the command line can set it:
+#     cd $SCRATCH/gtb/stage1 && CONT=1 TLIM=100 sbatch .../gt_baehr_stage1.slurm
+RST=${RST:-}
+if [ -n "${CONT:-}" ] && [ -z "$RST" ]; then RST=$(ls rst/*.rst | tail -1); fi
+if [ -n "$RST" ]; then START=(-r "$RST"); else START=(-i "$INPUT"); fi
+if [ -n "${TLIM:-}" ]; then OVR=(time/tlim=$TLIM); else OVR=(); fi
 
 # the modules the binary was built with -- mirror `module list` from the cmake shell
 module load gcc openmpi fftw3
@@ -34,8 +43,9 @@ cd $SLURM_SUBMIT_DIR
 {
   echo "# job $SLURM_JOB_ID on $SLURM_JOB_NUM_NODES node(s): $SLURM_JOB_NODELIST, $SLURM_NTASKS ranks"
   echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD)"
+  echo "# start ${START[*]} ${OVR[*]}"
 } >> run.log
 
 # ibrun is TACC's launcher: rank count and placement come from -N/-n above.
 # athena's -t guard stops 15 min before the Slurm limit so the final rst is written.
-ibrun $ATHENAK/build-cluster/src/athena -i $INPUT -d ./ -t 47:45:00 >> run.log 2>&1
+ibrun $ATHENAK/build-cluster/src/athena "${START[@]}" -d ./ -t 47:45:00 "${OVR[@]}" >> run.log 2>&1
