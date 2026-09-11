@@ -279,11 +279,14 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
 //! \brief Inserts the dust particles into a restarted (saturated) gravito-turbulent gas
 //! state: <particles>/ppc particles per cell in total, spread uniformly in (x,y) and as
 //! a Gaussian of width <problem>/dust_hz in z (Baehr et al. 2022: the initial gas
-//! width), at rest in the shearing frame, one species with the <dust> stopping time,
-//! equal masses summing to <problem>/dust_Z times the gas mass in the box.  Per-block
-//! counts follow the Gaussian mass in each block's z range, so the placement is
-//! deterministic and decomposition-independent (hash of the global block id and the
-//! particle's index in the block, <problem>/dust_seed).
+//! width), at rest in the shearing frame.  The <dust>/nspecies species (stopping times
+//! <dust>/taus_s) are interleaved round-robin within every block, so each gets the same
+//! number of particles and the same spatial distribution; species s carries the dust-to-
+//! gas ratio <problem>/dust_Z_s (default: <problem>/dust_Z split evenly), its particles
+//! having equal masses summing to dust_Z_s times the gas mass in the box.  Per-block
+//! counts (rounded to a multiple of nspecies) follow the Gaussian mass in each block's
+//! z range, so the placement is deterministic and decomposition-independent (hash of the
+//! global block id and the particle's index in the block, <problem>/dust_seed).
 
 void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin) {
   MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
@@ -307,7 +310,12 @@ void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin) {
   auto &size = pmbp->pmb->mb_size;
 
   Real ppc = pin->GetOrAddReal("particles", "ppc", 1.0);
+  int nsp = pmbp->pdust->nspecies;
   Real dust_Z = pin->GetOrAddReal("problem", "dust_Z", 0.01);
+  std::vector<Real> zs(nsp);
+  for (int s=0; s<nsp; ++s) {
+    zs[s] = pin->GetOrAddReal("problem", "dust_Z_" + std::to_string(s+1), dust_Z/nsp);
+  }
   Real cs0 = pin->GetOrAddReal("problem", "cs0", 2.12625);
   Real dust_hz = pin->GetOrAddReal("problem", "dust_hz", cs0/gt_var.omega0);
   int64_t dust_seed = pin->GetOrAddInteger("problem", "dust_seed", 7);
@@ -334,6 +342,35 @@ void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin) {
   MPI_Allreduce(MPI_IN_PLACE, &mgas, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
 #endif
 
+  // radial pressure-gradient mimic: a constant a_x on the gas (<hydro_srcterms>/
+  // const_accel, dir 1) is balanced by the uniform azimuthal offset v_y = -a_x/(2 Omega)
+  // (the NSH gas velocity).  Apply it to the restarted gas here, so switching the force
+  // on at stage 2 does not launch the undamped box-wide epicycle of amplitude eta v_K.
+  // <problem>/gas_vy_shift = auto (default) or a number (0 = no shift).
+  Real vy_auto = 0.0;
+  auto *psrc = pmbp->phydro->psrc;
+  if (psrc != nullptr && psrc->const_accel && psrc->const_accel_dir == 1) {
+    vy_auto = -psrc->const_accel_val/(2.0*gt_var.omega0);
+  }
+  std::string vy_str = pin->GetOrAddString("problem", "gas_vy_shift", "auto");
+  Real vy_shift = (vy_str.compare("auto") == 0) ? vy_auto : std::stod(vy_str);
+  if (vy_shift != 0.0) {
+    int ng = indcs.ng;
+    bool is_ideal = pmbp->phydro->peos->eos_data.is_ideal;
+    par_for("gt_dust_vyshift", DevExeSpace(), 0, nmb-1, 0, indcs.nx3+2*ng-1,
+            0, indcs.nx2+2*ng-1, 0, indcs.nx1+2*ng-1,
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      Real den = u0(m,IDN,k,j,i);
+      Real my = u0(m,IM2,k,j,i);
+      u0(m,IM2,k,j,i) = my + den*vy_shift;
+      if (is_ideal) u0(m,IEN,k,j,i) += my*vy_shift + 0.5*den*vy_shift*vy_shift;
+    });
+    if (global_variable::my_rank == 0) {
+      std::cout << "gravito_turb: gas azimuthal velocity shifted by " << vy_shift
+                << " (pressure-gradient equilibrium)" << std::endl;
+    }
+  }
+
   // per-block counts: (x,y) area fraction times the Gaussian mass in the block's z range
   Real area_box = gt_var.lx*gt_var.ly;
   Real s2 = dust_hz*std::sqrt(2.0);
@@ -344,7 +381,7 @@ void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin) {
                *(size.h_view(m).x2max - size.h_view(m).x2min);
     Real zfrac = 0.5*(std::erf(size.h_view(m).x3max/s2)
                       - std::erf(size.h_view(m).x3min/s2))/znorm;
-    int n_m = static_cast<int>(std::floor(n_target*(area/area_box)*zfrac + 0.5));
+    int n_m = nsp*static_cast<int>(std::floor(n_target*(area/area_box)*zfrac/nsp + 0.5));
     off[m+1] = off[m] + n_m;
   }
   int npart = off[nmb];
@@ -352,7 +389,14 @@ void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin) {
 #if MPI_PARALLEL_ENABLED
   MPI_Allreduce(MPI_IN_PLACE, &ntot, 1, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
 #endif
-  Real mp = dust_Z*mgas/static_cast<Real>(std::max<int64_t>(ntot, 1));
+  // ntot/nsp particles per species; species s has mass zs[s]*mgas in total
+  DualArray1D<Real> mps("gt_dust_mp", nsp);
+  for (int s=0; s<nsp; ++s) {
+    mps.h_view(s) = zs[s]*mgas*static_cast<Real>(nsp)
+                    /static_cast<Real>(std::max<int64_t>(ntot, 1));
+  }
+  mps.template modify<HostMemSpace>();
+  mps.template sync<DevExeSpace>();
 
   ppar->nprtcl_thispack = npart;
   Kokkos::realloc(ppar->prtcl_rdata, ppar->nrdata, std::max(npart, 1));
@@ -396,10 +440,11 @@ void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin) {
       if (zt >= x3min && zt < x3max) {z = zt; break;}
     }
     pr(IPZ,p) = z;
+    int sp = static_cast<int>(q % nsp);
     pi(PGID,p) = static_cast<int>(gid);
-    pi(PSP,p) = 0;
-    pr(IPTS,p) = taus_.d_view(0);
-    pr(IPM,p) = mp;
+    pi(PSP,p) = sp;
+    pr(IPTS,p) = taus_.d_view(sp);
+    pr(IPM,p) = mps.d_view(sp);
     pr(IPVX,p) = 0.0; pr(IPVY,p) = 0.0; pr(IPVZ,p) = 0.0;
     pr(IPRX,p) = 0.0; pr(IPRY,p) = 0.0; pr(IPRZ,p) = 0.0;
   });
@@ -420,9 +465,15 @@ void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin) {
   ppar->CreateParticleTags(pin);
   if (global_variable::my_rank == 0) {
     std::cout << "gravito_turb: inserted " << pm->nprtcl_total << " dust particles "
-              << "(target " << static_cast<int64_t>(n_target) << "), mass " << mp
-              << " each = Z " << dust_Z << " x gas mass " << mgas << ", Gaussian h_z = "
-              << dust_hz << ", stopping time " << taus_.h_view(0) << std::endl;
+              << "(target " << static_cast<int64_t>(n_target) << ") in " << nsp
+              << " species, gas mass " << mgas << ", Gaussian h_z = " << dust_hz
+              << std::endl;
+    for (int s=0; s<nsp; ++s) {
+      std::cout << "gravito_turb:   species " << s+1 << ": stopping time "
+                << taus_.h_view(s) << ", Z = " << zs[s] << ", "
+                << pm->nprtcl_total/nsp << " particles of mass " << mps.h_view(s)
+                << std::endl;
+    }
   }
 }
 

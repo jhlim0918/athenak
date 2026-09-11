@@ -1,0 +1,83 @@
+# AthenaK input file: STAGE 2 of the Baehr, Zhu & Yang (2022) setup with THREE dust
+# species -- the ADD-ON read on top of the stage-1 restart file:
+#     athena -r <stage1>/rst/gtb.00005.rst -i inputs/shearing_box/gravito_turb_baehr_dust3.athinput \
+#            dust/back_reaction={true,false}
+# Same mechanics as gravito_turb_baehr_dust.athinput (blocks merge over the dump's input,
+# restart_insert makes the generator place the layer), but the layer is three species
+# St = 0.01, 0.1, 1 interleaved in every cell, each with 1.5e6 particles (ppc = 3 x
+# 0.02235) and each carrying Z_s = 0.01/3 of the gas mass (problem/dust_Z_s; set them to
+# 0.01 apiece for a Z = 0.03 layer).  With back_reaction = false the species do not
+# interact and the run is three single-species experiments at once; with it on the total
+# Z is what the gas feels.  Purpose: do the St ~ 1 particles lock into the GI spirals
+# while the small ones are stirred over the gas scale height?  Read H_d per species from
+# the phst output (sig_z), the spiral locking from pvtk binned by species.
+# Optional radial pressure gradient (dust drift): the constant acceleration on the gas
+# 2 Omega eta v_K of the NSH tests, off here; switch on with
+#     hydro_srcterms/const_accel=true   (const_accel_val = 2*1*0.05*cs0 = 0.2126, Pi = 0.05)
+# It only offsets the gas azimuthal velocity by -eta v_K, so stage 1 need not carry it: the
+# insertion applies that offset to the restarted gas (problem/gas_vy_shift, automatic),
+# so the switch-on does not launch the box-wide epicycle.
+# Coupling: hybrid (not pc2) -- see the <dust> block; the small species are stiff where
+# the gas is at the floor density.
+# To CONTINUE a stage-2 run from one of its own dumps add particles/restart_insert=false
+# on the command line (those dumps carry the particles).
+
+<time>
+tlim       = 100.0    # 50 more orbits^-1 of dust evolution
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 0.06705   # 3 x 0.02235: 1.5e6 particles PER SPECIES in the 512^2 x 256 box
+restart_insert = true     # the stage-1 dump has no particles: insert them
+
+<dust>
+coupling      = hybrid    # PC2 under rk2 while the drag is mild, split backward-Euler
+                          # when a cell is stiff (chi = dt*eps/t_s > 0.5): the St = 0.01
+                          # particles in the floor-density halo reach eps/t_s ~ 4e4, which
+                          # plain pc2 cannot take (dt collapses, the halo gas explodes and
+                          # blows the dust out); coupling=imex + time/integrator=imex2+
+                          # is the other stiff-safe choice
+nspecies      = 3
+taus_1        = 0.01      # St = 0.01: well coupled, stirred with the gas
+taus_2        = 0.1
+taus_3        = 1.0       # St = 1: Baehr's "L", the spiral-trapped size
+back_reaction = true      # BR_L_10; false for noBR_L_10 (override on the command line)
+deposit       = tsc
+gravity       = true      # dust in the Poisson source and subject to -grad(phi)
+gravity_source = true
+gravity_force  = true
+dt_cfl        = 0.5
+dt_transport  = relative
+dt_block_safety = 0.5
+shear_fold    = true
+shear_remap   = plm
+stopping_time_mode = species_fixed
+
+<hydro_srcterms>
+const_accel     = false   # radial pressure-gradient mimic on the gas: a_x = 2 Omega eta v_K
+const_accel_dir = 1
+const_accel_val = 0.2126  # eta v_K = 0.05 cs0 (Pi = 0.05)
+
+<problem>
+dust_Z    = 0.01          # total dust-to-gas ratio (default split: dust_Z/nspecies each)
+dust_Z_1  = 0.0033333333333333335   # per-species ratios; 0.01 apiece for Z = 0.03
+dust_Z_2  = 0.0033333333333333335
+dust_Z_3  = 0.0033333333333333335
+dust_hz   = 2.16878       # Gaussian half-width of the inserted layer = H_g
+dust_seed = 7
+gas_vy_shift = auto       # -a_x/(2 Omega) when const_accel is on (no epicycle); or a number
+
+<output5>
+file_type = bin
+variable  = dust_dpm
+dt        = 5.0
+
+<output6>
+file_type = pvtk
+variable  = prtcl_all
+dt        = 5.0
+
+<output7>
+file_type = phst      # particle history: momenta, KE, escaped mass, max dust density,
+dt        = 0.25      # per-species means and dispersions (sig_z = H_d)

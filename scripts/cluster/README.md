@@ -185,7 +185,21 @@ cd $SCRATCH/gtb/stage1 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_baeh
 # stage 2: restart from the t = 50 dump, insert the particles, run to t = 100
 cd $SCRATCH/gtb/BR_L_10   && BR=true  sbatch $HOME/athenak-multigrid/scripts/cluster/gt_baehr_stage2.slurm
 cd $SCRATCH/gtb/noBR_L_10 && BR=false sbatch $HOME/athenak-multigrid/scripts/cluster/gt_baehr_stage2.slurm
+# three species (St = 0.01, 0.1, 1; Z = 0.01/3 each): the dust3 add-on, same dump
+cd $SCRATCH/gtb/noBR_3sp && BR=false ADDON=$HOME/athenak-multigrid/inputs/shearing_box/gravito_turb_baehr_dust3.athinput \
+    sbatch $HOME/athenak-multigrid/scripts/cluster/gt_baehr_stage2.slurm
+# ... with the radial pressure gradient (dust drift) on: OVR="hydro_srcterms/const_accel=true"
 ```
+
+Multi-species layers: `<dust>/nspecies` and `taus_s` in the add-on, `problem/dust_Z_s`
+per species (default `dust_Z/nspecies`); the species are interleaved in every cell so
+each has the same count and distribution.  With back-reaction off the species are
+independent, so one run is several single-species experiments.  A cheaper proof of
+concept: rerun stage 1 with `mesh/nx1=256 mesh/nx2=256 mesh/nx3=128 meshblock/nx1=32
+meshblock/nx2=32 meshblock/nx3=32` (0.1 H_g cells, 256 blocks = 2 nodes at 128 ranks
+each, ~16x cheaper) and restart the dust stages from its dump with the same add-ons
+and `particles/ppc` scaled to the new cell count (ppc is per cell: 0.02235 x 8 keeps
+1.5e6 particles per species).
 
 Stage 2 reads the add-on input `inputs/shearing_box/gravito_turb_baehr_dust.athinput`
 on top of the dump's own input (`-r dump -i addon`: blocks merge, the add-on wins):
