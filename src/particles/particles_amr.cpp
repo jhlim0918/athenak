@@ -78,9 +78,22 @@ void Particles::SplitOnRefine(const DualArray1D<int> &act, const int nleaf) {
   auto &pr = prtcl_rdata;
   auto act_d = act.d_view;
   auto &mbsize = pmy_pack->pmb->mb_size;
+  auto &mblev = pmy_pack->pmb->mb_lev;
   const bool multi_d = pmy_pack->pmesh->multi_d;
   const bool three_d = pmy_pack->pmesh->three_d;
   const bool has_reg = (particle_type == ParticleType::dust);
+  const bool has_lev = (particle_type == ParticleType::dust);
+
+  // a particle of a refining block is a parent only if its sampling level (PLEV, or
+  // the block's level while unset) is below the new level: particles split earlier that
+  // rode a derefinement are not split again
+  auto is_parent = KOKKOS_LAMBDA(const int p) -> bool {
+    const int m = pi(PGID,p) - gids;
+    if (act_d(m) <= 0) {return false;}
+    if (!has_lev) {return true;}
+    const int plev = (pi(PLEV,p) < 0) ? mblev.d_view(m) : pi(PLEV,p);
+    return (plev <= mblev.d_view(m));
+  };
 
   // parents on this rank, and the largest tag anywhere (children take tags above it)
   int nsplit = 0, maxtag = -1;
@@ -88,7 +101,7 @@ void Particles::SplitOnRefine(const DualArray1D<int> &act, const int nleaf) {
     Kokkos::parallel_reduce("prtcl_split_count",
     Kokkos::RangePolicy<>(DevExeSpace(), 0, npart),
     KOKKOS_LAMBDA(const int p, int &n) {
-      if (act_d(pi(PGID,p) - gids) > 0) {++n;}
+      if (is_parent(p)) {++n;}
     }, Kokkos::Sum<int>(nsplit));
     Kokkos::parallel_reduce("prtcl_split_maxtag",
     Kokkos::RangePolicy<>(DevExeSpace(), 0, npart),
@@ -112,7 +125,7 @@ void Particles::SplitOnRefine(const DualArray1D<int> &act, const int nleaf) {
   Kokkos::parallel_scan("prtcl_split_scan",
   Kokkos::RangePolicy<>(DevExeSpace(), 0, npart),
   KOKKOS_LAMBDA(const int p, int &offset, const bool final) {
-    bool parent = (act_d(pi(PGID,p) - gids) > 0);
+    bool parent = is_parent(p);
     if (final) {map(p) = parent ? offset : -1;}
     if (parent) {++offset;}
   });
@@ -137,6 +150,7 @@ void Particles::SplitOnRefine(const DualArray1D<int> &act, const int nleaf) {
         for (int n=0; n<nid; ++n) {new_i(n,slot) = pi(n,p);}
         new_i(PTAG,slot) = tag0 + q*(nleaf-1) + (c-1);
       }
+      if (has_lev) {new_i(PLEV,slot) = mblev.d_view(m) + 1;}
       Real sx = (c & 1) ? ox : -ox;
       Real sy = ((c >> 1) & 1) ? oy : -oy;
       Real sz = ((c >> 2) & 1) ? oz : -oz;

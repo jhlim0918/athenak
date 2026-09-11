@@ -6,7 +6,7 @@
 # ADAPTIVE MESH REFINEMENT on the particle-mesh dust density (dust track, Phase 6).
 # JY07 ran 256^2 with 1.6e6 particles (~24 per cell) to t = 500.  Here the root grid
 # is 128^2 in 16^2 MeshBlocks and MeshBlocks whose maximum dust density exceeds
-# <amr_criterion1>/value_max are refined to level 1 (the dust module's one-level limit),
+# <amr_criterion1>/value_max are refined to level 1 (num_levels = 2; more are allowed),
 # with particles/split_on_refine so the particles of a refining block become four
 # quarter-mass children half a fine cell apart (the sampling per cell is preserved on the
 # fine level).  Uniform twins: mesh_refinement/refinement=none [mesh/nx1=256 mesh/nx2=256].
@@ -53,7 +53,9 @@ max_nmb_per_rank = 320    # 64 root blocks, up to 256 refined
 method    = min_max
 variable  = dust_rho      # particle-mesh dust density (dust module's TSC deposit)
 value_max = 1.0          # refine a block whose maximum exceeds this (5x the mean),
-                          # derefine when it falls below
+                          # derefine when it falls below value_max_deref
+value_max_deref = 0.5    # hysteresis: derefine only below this (avoids refine/derefine
+                          # flapping at the threshold)
 
 <time>
 evolution  = dynamic

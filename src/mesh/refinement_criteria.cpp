@@ -56,6 +56,8 @@ RefinementCriteria::RefinementCriteria(Mesh *pm, ParameterInput *pin) :
       }
       rcrit0.rvalue_min = pin->GetOrAddReal(it->block_name,"value_min",(-FLT_MAX));
       rcrit0.rvalue_max = pin->GetOrAddReal(it->block_name,"value_max", (FLT_MAX));
+      rcrit0.rvalue_max_deref = pin->GetOrAddReal(it->block_name,"value_max_deref",
+                                                  rcrit0.rvalue_max);
       rcrit0.rloc_x1  = pin->GetOrAddReal(it->block_name,"location_x1", 0.0);
       rcrit0.rloc_x2  = pin->GetOrAddReal(it->block_name,"location_x2", 0.0);
       rcrit0.rloc_x3  = pin->GetOrAddReal(it->block_name,"location_x3", 0.0);
@@ -200,6 +202,7 @@ void RefinementCriteria::CheckMinMax(MeshBlockPack* pmbp, RefCritData crit) {
   int nmb = pmbp->nmb_thispack;
 
   auto &valmax = crit.rvalue_max;
+  auto &valderef = crit.rvalue_max_deref;
   auto &q0 = crit.rdata;
   if (valmax < (FLT_MAX)) {  // user has set a max value to check
     par_for_outer("MaxRefCond",DevExeSpace(), 0, 0, 0, (nmb-1),
@@ -216,8 +219,8 @@ void RefinementCriteria::CheckMinMax(MeshBlockPack* pmbp, RefCritData crit) {
       },Kokkos::Max<Real>(team_qmax));
       // only derefine when flag has not been set by other criteria
       int &flag = refine_flag.d_view(m+mbs);
-      if  (team_qmax > valmax)                 {flag = 1;}
-      if ((team_qmax < valmax) && (flag == 0)) {flag = -1;}
+      if  (team_qmax > valmax)                   {flag = 1;}
+      if ((team_qmax < valderef) && (flag == 0)) {flag = -1;}
     });
   }
 
@@ -269,6 +272,7 @@ void RefinementCriteria::CheckSlope(MeshBlockPack* pmbp, RefCritData crit) {
   auto &three_d = pmbp->pmesh->three_d;
 
   auto &valmax = crit.rvalue_max;
+  auto &valderef = crit.rvalue_max_deref;
   auto &q0 = crit.rdata;
   if (valmax < (FLT_MAX)) {  // user has set a max value to check
     par_for_outer("MaxRefCond",DevExeSpace(), 0, 0, 0, (nmb-1),
@@ -320,6 +324,7 @@ void RefinementCriteria::CheckSecondDeriv(MeshBlockPack* pmbp, RefCritData crit)
   auto &three_d = pmbp->pmesh->three_d;
 
   auto &valmax = crit.rvalue_max;
+  auto &valderef = crit.rvalue_max_deref;
   auto &q0 = crit.rdata;
   if (valmax < (FLT_MAX)) {  // user has set a max value to check
     par_for_outer("MaxRefCond",DevExeSpace(), 0, 0, 0, (nmb-1),

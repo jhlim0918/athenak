@@ -44,6 +44,7 @@ struct RefCritData {
   RefCritMethod rmethod;           // refinement method (min_max, slope, etc.)
   std::string rvariable;           // name of variable to be tested for refinement
   Real rvalue_min, rvalue_max;     // min/max criteria for refinement
+  Real rvalue_max_deref;           // derefine below this (default value_max; hysteresis)
   Real rloc_x1, rloc_x2, rloc_x3;  // x1-,x2-,x3-locations of point to refine around
   Real rloc_rad;                   // radius of region around point to be refined
   DvceArray5DnSlice rdata;         // slice of variable "n" in 5D array(m,n,k,j,i)

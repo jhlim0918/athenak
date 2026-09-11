@@ -198,7 +198,7 @@ bool nsh_amr_test = false;
 bool nsh_amr_density = false;
 Real nsh_amr_x1min, nsh_amr_x1max, nsh_amr_x3min, nsh_amr_x3max;
 Real nsh_amr_t_on, nsh_amr_t_off;
-Real nsh_amr_hold, nsh_amr_rho_lev[8];
+Real nsh_amr_hold, nsh_amr_rho_lev[8], nsh_amr_hyst;
 int nsh_amr_nthr = 0;
 
 void DustNSHRefine(MeshBlockPack *pmbp) {
@@ -255,7 +255,16 @@ void DustNSHRefine(MeshBlockPack *pmbp) {
           if (bmax_h(m) > nsh_amr_rho_lev[n]) {target = n + 1;}
         }
         int lev = pmbp->pmb->mb_lev.h_view(m) - root;
-        refine_flag.h_view(m + mbs) = (target > lev) ? 1 : ((target < lev) ? -1 : 0);
+        int flag = 0;
+        if (target > lev) {
+          flag = 1;
+        } else if (target < lev) {
+          // hysteresis: leave a level only once the maximum has fallen below a fraction
+          // of that level's threshold (no flapping at the threshold)
+          if ((lev > nsh_amr_nthr) ||
+              (bmax_h(m) < nsh_amr_hyst*nsh_amr_rho_lev[lev-1])) {flag = -1;}
+        }
+        refine_flag.h_view(m + mbs) = flag;
       }
     }
   }
@@ -320,6 +329,7 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
   nsh_amr_density = pin->GetOrAddBoolean("problem","amr_density",false);
   if (nsh_amr_density) {
     nsh_amr_hold = pin->GetOrAddReal("problem","amr_hold_time",0.0);
+    nsh_amr_hyst = pin->GetOrAddReal("problem","amr_hyst",0.5);
     nsh_amr_nthr = 0;
     for (int n=1; n<=8; ++n) {
       std::string key = "amr_rho_lev" + std::to_string(n);

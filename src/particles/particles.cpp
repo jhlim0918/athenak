@@ -97,7 +97,7 @@ Particles::Particles(MeshBlockPack *ppack, ParameterInput *pin) :
         // azimuthal velocity lives in IPVZ, matching gas IM3), plus the RK registers
         // (x1,v1), the recorded drag rate R_j, stopping time, and mass
         nrdata = 17;
-        nidata = 3;   // PGID, PTAG, PSP (species index)
+        nidata = 4;   // PGID, PTAG, PSP (species index), PLEV (sampling level)
         break;
       }
     default:
@@ -125,6 +125,14 @@ Particles::~Particles() {
 // those with tag numbers less than ntrack.
 
 void Particles::CreateParticleTags(ParameterInput *pin) {
+  // dust: the sampling level starts unset (the block's level applies until a split)
+  if (particle_type == ParticleType::dust && nprtcl_thispack > 0) {
+    auto &pi0 = prtcl_idata;
+    par_for("plev_init",DevExeSpace(),0,(nprtcl_thispack-1),
+    KOKKOS_LAMBDA(const int p) {
+      pi0(PLEV,p) = -1;
+    });
+  }
   std::string assign = pin->GetOrAddString("particles","assign_tag","index_order");
 
   // tags are assigned sequentially within this rank, starting at 0 with rank=0

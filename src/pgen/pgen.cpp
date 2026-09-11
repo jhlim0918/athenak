@@ -221,6 +221,7 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
     Kokkos::realloc(ppart->prtcl_rdata, ppart->nrdata, 1);
     Kokkos::realloc(ppart->prtcl_idata, ppart->nidata, 1);
   }
+  int prtcl_nid_file = 0;   // integer width per particle in the restart file
   if (ppart != nullptr && !prtcl_insert) {
     int nranks = global_variable::nranks;
     std::vector<int> pcnt(nranks + 2, 0);
@@ -238,7 +239,14 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
       MPI_Bcast(pcnt.data(), (nranks + 2)*sizeof(int), MPI_CHAR, 0, MPI_COMM_WORLD);
     }
 #endif
-    if (pcnt[nranks] != ppart->nrdata || pcnt[nranks+1] != ppart->nidata) {
+    // dust files written before the sampling level PLEV existed carry one integer
+    // less per particle; they are read and PLEV is left unset (-1)
+    prtcl_nid_file = pcnt[nranks+1];
+    bool widths_ok = (pcnt[nranks] == ppart->nrdata) &&
+        ((pcnt[nranks+1] == ppart->nidata) ||
+         ((ppart->particle_type == ParticleType::dust) &&
+          (pcnt[nranks+1] == ppart->nidata - 1)));
+    if (!widths_ok) {
       std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
                 << std::endl << "particle array widths in the restart file ("
                 << pcnt[nranks] << "," << pcnt[nranks+1] << ") differ from the build's ("
@@ -684,7 +692,8 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   if (ppart != nullptr && !prtcl_insert) {
     int npart = ppart->nprtcl_thispack;
     int nrd = ppart->nrdata, nid = ppart->nidata;
-    IOWrapperSizeT pcount = static_cast<IOWrapperSizeT>(nrd + nid);
+    int nid_f = (prtcl_nid_file > 0) ? prtcl_nid_file : nid;   // width in the file
+    IOWrapperSizeT pcount = static_cast<IOWrapperSizeT>(nrd + nid_f);
     IOWrapperSizeT pbase = headeroffset;
     if (single_file_per_rank) {
       pbase += data_size*static_cast<IOWrapperSizeT>(pm->nmb_thisrank);
@@ -708,10 +717,13 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
       for (int n=0; n<nrd; ++n) {
         for (int q=0; q<npart; ++q) {hr(n,q) = buf[n*npart + q];}
       }
-      for (int n=0; n<nid; ++n) {
+      for (int n=0; n<nid_f; ++n) {
         for (int q=0; q<npart; ++q) {
           hi(n,q) = static_cast<int>(std::lround(buf[(nrd+n)*npart + q]));
         }
+      }
+      for (int n=nid_f; n<nid; ++n) {
+        for (int q=0; q<npart; ++q) {hi(n,q) = -1;}
       }
       Kokkos::deep_copy(ppart->prtcl_rdata, hr);
       Kokkos::deep_copy(ppart->prtcl_idata, hi);

@@ -107,8 +107,10 @@ random_seed   = 1
 check_equilibrium = false
 amr_density   = true      # the density criterion below (method = user)
 amr_hold_time = 100.0     # fully refined until the instability has saturated
-amr_rho_lev1  = 0.5       # level 1 where max rho_p > 2.5 x the mean (0.2)
-amr_rho_lev2  = 1.0       # level 2 where max rho_p > 5 x the mean
+amr_rho_lev1  = 0.6       # level 1 where max rho_p > 3 x the mean (0.2)
+amr_rho_lev2  = 2.0       # level 2 where max rho_p > 10 x the mean (the saturated state
+                          # has a median block maximum near 4 x; 2.5 x / 5 x kept 2/3 of
+                          # the box at level 2)
 user_hist     = true
 rho0          = 1.0
 etavk         = 0.05
@@ -132,3 +134,7 @@ dt         = 10.0
 file_type  = bin
 variable   = hydro_w
 dt         = 10.0
+
+<output5>
+file_type  = rst          # restart at the end of the hold phase (variations of the
+dt         = 100.0        # thresholds can start from it: -r si_BA3.00001.rst)
