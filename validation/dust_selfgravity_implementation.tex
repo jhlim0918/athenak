@@ -35,14 +35,16 @@
        deposit fold; (ii): the ideal-gas energy update; (iii): the particle
        timestep under shear; Phase 4c: dust self-gravity; Phase 4d: the vertical
        policy, restart, diagnostics; Phase 5: particles on statically refined meshes;
-       gravity on statically refined meshes}
+       gravity on statically refined meshes; Phase 6: particles on adaptively refined
+       meshes}
 \author{\code{athenak-multigrid} tree, branches \code{dust-multigrid} and \code{dust-smr}\\
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6},
         \code{9a96f9f3}, \code{d39858ac}, \code{a9279dc8},
-        \code{386d5968}; Phase 5 and gravity on refined meshes on \code{dust-smr}:
-        \code{04dbd3dd}, \code{af45c756}, \code{c3d7b308}}
-\date{September 3--10, 2026}
+        \code{386d5968}; Phase 5, gravity on refined meshes and Phase 6 on \code{dust-smr}:
+        \code{04dbd3dd}, \code{af45c756}, \code{c3d7b308}, \code{1c2c0558}, \code{a2252182},
+        \code{06994aa6}, \code{70fc3e82}}
+\date{September 3--11, 2026}
 
 \begin{document}
 \maketitle
@@ -131,6 +133,14 @@ $2\times$ fine image averaged onto their cells), which is conservative, consiste
 exact for a uniform lattice at the finest spacing; the additive exchange, the
 prolongation of the module's copy-exchanged fields, a defect in upstream's particle
 routing to coarser neighbors and the shear machinery at the face level complete it.
+\textbf{Phase 6} takes the particles onto adaptively refined meshes: they are routed to
+their new MeshBlocks inside the remesh (across ranks through the ordinary particle
+pipeline), the dust module rebuilds its per-block state, a criterion on the particle-mesh
+dust density drives the refinement, and the particles of a refining block are split into
+$2^d$ half-fine-cell children so a population keeps its sampling per cell on the finer
+level --- the answer to the aliasing the linA mode exposed in Phase 5. The 2D $r$--$z$
+box, whose shear machinery is inert, is freed from the ring and face policies and
+refines in patches; the Johansen \& Youdin (2007) AB and BA runs are set up on it.
 
 The document also records, for the phases that follow, the integration map derived
 from the code survey: where the gravity solve is called relative to the dust task
@@ -254,6 +264,28 @@ Commit & Phase & Content \\
               \code{fft\_poisson} reduction; \code{\# TS41-MESH-FORCE}, the force-error
               split and argmax, \code{<problem>/probe\_line}; three refined inputs and
               \file{scripts/analysis/grav\_orbit\_period.py} \\
+\code{1c2c0558} & 6 & \file{particles/particles\_amr.cpp} (\fn{RedistributeAfterRemesh},
+              \fn{SplitOnRefine}), \fn{RemapAfterRemesh}/\fn{ExchangeNow}/\fn{InitShearMaps}
+              in \file{bvals\_part.cpp}/\file{bvals.cpp}, \fn{InitShearOffsets} in
+              \file{bvals\_dep.cpp}, the particle and dust hooks in
+              \file{mesh\_refinement.cpp}, \code{dust\_rho} in
+              \file{refinement\_criteria.cpp}, the 3D gate of the shear policies,
+              \fn{DustGasDrag::ReinitAfterMeshUpdate}; \code{dust\_nsh} \code{amr\_test};
+              three inputs \\
+\code{a2252182} & 6 & any number of levels: \code{rfac} $= 2^{l_{\max}-l}$ and images at
+              the root factor, general \fn{RestrictImage}, the image averaged to the
+              neighbour's level in \fn{PackAndSendDeposit} (\fn{SetImageFactors}), the
+              one-level fatal removed; \code{dust\_nsh} \code{lattice\_finest} at any
+              level and the density criterion with a hold time (\code{amr\_density});
+              \file{dust\_nsh\_shear3d\_smr3}, \file{streaming\_BA\_amr3} \\
+\code{06994aa6} & 6 & the particle sampling level \code{PLEV} (\file{athena.hpp},
+              \fn{CreateParticleTags}, \fn{SplitOnRefine}), restart files with three
+              integers per particle still read (\file{pgen.cpp}),
+              \code{value\_max\_deref} in \code{RefinementCriteria},
+              \code{amr\_hyst} in \code{dust\_nsh}; the three science inputs \\
+\code{70fc3e82} & 6 & \code{PLEV} initialised to the block's level at creation and at
+              restart (an unset level re-split the particles of a mesh that starts
+              refined) \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -1287,7 +1319,7 @@ nothing in the particle module follows (\code{PGID} would go stale, and no hook
 redistributes particles), so the dust constructor is fatal on \code{adaptive}. Within
 SMR the shearing-box policies of the gravity track apply unchanged: both shear-periodic
 $x_1$ faces at one uniform level, refined regions spanning the full $x_2$ extent under
-orbital advection, and at most one level of refinement for the dust (the reason is in
+orbital advection, and at most one level of refinement for the dust (lifted in Phase 6, \S\ref{sec:phase6-levels}; the reason is in
 \S\ref{sec:phase5:kernel}). Gravity-free tests first; the gravity path is wired but
 belongs to the next validation step.
 
@@ -1573,6 +1605,167 @@ Phase-4c \file{orbit\_period.py} that hard-coded $z_0 = 0.03$). No change to
 is what these tests certify.
 
 %=========================================================================================
+\section{Phase 6: particles on adaptively refined meshes}
+\label{sec:phase6}
+
+Phase 5 left one sentence in the dust constructor: adaptive refinement is fatal because
+nothing moves the particles when MeshBlocks are created, destroyed or handed to another
+rank. The gas side of the shearing box already had full AMR --- the ring and $x_1$-face
+policies, the ring-wise synchronisation of the refinement flags, the rebuild of the
+boundary GID lists after every remesh --- so this phase adds the particle side and
+nothing else: the particles follow the tree, the dust module rebuilds the little
+per-block state it keeps, a criterion on the particle-mesh dust density drives the
+refinement, and the sampling problem the linA diagnosis exposed (\S\ref{sec:phase5}) is
+answered by splitting the particles of a block that refines; and, for the
+proposal figure that motivated this phase, the finest-kernel deposits are generalised to
+any number of levels (\S\ref{sec:phase6-levels}). The \code{drag\_solver = local}
+requirement stands.
+
+\subsection{Redistribution inside the remesh}
+
+\fn{MeshRefinement::RedistAndRefineMeshBlocks} builds the new tree, the old-to-new GID
+map and the new load balance before it touches any data, and only at its end switches
+the \code{Mesh} and the pack to the new numbering. The particles are routed in between,
+while the pack still carries the \emph{old} numbering (its \code{gids}, \code{mb\_size})
+and the per-old-block refinement flags of that step hold $+1$ (refined), $-2^d$
+(derefined) or $0$: \fn{Particles::RedistributeAfterRemesh}
+(\file{particles/particles\_amr.cpp}) is called right after the flags are set. It hands
+\fn{ParticlesBoundaryValues::RemapAfterRemesh} three device tables --- the new GID of
+each old block of this pack (its own, its first child's, or its parent's), the action,
+and the rank of every new GID --- and one kernel assigns every particle its new GID: the
+old block's map entry, plus, when the block was refined, the child index
+$f_x + 2 f_y + 4 f_z$ from the particle's half of the block in each direction, which is
+the tree's child order (\fn{MeshBlockTree::Refine}: child $n$ has offsets
+$n\,\&\,1$, $(n\gg1)\,\&\,1$, $(n\gg2)\,\&\,1$). Particles whose new block lives on
+another rank are appended to the same send list \fn{SetNewPrtclGID} uses (the append
+through \fn{UpdateGID}, the count and validation through the new \fn{FinishSendList}),
+and \fn{ExchangeNow} runs the ordinary particle pipeline --- count, post receives, pack
+and send, receive and unpack, clear --- to completion outside the task list. Positions
+are untouched; the particle keeps its tag. The Mesh particle counts are refreshed by the
+collective \fn{RemoveDead} at the end (nothing is dead; the Allgather is what is wanted).
+
+After the new MeshBlocks and neighbour tables exist, the routing maps of the
+shear-periodic faces are rebuilt (\fn{ParticlesBoundaryValues::InitShearMaps}, the
+constructor's map build factored out: AMR renumbers the face blocks and may move them),
+and \fn{AdaptiveMeshRefinement} calls \fn{DustGasDrag::ReinitAfterMeshUpdate} next to
+the hydro's \fn{ShearingBox::ReinitAfterMeshUpdate}: the per-block factors
+\code{rfac}/\code{any\_coarse} of the finest-kernel deposits from the new levels
+(\fn{SetRefinementFactors}, shared with the constructor), the per-block global
+$(x_2,x_3)$ offsets of the deposit fold planes in each \code{MeshBoundaryValuesDep}
+(\fn{InitShearOffsets}, likewise factored out), and the shear remaps of $u^*$,
+$\rho_{\rm dust}$ and $g$. Every field and buffer array was already sized for
+\code{max\_nmb\_per\_rank}; with AMR the $2\times$ fine images are allocated at
+construction whether or not a block is coarse at $t = 0$, since any block may become the
+coarser neighbour later.
+
+\subsection{Splitting on refinement}
+
+A coarse-sampled population entering a finer level keeps its coarse sampling: a lattice
+at twice the fine spacing is aliased by the fine kernel into an $O(1)$ comb, a random
+population's shot noise rises by $2^d$ (validation document, \S10.5). With
+\code{<particles>/split\_on\_refine = true}, \fn{Particles::SplitOnRefine} runs before
+the remap: every particle of a refining block becomes $2^d$ children at the parent
+position offset by $\pm\Delta x_{\rm old}/4$ in each direction --- half a fine cell, so a
+lattice at the old cell centres becomes exactly the lattice at the new cell centres ---
+each with the parent's velocity, drag rates and stopping time, the RK position registers
+shifted with the position, and $1/2^d$ of the mass. The parent's slot becomes child 0; the
+others are appended with fresh tags above the global maximum (one \code{Allreduce} and
+one \code{Allgather} fix the per-rank ranges). Mass and momentum are conserved exactly and
+the sampling per cell is preserved on the fine level. What splitting cannot do is keep a
+\emph{lattice} exact at the edge of the refined region: the children of a lattice form
+another lattice (the corners of the fine cells, for a lattice at the fine centres), and
+where two different lattices meet the truncated partial sums of the kernel leave the
+interface cells at $7/8$ and $9/8$ of the uniform density, the Phase-5 artifact in a new
+guise (validation document, \S12.2). A random population has no such term in
+expectation, so the science runs split and the lattice tests do not.
+
+The first science runs exposed the obvious hazard of splitting without merging: a block
+whose maximum sits near the threshold refines, derefines at the next interval, refines
+again, and each refinement quadrupled its particles (the AB run went from $1.05$ to
+$1.44$ million particles in one time unit with twelve blocks refined; the three-level BA
+run from $0.26$ to $0.76$ million in ten). Two remedies, both kept. Each dust particle
+now carries a \emph{sampling level} (\code{PLEV}, a fourth integer: the level of its
+block when it was created, or read from an older restart file), children take the new
+level, and a
+particle is a parent only if its sampling level is below the new level: a derefined
+block that refines again keeps its particle count, and a particle that migrates into a
+block refining beyond its own level is still split. Restart files written before the
+fourth integer existed are read with the level set to that of the particle's block. And the criteria gained
+hysteresis: \code{<amr\_criterion>/value\_max\_deref} (default \code{value\_max})
+derefines only below a second, lower value, and the generator's density mode leaves a
+level only once the maximum has fallen below \code{amr\_hyst} (default $0.5$) of that
+level's threshold. A child of a parent within half a fine cell of the block edge lands just
+outside its block: the deposit halo tolerates one fine cell, and the next migration pass
+routes it to the neighbour. Nothing merges particles on derefinement; a derefined block
+simply carries more particles. The routing itself runs whether or not splitting is on.
+
+\subsection{The dust density criterion}
+
+\code{<amr\_criterion>/variable = dust\_rho} (\code{method = min\_max}, \code{value\_max}
+to refine a block whose maximum exceeds it, derefining below) is the particle-mesh dust
+density of the module's own kernel, \code{rho\_dust}, a shallow slice in
+\code{RefinementCriteria}. It is only up to date when something deposits it, so on the
+check cycles (\code{ncycle\_check}) \fn{CheckForRefinement} calls
+\fn{DustGasDrag::AssembleDustDensityNow} --- the synchronous deposit with the additive
+exchange, the shear fold, the copy exchange, the shear remap and the prolongation, the
+same chain the \code{dust\_dpm} output and the Poisson source use --- when any criterion
+names it. The cost is one deposit and its exchanges per check cycle.
+
+\subsection{The 2D $r$--$z$ shearing box}
+
+The two refinement policies of the shearing box exist for machinery that runs only in
+3D (or the unimplemented 2D $r$--$\phi$): the shear-periodic remap and orbital advection
+tasks are guarded by \code{three\_d || shearing\_box\_r\_phi} in the hydro task list, and
+the 2D $r$--$z$ box has plain periodic $x_1$ faces. Phase 5 nevertheless applied both
+policies there (the linA input refined two full-height radial columns). They are now
+gated to \code{three\_d} in \code{MeshRefinement} and in
+\fn{Mesh::CheckShearingBoxRefinement}, so the 2D box refines in patches; nothing changes
+in 3D.
+
+\subsection{Any number of levels}
+\label{sec:phase6-levels}
+
+Phase 5 allowed one level of dust refinement because a block deposits through a
+$2\times$ image and the exchange injected image cells straight into a finer neighbour's
+cells, which is consistent only if that neighbour is at the finest level. Both statements
+generalise. A block $l$ levels below the finest now scatters into a $2^l$ image
+(\code{rfac(m)} $= 2^{l_{\max}-l}$, images allocated at the root block's factor;
+\fn{DepositStencil} took $r$ all along) and \fn{RestrictImage} averages $r^d$ image cells
+onto each of its cells. In the exchange, the message to a finer neighbour still carries
+$2^d$ values per ghost cell --- the cells at the \emph{neighbour's} level, which is one
+finer than the sender's by the 2:1 rule --- and each value is now the mean of the
+$(r/2)^d$ image cells it covers (\fn{PackAndSendDeposit}, the per-block factors handed
+over by \fn{SetImageFactors}; without them the old $2\times$ reading is kept, which is
+what the deposit unit test uses). Messages to coarser neighbours restrict the block's own
+cells, as before, and same-level messages send them. So every cell of every level
+receives exactly the finest-kernel weight of every nearby particle, averaged over its
+own volume, whatever the levels of the blocks around it; the constructor's one-level
+fatal is gone. The generator's \code{lattice\_finest} places $2^{d(l_{\max}-l)}$ points
+per cell accordingly.
+
+\subsection{Files, hooks, parameters}
+
+Generic: \file{particles/particles\_amr.cpp} (new: \fn{RedistributeAfterRemesh},
+\fn{SplitOnRefine}), \file{particles/particles.\{hpp,cpp\}} (\code{split\_on\_refine}),
+\file{bvals/bvals\_part.cpp} (\fn{RemapAfterRemesh}, \fn{ExchangeNow},
+\fn{FinishSendList}), \file{bvals/bvals.\{hpp,cpp\}} (\fn{InitShearMaps}),
+\file{bvals/bvals\_dep.cpp} (\fn{InitShearOffsets}, \fn{ReinitAfterMeshUpdate}),
+\file{mesh/mesh\_refinement.cpp} (the two particle hooks in
+\fn{RedistAndRefineMeshBlocks}, the dust hook in \fn{AdaptiveMeshRefinement}, the
+\code{dust\_rho} assembly in \fn{CheckForRefinement}, the 3D gate),
+\file{mesh/refinement\_criteria.cpp} (\code{dust\_rho}), \file{mesh/build\_tree.cpp} and
+\file{mesh/mesh.cpp} (the 3D gate). Dust: \file{dust/dust.\{hpp,cpp\}}
+(\fn{SetRefinementFactors}, \fn{ReinitAfterMeshUpdate}, the fatal removed).
+Generators and inputs: \code{dust\_nsh} \code{<problem>/amr\_test} with
+\code{amr\_x1min/x1max}, \code{amr\_x3min/x3max}, \code{amr\_t\_on/t\_off} (a user
+criterion that refines a box for a time window, so a lattice passes through one refine
+and one derefine event), \file{inputs/dust/dust\_nsh\_shear3d\_amr.athinput}; the
+Johansen \& Youdin (2007) nonlinear runs \file{inputs/dust/streaming\_\{AB,BA\}\_amr.athinput}
+(2D $r$--$z$, \code{dust\_nsh} with random placement, AMR on \code{dust\_rho}, splitting on;
+uniform twins by \code{mesh\_refinement/refinement=none}). Figures:
+\file{validation/figures/plot\_dust6\_si\_amr.jl}.
+
+%=========================================================================================
 \section{What the next phases must add}
 \label{sec:next}
 
@@ -1598,20 +1791,19 @@ The survey established these gaps; they are listed in the order they bite.
       stopping time and mass; a Roche-density / Hill-radius clump finder does not exist.
 \item \textbf{Vertical boundary policy (4c/4d).} \textbf{Done}, \S\ref{sec:phase4d}:
       outflow removal with the mass accounted.
-\item \textbf{Refinement (Phase 5).} \textbf{Done} for static refinement,
+\item \textbf{Refinement (Phases 5 and 6).} \textbf{Done} for static refinement,
       \S\ref{sec:phase5}: deposits with the finest-level kernel everywhere, the additive
       exchange across one level jump, prolongated copy exchanges, the migration fix, the
-      shear machinery at the face level. Still open: adaptive refinement (a particle
-      redistribution hook next to \fn{ShearingBox::ReinitAfterMeshUpdate}), more than one
-      level of dust refinement, the coupled drag solvers under refinement,
-      and particle splitting on entry
-      into a finer level: a coarse-sampled population keeps its coarse sampling there
-      (the linA diagnosis of the validation document, \S10.5: a lattice at twice the
-      fine spacing is aliased by the fine kernel into an $O(1)$ comb). Until then the
-      particle count is set by the finest level of the dust layer; the test generators
-      \code{dust\_nsh} and \code{streaming\_linear} have \code{lattice\_finest}.
-      \code{<mesh\_refinement>/prolong\_limiter = none} (unlimited central slopes in
-      \fn{ProlongCC}) is available as a diagnostic.
+      shear machinery at the face level; and \textbf{done} for adaptive refinement,
+      \S\ref{sec:phase6}: the particles are routed to their new MeshBlocks inside the
+      remesh, across ranks, the dust state is rebuilt, a criterion on the dust density
+      drives the refinement, and particles are split on refinement (the answer to the
+      linA diagnosis of the validation document, \S10.5: a coarse-sampled population
+      entering a finer level keeps its coarse sampling), with any number of levels
+      (\S\ref{sec:phase6-levels}). Still open: the coupled drag solvers under
+      refinement, merging on derefinement, and a load balance that counts particles (the
+      cost estimate is one per MeshBlock). \code{<mesh\_refinement>/prolong\_limiter = none} (unlimited
+      central slopes in \fn{ProlongCC}) is available as a diagnostic.
 \item \textbf{Gravity on refined meshes.} \textbf{Tested},
       \S\ref{sec:gravsmr}: the dust source is exact on every level (the NGP twin
       reproduces the gas-only reference on the same refined mesh to every digit, on 4
@@ -1672,9 +1864,14 @@ boundaries, or shear-periodic $x_1$ in 3D. Any EOS (the isothermal requirement f
 \code{gravity} & (\code{<gravity>} present) & dust takes part in self-gravity (3D only) \\
 \code{gravity\_source} & true & the PM dust density joins the Poisson source \\
 \code{gravity\_force} & true & particles feel $-\nabla\phi$ of the total potential \\
-\multicolumn{3}{@{}p{15.4cm}@{}}{\small Static refinement (\code{<mesh\_refinement>/refinement = static}) is
-  supported with one level, MeshBlocks of $\ge 2\,$\code{nghost} cells per direction and
-  \code{drag\_solver = local} (\S\ref{sec:phase5}); \code{adaptive} is fatal.} \\
+\multicolumn{3}{@{}p{15.4cm}@{}}{\small Refinement (\code{<mesh\_refinement>/refinement = static} or
+  \code{adaptive}, any number of levels) is supported with MeshBlocks of
+  $\ge 2\,$\code{nghost} cells per direction and \code{drag\_solver = local}
+  (\S\ref{sec:phase5}, \S\ref{sec:phase6});
+  with \code{adaptive}, \code{<particles>/split\_on\_refine} (default false) splits the
+  particles of a refining MeshBlock into $2^d$ children (once per level, by the particle's
+  sampling level), \code{<amr\_criterion>/variable = dust\_rho} refines on the particle-mesh
+  dust density, and \code{value\_max\_deref} adds hysteresis.} \\
 \code{gamma\_switch} & false & Krapp et al.\ eq.~18: $\gamma \to 1/2$ when
   $\Delta t > \max t_s$ \\
 \code{stopping\_time\_mode} & species\_fixed & or \code{particle\_static}, \code{dynamic} \\
