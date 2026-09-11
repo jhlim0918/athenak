@@ -28,6 +28,8 @@ __pycache__/
 # compressed bin archives (Dropbox-only, too large for git)
 validation/bin/
 
+# movies
+validation/*.mp4
 # LaTeX build products (validation documents)
 validation/*.aux
 validation/*.log
