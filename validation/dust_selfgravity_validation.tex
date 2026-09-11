@@ -24,7 +24,7 @@
        Dust Self-Gravity (Phase 4c), and the Vertical Policy, Restart\\
        and Diagnostics (Phase 4d)}
 \author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}}
-\date{September 3--10, 2026}
+\date{September 3--11, 2026}
 
 \begin{document}
 \maketitle
@@ -1353,6 +1353,22 @@ for the $H_g = 2.17$ Gaussian truncated at $\pm3.45$, $\sigma_{v_z}$ growing fro
 $1.5$ as the layer starts to settle; and the Table-1 script runs end to end on the same
 directory (all quantities produced; the physics of a $0.1/\Omega$ mini run is of course
 meaningless).
+
+The three-species layer (implementation \S9.5, \file{run/dust4d/baehr3sp/}) was
+exercised in the same box from the same dump: 2208 particles, 736 per species at
+$St = 0.01, 0.1, 1$, each species $Z = 0.01/3$; back-reaction off serially and on 4
+ranks (histories and particle histories identical to $0.0$); back-reaction on, where
+the hybrid coupling takes the backward-Euler drag in every dust cycle ($\chi$ up to
+$278$ from the $St = 0.01$ particles in the floor halo) and conserves the dust mass at
+normal steps, whereas the PC2 coupling of the single-species add-on collapses to
+$\Delta t = 5\times10^{-5}$ and loses $23\%$ of the dust through the faces by $t =
+0.5$ (archived as the failing log; IMEX under \code{imex2+} also runs clean); and the
+pressure gradient on, where the gas is shifted by $-\eta v_K = -0.1063$ at insertion
+and the particle history shows the species relaxing to the NSH drift ($\langle v_y
+\rangle = -0.100$, $-0.095$, $-0.027$ and $\langle v_x\rangle = -0.002$, $-0.016$,
+$-0.008$ for $St = 0.01, 0.1, 1$ after $0.35/\Omega$, the $St = 1$ species still
+relaxing toward $-2\,St\,\eta v_K/(1+St^2) = -0.106$). The per-species $\sigma_z$
+columns of the particle history are what the science run reads for $H_d(St)$.
 The irradiation floor of the cooling (\code{bcool\_cs2\_floor}) was checked for
 side effects on the same box: with the floor, without it, and with cooling off, the 40
 first steps have identical $\Delta t$ histories. For the Vista estimate the archived
