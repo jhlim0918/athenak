@@ -28,6 +28,10 @@ __pycache__/
 # compressed bin archives (Dropbox-only, too large for git)
 validation/bin/
 
+# the papers the documents cite (Dropbox-only): published PDFs, ~22 MB, not ours to
+# redistribute and permanent repo weight
+docs/
+
 # movies
 validation/*.mp4
 # LaTeX build products (validation documents)
