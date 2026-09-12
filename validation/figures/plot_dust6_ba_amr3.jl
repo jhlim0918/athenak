@@ -2,8 +2,9 @@
 # 2D r-z) in its saturated state on a multi-level adaptive mesh (DUST6_BA=BA_amr3: root
 # 64^2 + 2 levels; BA_amr4 (default): root 32^2 + 3 levels; finest 256^2 = JY07's
 # resolution; inputs/dust/streaming_BA_amr{3,4}.athinput).  The particle-mesh
-# dust density is shown at the finest resolution with every MeshBlock outlined (root:
-# white, then blue, cyan, yellow by level) -- the counterpart of Figure 5 of the 2019
+# dust density is shown in cividis at the finest resolution, with every MeshBlock
+# outlined (root: white, then magenta, spring green, red by level -- all off the
+# cividis blue-to-yellow axis) -- the counterpart of Figure 5 of the 2019
 # proposal (Athena++ with three AMR levels).  The title reports the cell count against
 # the uniform 256^2 mesh.
 # Data: validation/run/dust6/BA_amr3/ (README there); DUST6_RUN=<dir> overrides.
@@ -39,9 +40,9 @@ fig = Figure(size=(1000, 900))
 ax = Axis(fig[1, 1], xlabel="x  (H)", ylabel="z  (H)", aspect=DataAspect(),
           title=@sprintf("JY07 BA, %d AMR levels, t = %.0f Ω⁻¹:  %s MeshBlocks (%s), %.1f%% of the cells of the uniform 256² mesh",
                          lmax+1, fd.time, levstr, levnames, 100*ncells/nuni))
-hm = heatmap!(ax, xe, ze, log10.(max.(a ./ eps0, 1e-2)), colormap=:inferno, colorrange=(-1.7, 0.8))
+hm = heatmap!(ax, xe, ze, log10.(max.(a ./ eps0, 1e-2)), colormap=:cividis, colorrange=(-1.7, 0.8))
 # outline every MeshBlock, one colour per level (coarse = bold, finest = thin)
-lc = (:white, :magenta, :cyan, :springgreen)
+lc = (:white, :magenta, :springgreen, :red)
 lw = (2.2, 1.8, 1.1, 0.7)
 for (r, lev) in block_outlines(fd)
     lines!(ax, [r[1], r[2], r[2], r[1], r[1]], [r[3], r[3], r[4], r[4], r[3]],

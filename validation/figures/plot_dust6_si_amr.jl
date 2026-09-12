@@ -92,12 +92,12 @@ function snapshot!(pos, d, base, title; outline=false)
     a, xe, ye = assemble_finest(fd, "dustdpm")
     ax = Axis(fig[pos...], xlabel="x  (H)", ylabel="z  (H)", aspect=DataAspect(),
               title=@sprintf("%s, t = %.1f Ω⁻¹", title, fd.time))
-    hm = heatmap!(ax, xe, ye, log10.(max.(a, 1e-3)), colormap=:inferno, colorrange=(-1.5, 2))
+    hm = heatmap!(ax, xe, ye, log10.(max.(a, 1e-3)), colormap=:cividis, colorrange=(-1.5, 2))
     if outline
         for (r, lev) in block_outlines(fd)
             lev > 0 || continue
             lines!(ax, [r[1], r[2], r[2], r[1], r[1]], [r[3], r[3], r[4], r[4], r[3]],
-                   color=(:cyan, 0.9), linewidth=0.8)
+                   color=(:magenta, 0.9), linewidth=0.8)
         end
     end
     ax, hm
