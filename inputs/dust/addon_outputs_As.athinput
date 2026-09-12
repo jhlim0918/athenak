@@ -1,0 +1,12 @@
+# Addon for restarting an already-running job with the revised mesh outputs:
+#     ibrun .../athena -r $(ls rst/*.rst | tail -1) -i addon_outputs.athinput -t <walltime>
+# AthenaK merges these blocks over the input stored in the restart file.
+<output3>
+file_type  = vtk
+variable   = dust_dpm
+dt         = 6.283185307179586     # 1 P
+
+<output4>
+file_type  = vtk
+variable   = hydro_w
+dt         = 31.41592653589793     # 5 P

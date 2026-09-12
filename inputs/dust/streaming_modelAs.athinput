@@ -25,7 +25,15 @@
 # Diagnostics: <problem>/user_hist = true writes the complex Fourier projection of the
 # particle mass distribution and of the gas density and radial momentum onto the seeded
 # (k_x, k_z) mode, so the growth rate is a linear regression of ln|amplitude| -- the
-# mesh-independent measure, and the one that rejects the grid-scale sideband.
+# mesh-independent measure, and the one that rejects the grid-scale sideband.  THE
+# HISTORY IS THE LINEAR DIAGNOSTIC, NOT THE DUMPS: AthenaK writes mesh outputs (bin and
+# vtk alike) as float32, whose relative resolution is 1.2e-7, while the seeded mode
+# starts at drho_p/rho_p = 2e-7 and drho_g/rho_g ~ 6e-12.  Nothing of the mode is
+# recoverable from a dump until it has grown by some three orders of magnitude (at the
+# ~0.0026 rate Athena measures at this resolution, around t = 300-400 P); the .user.hst
+# columns are written in %.14e and are exact throughout.  (This is the same limitation
+# the Athena C runs hit, and why vtk_dbl was added there; AthenaK has no double-precision
+# mesh output.)  The dumps are for the saturated morphology, where amplitudes are O(1).
 #
 # WHAT TO EXPECT.  At 256^2 this box gives ~43 cells per wavelength of the seeded mode,
 # which is marginal for a second-order scheme: in Athena the same setup grew at
@@ -142,12 +150,12 @@ file_type  = phst             # particle history
 dt         = 0.06283185307179586   # 0.01 P
 
 <output3>
-file_type  = bin              # particle-mesh dust density
+file_type  = vtk              # particle-mesh dust density
 variable   = dust_dpm
-dt         = 31.41592653589793     # 5 P
+dt         = 6.283185307179586     # 1 P
 
 <output4>
-file_type  = bin              # gas primitives
+file_type  = vtk              # gas primitives
 variable   = hydro_w
 dt         = 31.41592653589793     # 5 P
 
