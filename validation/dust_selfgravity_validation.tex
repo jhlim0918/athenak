@@ -1871,14 +1871,14 @@ hysteresis is used on every adaptive run.
 \midrule
 \multicolumn{8}{@{}l}{\emph{run AB}: $\tau_s = 0.1$, $\epsilon = 1$ (JY07: $256^2$, $1.6\times10^6$ particles, to $t = 50$)}\\
 \code{AB\_u128}      & $2\eta r$ & $128^2$ & 1 (uniform) & $128^2$ & $64$            & $2.6\times10^5$ (16) & $t = 5$, stopped \\
-\code{AB\_u256}      & $2\eta r$ & $256^2$ & 1 (uniform) & $256^2$ & $128$           & $1.0\times10^6$ (16) & $t = 36$ of 40 \\
+\code{AB\_u256}      & $2\eta r$ & $256^2$ & 1 (uniform) & $256^2$ & $128$           & $1.0\times10^6$ (16) & $t = 40$, done \\
 \code{AB\_amr128}    & $2\eta r$ & $128^2$ & 2           & $256^2$ & $64 \to 128$    & $2.6\times10^5$ (16) & $t = 16$, stopped \\
-\code{AB\_amr256}    & $2\eta r$ & $256^2$ & 2           & $512^2$ & $128 \to 256$   & $1.0\times10^6$ (16) & $t = 9$ of 30 \\
+\code{AB\_amr256}    & $2\eta r$ & $256^2$ & 2           & $512^2$ & $128 \to 256$   & $1.0\times10^6$ (16) & $t = 12$ of 30 \\
 \midrule
 \multicolumn{8}{@{}l}{\emph{run BA}: $\tau_s = 1$, $\epsilon = 0.2$ (JY07: $256^2$, $1.6\times10^6$ particles, to $t = 500$)}\\
 \code{BA\_amr256}    & $40\eta r$ & $256^2$ & 2 & $512^2$ & $6.4 \to 12.8$ & $1.0\times10^6$ (16) & $t = 52$, stopped \\
 \code{BA\_amr3}      & $40\eta r$ & $64^2$  & 3 & $256^2$ & $1.6 \to 6.4$  & $2.6\times10^5$ (4) & $t = 300$, done \\
-\code{BA\_amr4}      & $40\eta r$ & $32^2$  & 4 & $256^2$ & $0.8 \to 6.4$  & $2.6\times10^5$ (4) & $t = 160$ of 300 \\
+\code{BA\_amr4}      & $40\eta r$ & $32^2$  & 4 & $256^2$ & $0.8 \to 6.4$  & $2.6\times10^5$ (4) & $t = 231$ of 300 \\
 \bottomrule
 \end{tabular}
 
@@ -1915,7 +1915,8 @@ Run BA reproduces the JY07 morphology. Rendered in their Figure~2 convention
 ($\rho_p/\rho_g$, linear from 0 to 1), our $t = 40$ frame is their $t = 40$ frame: the
 same regular train of tilted linear waves at the same wavelength; $t = 80$ is the same
 clumpy turbulent state; and the box-spanning, vertically aligned, radially tilted
-filament they show at $t = 160$ does form. It arrives late, at $t \simeq 230$: the
+filament they show at $t = 160$ does form (Fig.~\ref{fig:ba-jy07}). It arrives late,
+at $t \simeq 230$: the
 $z$-averaged radial contrast holds at $1.1$ through the linear phase, reaches $1.8$ at
 $t = 160$, then jumps to $5.6$ at $t = 220$ and $7.1$ at $t = 230$, with the peak density
 climbing from $79$ to $315$ times the mean and the share of solid mass in the densest
@@ -1940,14 +1941,57 @@ root block there spans a quarter of the box, and the filament network never leav
 region that large empty. That is what the four-level run addresses, with $0.25\,H$
 level-1 blocks.
 
-Run AB is still in progress. The uniform $256^2$ reference turns nonlinear between
-$t = 6$ and $8$, with the maximum dust density rising from $2$ to $10$ times the mean and
-the vertical gas kinetic energy growing exponentially at $\simeq 1.1$ per unit time from
-$t = 5$; by $t = 20$ the peak is $22$ times the mean. The structures are the cavities JY07
-describe for the tightly coupled runs: evacuated bubbles about $0.014\,H$ across with thin
-dense rims and trailing filaments, not a filament network. The adaptive twin at the same
-root resolution refines exactly those rims (twelve level-1 blocks, $1\%$ of the box, at
-first refinement) and is running to $t = 30$.
+Run AB reproduces the other half of JY07, their cavitation sequence. The uniform $256^2$
+reference is complete to $t = 40$ and follows their Figure~5 (Fig.~\ref{fig:ab-jy07}): the
+instability turns nonlinear between $t = 6$ and $8$, not by growing smooth waves but by
+opening a few evacuated cavities with thin dense inner rims --- at $t = 8$ two of them,
+about $0.3\,\eta r$ across, with trailing filaments, on an otherwise unperturbed
+background. The cavities expand, by $t = 16$ the box is a fully turbulent web of thin
+filaments separating black voids, and from $t \simeq 20$ the state is statistically
+steady. The maximum dust density rises from $2$ to $13$ times the mean between $t = 4$ and
+$9$, peaks at $31.8$ at $t = 32$ and fluctuates between $19$ and $29$ thereafter; JY07
+quote overdensities of twenty or more for this run. The vertical gas kinetic energy grows
+exponentially at $\simeq 1.1$ per unit time from $t = 5$, and the $z$-averaged radial
+profile stays nearly flat (contrast $1.8$ at $t = 32$): AB makes a homogeneous turbulent
+web, not the radial filament of BA. The adaptive twin at the same root resolution refines
+exactly the dense rims (twelve level-1 blocks, $1\%$ of the box, at its first refinement)
+and is running to $t = 30$.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\linewidth]{figures/dust6_ab_jy07.png}
+\caption{Run AB, uniform $256^2$, in the convention of JY07's Figure~5: the particle
+density $\rho_p/\rho_g$ on a linear scale from 0 (black) to 5, axes in $\eta r$. Cavities
+with dense rims open at $t = 8$, expand, and leave a fully turbulent filament web by
+$t = 16$ that is statistically steady thereafter. Rendered by
+\file{validation/figures/plot\_jy07\_convention.jl}, which draws either run in its
+published convention.}
+\label{fig:ab-jy07}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.8\linewidth]{figures/dust6_ba_jy07.png}
+\caption{Run BA, three AMR levels, in the convention of JY07's Figure~2 ($\rho_p/\rho_g$,
+linear 0 to 1, axes in $\eta r$): the linear wave train at $t = 40$, the cascade at
+$t = 140$ and $200$, and the box-spanning, vertically aligned, radially tilted filament at
+$t = 230$ --- their $t = 40$, $80$--$120$ and $160$ frames respectively, about
+$70\,\Omega^{-1}$ later.}
+\label{fig:ba-jy07}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.86\linewidth]{figures/dust6_ba_amr3.png}
+\caption{The same BA state at $t = 230$ with the mesh drawn: magenta outlines the $39$
+derefined level-1 MeshBlocks ($128^2$ effective) and cyan the $100$ at the finest level
+($256^2$, JY07's resolution), $54\%$ of the cells of the uniform mesh. Every derefined
+block lies inside a void and the whole filament network is at the finest level; the
+speckle inside the coarse blocks is the particle shot noise of cells twice as wide at a
+tenth of the mean density. Rendered by
+\file{validation/figures/plot\_dust6\_ba\_amr3.jl}.}
+\label{fig:ba-mesh}
+\end{figure}
 
 \begin{figure}[htbp]
 \centering
