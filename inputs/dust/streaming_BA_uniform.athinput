@@ -1,0 +1,125 @@
+# AthenaK input file: nonlinear streaming instability, run BA of Johansen & Youdin
+# (2007, ApJ 662, 627; Table 1) on a UNIFORM grid, at their published configuration:
+# tau_s = 1.0, eps = 0.2, box 40 eta r square, 256^2, 1.6e6 particles, t = 500/Omega.
+#
+# Units Omega = c_s = rho0 = 1 with eta v_K = 0.05 c_s, so eta r = 0.05 H and the box is
+# 2H square = 40 eta r (6.4 cells per eta r, exactly JY07's resolution).  The radial
+# pressure gradient acts on the gas alone as a_x = 2*Omega*eta v_K = 0.1
+# (<hydro_srcterms>/const_accel), which is how JY07 impose it.  2D radial-vertical
+# geometry: x1 = radial, x2 = vertical, azimuthal velocity in IM3/IPVZ, plain periodic
+# x1 (no orbital advection, no vertical gravity).
+#
+# Initial condition: the gas and the particles at the exact NSH drift equilibrium for
+# (tau_s, eps), particles placed uniformly at random (problem/particle_placement =
+# random, random_seed = 1), so the seed is the white Poisson noise of the particle
+# distribution -- JY07's "warm start", their sec. 3.1.  <particles>/ppc = 25 gives
+# 1,638,400 particles = 25 per cell, matching their 1.6e6 (they quote ~25 per grid
+# point).
+#
+# Expected evolution (their Figs. 2 and 4): linear waves to t ~ 40, a clumpy turbulent
+# state by t ~ 80, an upward cascade into extended vertical filaments over t = 100-200,
+# and a maximum particle density about two orders of magnitude above the mean.
+#
+# Vista: scripts/cluster/si_BA_uniform.slurm (1 node, 64 ranks).  Restart chaining is
+# in that script; the run writes rst/ every 25/Omega.
+
+<comment>
+problem   = JY07 run BA, uniform 256^2, 2D r-z
+
+<job>
+basename  = si_BA
+
+<mesh>
+nghost    = 3             # ppmx needs 3
+nx1       = 256           # radial: 6.4 cells per eta r (JY07)
+x1min     = -1.0          # 2 H = 40 eta r
+x1max     = 1.0
+ix1_bc    = periodic      # 2D r-z: no azimuthal shift, plain periodic
+ox1_bc    = periodic
+nx2       = 256           # vertical
+x2min     = -1.0
+x2max     = 1.0
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16            # 16 x 16 = 256 MeshBlocks: 4 per rank at 64 ranks
+nx2       = 16
+nx3       = 1
+
+<time>
+evolution  = dynamic
+integrator = imex2+       # required by the dust module's IMEX drag
+cfl_number = 0.3
+nlim       = -1
+tlim       = 500.0        # JY07 Table 1
+ndiag      = 1000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = ppmx
+rsolver     = roe
+
+<hydro_srcterms>
+const_accel     = true    # radial pressure-gradient mimic, gas only
+const_accel_val = 0.1     # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 25.0      # 25 per cell -> 1.638e6 particles (JY07: 1.6e6)
+
+<dust>
+coupling      = imex
+nspecies      = 1
+taus_1        = 1.0       # JY07 run BA
+dust_to_gas   = 0.2
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+drag_solver   = local
+
+<problem>
+pgen_name     = dust_nsh
+particle_placement = random   # warm start: Poisson shot noise seeds the instability
+random_seed   = 1
+check_equilibrium = false
+user_hist     = true          # per-species mean drift velocities
+rho0          = 1.0
+etavk         = 0.05
+eps_1         = 0.2
+
+<output1>
+file_type  = hst              # gas history
+dt         = 0.5
+data_format = %.14e
+
+<output2>
+file_type  = phst             # particle history: max PM dust density, dispersions
+dt         = 0.5
+
+<output3>
+file_type  = bin              # particle-mesh dust density
+variable   = dust_dpm
+dt         = 5.0
+
+<output4>
+file_type  = bin              # gas primitives
+variable   = hydro_w
+dt         = 5.0
+
+<output5>
+file_type  = rst
+dt         = 25.0
