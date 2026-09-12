@@ -111,12 +111,12 @@ file_type  = phst             # particle history: max PM dust density, dispersio
 dt         = 0.5
 
 <output3>
-file_type  = bin              # particle-mesh dust density
+file_type  = vtk              # particle-mesh dust density
 variable   = dust_dpm
 dt         = 5.0
 
 <output4>
-file_type  = bin              # gas primitives
+file_type  = vtk              # gas primitives
 variable   = hydro_w
 dt         = 5.0
 
