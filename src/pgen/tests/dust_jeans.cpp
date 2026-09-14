@@ -19,6 +19,12 @@
 //! sqrt(c^2 + s^2) and its growth rate is the test.  Requires <gravity> (periodic
 //! multigrid or fft), <hydro_srcterms> self_gravity = true, <dust> gravity = true,
 //! <particles> ppc = nspecies.
+//! ROTATING (a <shearing_box> block, shear-periodic x1): the same axisymmetric mode with
+//! the Coriolis and shear terms, every component gaining an azimuthal (peculiar) velocity
+//! perturbation vgy_amp/phase, vdy_amp_s/phase_s (the script's --omega branch); the
+//! generator itself only adds those velocities, the shearing-box modules do the rest.
+//! Encloses the secular gravitational instability (Ward 2000; Youdin 2005, 2011) and the
+//! rotating Jeans problem of Chandrasekhar (1961).
 
 #include <cmath>
 #include <iostream>
@@ -71,9 +77,11 @@ void ProblemGenerator::DustJeans(ParameterInput *pin, const bool restart) {
   Real rho_amp = pin->GetOrAddReal("problem", "rho_amp", 1.0e-4);
   Real vg_amp = pin->GetOrAddReal("problem", "vg_amp", 0.0);
   Real vg_phase = pin->GetOrAddReal("problem", "vg_phase", 0.0);
+  Real vgy_amp = pin->GetOrAddReal("problem", "vgy_amp", 0.0);      // rotating problem
+  Real vgy_phase = pin->GetOrAddReal("problem", "vgy_phase", 0.0);
   int nspec = pmbp->pdust->nspecies;
-  // per species: eps, rhod_amp, rhod_phase, vd_amp, vd_phase
-  DualArray2D<Real> spdat("jeans_spdat", nspec, 5);
+  // per species: eps, rhod_amp, rhod_phase, vd_amp, vd_phase, vdy_amp, vdy_phase
+  DualArray2D<Real> spdat("jeans_spdat", nspec, 7);
   for (int s = 0; s < nspec; ++s) {
     std::string n = std::to_string(s+1);
     spdat.h_view(s,0) = pin->GetOrAddReal("problem", "eps_"+n, 0.01);
@@ -81,6 +89,8 @@ void ProblemGenerator::DustJeans(ParameterInput *pin, const bool restart) {
     spdat.h_view(s,2) = pin->GetOrAddReal("problem", "rhod_phase_"+n, 0.0);
     spdat.h_view(s,3) = pin->GetOrAddReal("problem", "vd_amp_"+n, 0.0);
     spdat.h_view(s,4) = pin->GetOrAddReal("problem", "vd_phase_"+n, 0.0);
+    spdat.h_view(s,5) = pin->GetOrAddReal("problem", "vdy_amp_"+n, 0.0);
+    spdat.h_view(s,6) = pin->GetOrAddReal("problem", "vdy_phase_"+n, 0.0);
   }
   spdat.template modify<HostMemSpace>();
   spdat.template sync<DevExeSpace>();
@@ -103,11 +113,12 @@ void ProblemGenerator::DustJeans(ParameterInput *pin, const bool restart) {
     Real x = CellCenterX(i-is, indcs.nx1, size.d_view(m).x1min, size.d_view(m).x1max);
     Real rho = rho0 + rho_amp*cos(kx*x);
     Real vx = vg_amp*cos(kx*x + vg_phase);
+    Real vy = vgy_amp*cos(kx*x + vgy_phase);   // peculiar: the shear is the box's
     u0(m,IDN,k,j,i) = rho;
     u0(m,IM1,k,j,i) = rho*vx;
-    u0(m,IM2,k,j,i) = 0.0;
+    u0(m,IM2,k,j,i) = rho*vy;
     u0(m,IM3,k,j,i) = 0.0;
-    if (is_ideal) {u0(m,IEN,k,j,i) = rho*cs*cs/gm1 + 0.5*rho*vx*vx;}
+    if (is_ideal) {u0(m,IEN,k,j,i) = rho*cs*cs/gm1 + 0.5*rho*(vx*vx + vy*vy);}
   });
 
   // dust lattice: nspecies particles per cell at the cell centre; the density
@@ -149,7 +160,8 @@ void ProblemGenerator::DustJeans(ParameterInput *pin, const bool restart) {
     Real rhod = eps*rho0 + spdat.d_view(s,1)*cos(kx*x + spdat.d_view(s,2));
     pr(IPM,p) = rhod*vol;
     pr(IPVX,p) = spdat.d_view(s,3)*cos(kx*x + spdat.d_view(s,4));
-    pr(IPVY,p) = 0.0; pr(IPVZ,p) = 0.0;
+    pr(IPVY,p) = spdat.d_view(s,5)*cos(kx*x + spdat.d_view(s,6));
+    pr(IPVZ,p) = 0.0;
     pr(IPRX,p) = 0.0; pr(IPRY,p) = 0.0; pr(IPRZ,p) = 0.0;
   });
   return;
