@@ -43,8 +43,8 @@
         \code{9a96f9f3}, \code{d39858ac}, \code{a9279dc8},
         \code{386d5968}; Phase 5, gravity on refined meshes and Phase 6 on \code{dust-smr}:
         \code{04dbd3dd}, \code{af45c756}, \code{c3d7b308}, \code{1c2c0558}, \code{a2252182},
-        \code{06994aa6}, \code{70fc3e82}}
-\date{September 3--11, 2026}
+        \code{06994aa6}, \code{70fc3e82}, \code{424cd7e3}}
+\date{September 3--14, 2026}
 
 \begin{document}
 \maketitle
@@ -286,6 +286,9 @@ Commit & Phase & Content \\
 \code{70fc3e82} & 6 & \code{PLEV} initialised to the block's level at creation and at
               restart (an unset level re-split the particles of a mesh that starts
               refined) \\
+\code{424cd7e3} & 6 & \fn{Particles::InitSamplingLevel}: \code{PLEV} set after the
+              generator returns (\file{pgen.cpp}), not inside \fn{CreateParticleTags}
+              where the block id was still unset (every rank but 0 got garbage) \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -1685,7 +1688,11 @@ again, and each refinement quadrupled its particles (the AB run went from $1.05$
 $1.44$ million particles in one time unit with twelve blocks refined; the three-level BA
 run from $0.26$ to $0.76$ million in ten). Two remedies, both kept. Each dust particle
 now carries a \emph{sampling level} (\code{PLEV}, a fourth integer: the level of its
-block when it was created, or read from an older restart file), children take the new
+block when it was created, or read from an older restart file --- set by
+\fn{Particles::InitSamplingLevel} from the \code{ProblemGenerator} constructors \emph{after}
+the generator has returned, because the generators assign the block id after creating
+the tags: the first version initialised it inside \fn{CreateParticleTags} and left every
+rank but the first with garbage, validation document \S12.6), children take the new
 level, and a
 particle is a parent only if its sampling level is below the new level: a derefined
 block that refines again keeps its particle count, and a particle that migrates into a
