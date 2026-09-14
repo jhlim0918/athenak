@@ -17,8 +17,13 @@
 #     cd $HOME && git clone -b dust-smr https://github.com/jhlim0918/athenak.git athenak-smr
 #     (or: git -C $HOME/athenak-multigrid worktree add $HOME/athenak-smr dust-smr)
 #     cd $HOME/athenak-smr && git submodule update --init kokkos
-#     mkdir build-cluster && cd build-cluster && cmake -DAthena_ENABLE_MPI=ON .. && make -j
-# and point ATHENAK below at it.
+#     module load gcc openmpi fftw3          # BEFORE cmake: the default environment is nvhpc
+#     mkdir build-cluster && cd build-cluster
+#     cmake -DAthena_ENABLE_MPI=ON -DCMAKE_CXX_COMPILER=mpicxx .. && make -j 16
+# and point ATHENAK below at it.  A bare `make -j` on the 144-core login node exhausts the
+# process limit ("nvc++-Fatal-Could not fork", "/bin/sh: Operation not permitted"): always
+# give -j a number.  Match the compiler of the build that ran the uniform jobs:
+#     grep CMAKE_CXX_COMPILER: $HOME/athenak-multigrid/build-cluster/CMakeCache.txt
 #
 # COST: the laptop run at these settings did ~0.7 s per cycle on 8 Apple-M ranks with
 # dt = 5.6e-5 once level 1 appears, i.e. ~400,000 cycles to t = 30 = ~80 rank-hours; on
