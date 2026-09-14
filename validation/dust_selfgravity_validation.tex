@@ -2142,6 +2142,73 @@ twin at the same time.}
 \label{fig:si-amr}
 \end{figure}
 
+\subsection{The BA mode: growth-rate convergence on uniform and refined meshes}
+\label{sec:phase6-linba}
+
+The nonlinear BA run is second order at $6.4$ cells per $\eta r$, and \S\ref{sec:phase6-what}
+blamed the late filament on that. The linear problem settles what the resolution costs.
+The dispersion relation of Youdin \& Goodman (2005) --- isothermal gas, pressureless dust
+fluid, mutual drag, NSH background, axisymmetric --- is solved as an $8\times8$ eigenproblem
+in \file{scripts/analysis/si\_linear.py}, which also writes the eigenvector in the
+generator's own convention (the linA input file's fourteen amplitudes are reproduced to
+every printed digit). Against YJ07's Table~1 it gives $s = 0.4190091$ for linA
+($0.4190204$) and $0.0154862$ for linB ($0.0154764$); the residual is the compressible
+gas against their incompressible one. For the BA parameters ($\tau_s = 1$,
+$\epsilon = 0.2$) the instability lives at long radial wavelengths, $K_x \lesssim 1.5$
+(growth is negative beyond), which is the filament spacing of the nonlinear run; the
+fastest $K_x = K_z$ mode is at $K = 0.86$, $s = 0.094720$, $\omega_{\rm re} = -0.522$,
+wavelength $0.365\,H$ --- $47$ cells per wavelength on the $256^2$ mesh.
+
+That mode is seeded (\code{streaming\_linear}, relative amplitude $10^{-6}$, quiet lattice)
+in a box of four wavelengths by one, on uniform meshes of $8$, $16$, $32$ and $64$ cells
+per wavelength and on refined meshes whose root has half that and whose middle half
+($x \in [L/4, 3L/4]$, full $z$) is refined once to it, everything else as in the
+nonlinear runs (\file{inputs/dust/streaming\_BA\_linear\{,\_smr\}.athinput};
+\file{validation/run/dust6/lin\_BA}). The growth rate is the log-slope of the peak
+dust-density perturbation over $t = 20$--$90$, seven to nine $e$-folds into a run that
+stays linear throughout; the other amplitude columns agree with it to better than $1\%$.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+cells per wavelength & 8 & 16 & 32 & 64 \\
+\midrule
+uniform: $s$ & $0.0671$ & $0.0920$ & $0.0941$ & $0.0946$ \\
+\quad $s/s_{\rm analytic}$ & $0.708$ & $0.971$ & $0.9935$ & $0.9988$ \\
+refined, root $N/2$: $s$ & & $0.0799$ & $0.0931$ & $0.0944$ \\
+\quad $s/s_{\rm analytic}$ & & $0.843$ & $0.982$ & $0.9967$ \\
+\quad strip / outside & & $0.0799$ / $0.0805$ & $0.0930$ / $0.0933$ & $0.0944$ / $0.0944$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two results (Fig.~\ref{fig:lin-ba}). The uniform mesh converges as a second-order scheme
+should: the error falls from $29\%$ at $8$ cells to $2.9\%$, $0.65\%$ and $0.12\%$, a
+factor $4$--$5$ per doubling, and at the nonlinear run's $47$ cells per wavelength the
+rate is within $0.3\%$ of analytic. The lag of the filament is therefore not a linear
+growth-rate error at the dominant scale; it is the shorter modes ($K_x \to 1.5$, which the
+$256^2$ mesh holds at $27$ cells and less) and the nonlinear cascade that are under-resolved,
+not the $K = 0.86$ mode itself. Second, a refined strip does not carry the finest level's
+rate. Measured separately inside and outside the strip the rates are equal to $0.5\%$: the
+eigenmode is global, and it grows at one rate that sits between the uniform rates of the
+root and of the finest level, near the root's at $16$ cells (the coarse half at $8$ cells
+holds the mode back to $84\%$) and near the finest's at $64$. Refinement helps the linear
+phase only where it covers the mode, which is why the nonlinear runs hold the whole box
+refined through it.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\linewidth]{figures/dust6_lin_ba.png}
+\caption{The BA-parameter linear mode ($K_x = K_z = 0.86$, $s = 0.09472$): the peak
+dust-density amplitude against time on uniform meshes of $8$--$64$ cells per wavelength
+(solid) and on refined meshes with the root at half that and the middle half of the box
+refined once (dashed), the analytic growth dotted; and the measured rate over the
+analytic one against the cells per wavelength at the finest level. Rendered by
+\file{validation/figures/plot\_dust6\_lin\_ba.jl}.}
+\label{fig:lin-ba}
+\end{figure}
+
 %=========================================================================================
 \section{Summary}
 \label{sec:summary}
@@ -2230,6 +2297,9 @@ blocks; and a run that starts fully refined must hold its particle count exactly
 one that did not exposed a sampling level initialised before the block id it needed
 (\S\ref{sec:phase6-plev}), now fixed, certified on every rank, and being re-run. The cost
 accounting is sober: particles are $55\%$ of the work at four per cell and are untouched
-by refinement, so the adaptive mesh buys reach rather than speed.
+by refinement, so the adaptive mesh buys reach rather than speed. The linear BA mode,
+solved from the YG05 dispersion relation and seeded on uniform and refined meshes, converges
+at second order (within $0.7\%$ of analytic at $32$ cells per wavelength) and grows at a
+single rate on a partially refined mesh, set mostly by its coarse part.
 
 \end{document}
