@@ -39,8 +39,8 @@
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6},
         \code{9a96f9f3}, \code{d39858ac}, \code{a9279dc8},
-        \code{386d5968}, \code{538fb43b}, \code{1506c83f}}
-\date{September 3--11, 2026}
+        \code{386d5968}, \code{538fb43b}, \code{1506c83f}, \code{f54271ba}}
+\date{September 3--15, 2026}
 
 \begin{document}
 \maketitle
@@ -231,6 +231,8 @@ Commit & Phase & Content \\
               \file{scripts/analysis/dust\_jeans.py}, the input and the figure \\
 \code{1506c83f} & science & the multi-species insertion, the three-species add-on and
               the pressure-gradient equilibrium \\
+\code{f54271ba} & 4c & the rotating dusty Jeans test: the shearing-box branch of the
+              generator and the script, the input and the figure \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -1224,6 +1226,32 @@ or log-uniform with \code{--ts-log}, which is what their Fig.\ 6 actually shows 
 between \code{--ts-min} and \code{--ts-max}); since the command line cannot add keys
 absent from the input, \code{--input}/\code{--out} then writes a complete input file
 with the $5N$ species keys in place. Validation \S8.
+
+\paragraph{The rotating problem.} The same generator in an unstratified shearing box
+(\file{inputs/dust/dust\_jeans\_rot.athinput}: shear-periodic $x_1$, a
+\code{<shearing\_box>} block, $\Omega = 1$, $q = 3/2$): the axisymmetric $k_y = 0$
+mode gains an azimuthal peculiar velocity in every component
+(\code{vgy\_amp/phase}, \code{vdy\_amp\_s/phase\_s}), which is all the generator
+adds --- the Coriolis and shear terms, orbital advection and the shear-periodic
+deposit fold are the modules' own. The script's \code{--omega} branch builds the
+$(3N+3)$ system (\fn{matrix\_rot}: velocities peculiar, $2\Omega v_y$ in $x$,
+$-(2-q)\Omega v_x$ in $y$, \code{four\_pi\_G} explicit) and \code{check} pins it to
+its closed forms: the gas-only $s^2 = 4\pi G\rho_0 - \kappa^2 - c_s^2k^2$
+(Chandrasekhar 1961), the frozen-gas cubic $s[(s+1/t_s)^2 + \kappa^2] = 4\pi
+G\rho_d(s + 1/t_s)$ whose strong-drag limit $4\pi G\rho_d t_s/(1 + \kappa^2 t_s^2)$
+is the secular instability of Ward (2000) and Youdin (2005, 2011) and is
+$k$-independent, $\Omega \to 0$ against the Krapp matrix, and $G \to 0$ epicycles ---
+all to $10^{-14}$. Two things the eigenproblem itself settled before any run: the
+selection of the fastest mode must tolerate ties in $\Re s$ (the $G \to 0$
+oscillations carry a $10^{-10}$ drag damping that would otherwise lose to the zero
+mode), and the eigenvector must not be normalized by $\delta\rho_g$ when that component
+is negligible (the neutral mode at the back-reaction threshold is a pure dust pattern).
+\code{fit} now also reports $\Im s$ from the phase of the projection and, with
+\code{--auto}, restricts itself to the linear window (the longest span over which every
+column is a single exponential below a set amplitude): the slow modes of long runs are
+overtaken by other modes of the 3D box, notably the vertical dust Jeans mode, which
+rotation does not stabilize and which grows from round-off at $\sim 0.7\,\Omega$.
+Validation \S8.
 
 \subsection{The science setup: Baehr, Zhu \& Yang (2022) in two stages}
 \label{sec:science}
