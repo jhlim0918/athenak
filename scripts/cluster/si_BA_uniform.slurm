@@ -10,7 +10,7 @@
 #SBATCH --mail-user=jay.lim1@unlv.edu
 
 # Johansen & Youdin (2007) run BA at their published configuration, UNIFORM 256^2:
-# tau_s = 1, eps = 0.2, 40 eta r box, 1.638e6 particles (25 per cell), t = 500/Omega.
+# tau_s = 1, eps = 0.2, 40 eta r box, 262,144 particles (4 per cell), t = 500/Omega.
 # See inputs/dust/streaming_BA_uniform.athinput for the physics.
 #
 # COST (measured on 4 Apple-M cores: 0.237 s/cycle, dt = 2.3e-3, so 2.15e5 cycles

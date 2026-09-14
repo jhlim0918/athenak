@@ -1,6 +1,8 @@
 # AthenaK input file: nonlinear streaming instability, run BA of Johansen & Youdin
-# (2007, ApJ 662, 627; Table 1) on a UNIFORM grid, at their published configuration:
-# tau_s = 1.0, eps = 0.2, box 40 eta r square, 256^2, 1.6e6 particles, t = 500/Omega.
+# (2007, ApJ 662, 627; Table 1) on a UNIFORM grid, at their published configuration
+# (tau_s = 1.0, eps = 0.2, box 40 eta r square, 256^2, t = 500/Omega) but with 4
+# particles per cell (262,144) instead of their 1.6e6 (about 25 per cell), so that the
+# uniform run and the AMR runs (validation/run/dust6/BA_amr4*) share one sampling.
 #
 # Units Omega = c_s = rho0 = 1 with eta v_K = 0.05 c_s, so eta r = 0.05 H and the box is
 # 2H square = 40 eta r (6.4 cells per eta r, exactly JY07's resolution).  The radial
@@ -12,9 +14,10 @@
 # Initial condition: the gas and the particles at the exact NSH drift equilibrium for
 # (tau_s, eps), particles placed uniformly at random (problem/particle_placement =
 # random, random_seed = 1), so the seed is the white Poisson noise of the particle
-# distribution -- JY07's "warm start", their sec. 3.1.  <particles>/ppc = 25 gives
-# 1,638,400 particles = 25 per cell, matching their 1.6e6 (they quote ~25 per grid
-# point).
+# distribution -- JY07's "warm start", their sec. 3.1.  <particles>/ppc = 4 gives
+# 262,144 particles = 4 per cell, the sampling of the AMR runs it is compared with
+# (their ppc counts per cell of the initial finest mesh, which is this grid).  JY07
+# used 1.6e6, about 25 per grid point; ppc = 25 reproduces that.
 #
 # Expected evolution (their Figs. 2 and 4): linear waves to t ~ 40, a clumpy turbulent
 # state by t ~ 80, an upward cascade into extended vertical filaments over t = 100-200,
@@ -78,7 +81,7 @@ omega0    = 1.0
 <particles>
 particle_type = dust
 pusher        = imex_dust
-ppc           = 25.0      # 25 per cell -> 1.638e6 particles (JY07: 1.6e6)
+ppc           = 4.0       # 4 per cell -> 262,144 particles, as in the AMR runs (JY07: 1.6e6, ~25 per cell)
 
 <dust>
 coupling      = imex
