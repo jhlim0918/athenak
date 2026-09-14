@@ -1884,9 +1884,9 @@ $= 5$ on every rank; the one-level lattice schedule of \S\ref{sec:phase6-lattice
 refines the middle columns at $t = 1$, splits $98{,}304$ into $270{,}336$ particles on 1
 and on 4 ranks alike (the old binary gave the same numbers, because its garbage happened
 to be small: that test passed by luck); and the uniform Phase-4d restart regression is
-bit for bit unchanged. The $8^2$ run is being repeated on the fixed binary; until it
-finishes, its results below carry $4.3$ times the particles of its uniform twin. The
-lesson is a rule: a run that starts fully refined must hold its particle count exactly,
+bit for bit unchanged. The $8^2$ run was then repeated on the fixed binary
+(\code{BA\_amr4\_mb8\_fix}, $t = 0$--$500$ on 8 ranks): its count stays at $262{,}144$ to
+the end (Fig.~\ref{fig:ba-hist}), and it is the run compared below. The lesson is a rule: a run that starts fully refined must hold its particle count exactly,
 and the \code{npart} column of the particle history is where to look.
 
 \subsection{The Johansen \& Youdin (2007) nonlinear runs: what was set up}
@@ -1932,7 +1932,8 @@ hysteresis is used on every adaptive run.
 \code{BA\_amr256}    & $40\eta r$ & $256^2$ & 2 & $512^2$ & $6.4 \to 12.8$ & $1.0\times10^6$ (16) & $t = 52$, stopped \\
 \code{BA\_amr3}      & $40\eta r$ & $64^2$  & 3 & $256^2$ & $1.6 \to 6.4$  & $2.6\times10^5$ (4) & $t = 300$, done \\
 \code{BA\_amr4}      & $40\eta r$ & $32^2$  & 4 & $256^2$ & $0.8 \to 6.4$  & $2.6\times10^5$ (4) & $t = 300$, done \\
-\code{BA\_amr4\_mb8} & $40\eta r$ & $32^2$  & 4 & $256^2$ & $0.8 \to 6.4$  & $2.6\times10^5$ (4)$^\dagger$ & $t = 500$; repeating \\
+\code{BA\_amr4\_mb8} & $40\eta r$ & $32^2$  & 4 & $256^2$ & $0.8 \to 6.4$  & $2.6\times10^5$ (4)$^\dagger$ & $t = 500$, done \\
+\code{BA\_amr4\_mb8\_fix} & $40\eta r$ & $32^2$ & 4 & $256^2$ & $0.8 \to 6.4$ & $2.6\times10^5$ (4) & $t = 500$, done \\
 \bottomrule
 \end{tabular}
 
@@ -1942,8 +1943,10 @@ the value at $t = 0$; the runs that start uniform (all of AB, and \code{BA\_amr2
 particles as blocks refine and split, which is what keeps the count \emph{per finest
 cell} --- the number in brackets --- fixed, while the BA multi-level runs start fully
 refined and hold $2.6\times10^5$ throughout. $^\dagger$: $8^2$ MeshBlocks; grew to
-$1.1\times10^6$ through the defect of \S\ref{sec:phase6-plev}. $^\ddagger$: affected by the
-same defect (under-sampled refined blocks on some ranks), to be repeated.}
+$1.1\times10^6$ through the defect of \S\ref{sec:phase6-plev}; \code{BA\_amr4\_mb8\_fix} is
+its repeat on the fixed binary, also $8^2$ blocks, and holds the count. $^\ddagger$:
+affected by the same defect (under-sampled refined blocks on some ranks); stopped at
+$t = 25$, to be repeated.}
 \end{center}
 
 The root grid is the point of the table. In both problems the \emph{finest} level is put
@@ -2007,43 +2010,65 @@ at $58\%$ of the uniform cells on average over $t = 100$--$300$ (minimum $41\%$)
 finest blocks are $0.125\,H$ wide while the filament web has a spacing of
 $0.2$--$0.4\,H$, so nearly every void block touches a finest block. On $8^2$ blocks the
 derefinable unit --- four siblings, $0.25\,H$ --- fits inside a void, and levels 1, 2
-and 3 are all populated from $t \simeq 120$ on: $35\%$ of the uniform cells on average
-over $t = 100$--$500$ (minimum $29\%$), and at $t = 500$ six blocks at level 1, $175$ at
-level 2 and $228$ at the finest, $40\%$, with the finest set at its largest of the run
-because the filament network is at its thickest (Fig.~\ref{fig:ba-mesh4}). The price
-of $8^2$ blocks at \code{nghost} $= 4$ is three ghost cells per active cell, measured as
-$1.8\times$ the gas time per unit of gas work of $16^2$ blocks in a controlled
-200-cycle comparison.
+and 3 are all populated from $t \simeq 120$ on. In the repeat on the fixed binary the
+mesh averages $34.5\%$ of the uniform cells over $t = 100$--$500$ (minimum $27\%$), and at
+$t = 500$ holds $13$ blocks at level 1, $174$ at level 2 and $120$ at the finest, $30\%$
+(Fig.~\ref{fig:ba-mesh4}); the defective run, a different realization of the same
+turbulence, averaged $35\%$, so the census is a property of the criterion and the block
+size, not of the realization.
 
 The uniform twin from Vista (\code{BA\_u256}, $256^2$, $4$ particles per cell, $t = 500$)
-makes the comparison at matched time, finest resolution and --- were it not for
-\S\ref{sec:phase6-plev} --- particle sampling (Fig.~\ref{fig:ba-sbs}). The two
-saturated states are the same object: a few thick, tilted, vertically extended filaments
-separating deep voids, at the same scale and texture, the adaptive run's finest blocks
-sitting on the filaments and its coarse blocks in the voids. Over $t = 300$--$500$, the
-window both runs cover, the radial velocity dispersion of the dust is $0.01854\,c_s$
-(uniform) against $0.01834\,c_s$ (adaptive) in the median, a $1\%$ agreement, and the
-two curves are indistinguishable in Fig.~\ref{fig:ba-hist}; the peak density is
-$201$ times the mean (10--90\%: $136$--$329$) against $115$ ($78$--$191$), a factor
-$1.75$ in the median with overlapping bands. Whether that factor is the coarse cells
-smearing a clump that drifts through a void before it re-enters a refined block, or the
-$4.3$ times finer particle sampling the adaptive run acquired through the defect (a
-smoother deposit has lower extremes), is what the repeat on the fixed binary will
-settle; the dispersion, the quantity that converges, does not depend on it.
+and the repeat on the fixed binary make the comparison at matched time, finest
+resolution and particle sampling, $262{,}144$ particles on both sides
+(Fig.~\ref{fig:ba-sbs}). The two saturated states are the same object: a few thick,
+tilted, vertically extended filaments separating deep voids, at the same scale and
+texture, the adaptive run's finest blocks sitting on the filaments and its coarse blocks
+in the voids. Over $t = 300$--$500$, the window both runs cover, the radial velocity
+dispersion of the dust is $0.01854\,c_s$ (uniform) against $0.01810\,c_s$ (adaptive) in
+the median, a $2\%$ agreement with the two curves interleaved in Fig.~\ref{fig:ba-hist};
+the peak density is $201$ times the mean (10--90\%: $136$--$329$) against $117$
+($79$--$220$), a factor $1.7$ in the median with overlapping bands. The defective run,
+with $4.3$ times the particles, gave $115$ ($78$--$191$): the factor is not the particle
+sampling. What remains is the mesh: a clump that drifts through a void sits, for up to
+\code{refinement\_interval} $= 100$ cycles after it crosses into a level-1 block, on cells
+four times wider than the filaments were resolved on, and the peak-density statistic is
+the most sensitive to that. A lower level-1 threshold, or a shorter interval, is the
+test; the dispersion, the quantity that converges, is already matched.
 
-What adaptivity buys in cost is less than the cell count suggests, and the reason is
-structural. A controlled measurement on the uniform $256^2$ mesh ($16^2$ blocks, 4
-ranks, 200 cycles, particle counts of 1, 4 and 16 per cell) gives
-$\mathrm{wall} = 3.63\,\mathrm{s} + 1.67\times10^{-5}\,\mathrm{s}$ per particle: at
-$4$ per cell the gas is $45\%$ of the cost and the particles $55\%$ (at JY07's $25$ per
-cell, $12\%$ and $88\%$). Refinement reduces only the gas term --- every particle is
-pushed every cycle whatever its block's level, and the global step, set by the finest
-cells, needs about $5\%$ more cycles in the saturated phase --- so a mesh at $56$--$58\%$
-of the cells is $1.17$--$1.19\times$ faster, not $1.7\times$, and the $8^2$-block mesh at
-$35\%$ pays its saving back in ghost cells. The lever is the particle work: merging on
-derefinement, or a particle budget per coarse cell, is what would move the $55\%$. The
-value of the adaptive mesh here is reach --- the finest cells only where the filaments
-are --- rather than wall-clock.
+What adaptivity costs was measured directly, and the answer is the opposite of the cell
+count. Each configuration is a restart of the archived run on the same machine, otherwise
+idle, at the run's own rank count, timed over $150$--$200$ cycles with no output:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+seconds per cycle & $8^2$ blocks, 8 ranks & $16^2$ blocks, 4 ranks \\
+\midrule
+$t = 0$, fully refined ($1024$ / $256$ blocks) & $0.0216$ & $0.0297$ \\
+$t = 100$, saturated, mesh held fully refined & $0.0205$ & $0.0248$ \\
+$t = 300$, saturated, adaptive ($316$ / $124$ blocks, $31\%$ / $48\%$ of the cells) & $0.0461$ & $0.0639$ \\
+\quad the same with the criterion check switched off & $0.0453$ & $0.0575$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The saturated state costs no more than the quiet one on a fixed mesh, and the remesh
+every $50$ cycles costs almost nothing; the adaptive mesh itself costs $2.2\times$ the
+fully refined one per cycle while holding a third to a half of its cells. The reason is
+the deposit scheme of Phase~5: every block deposits with the finest-level kernel, so a
+block $l$ levels below the finest carries a $2^l$-times finer image of itself with its
+own ghost shell, restricts it every stage, and exchanges its ghost deposits at image
+resolution --- a derefined block is more expensive than the refined blocks it replaced,
+not cheaper, and the cost of the mesh is set by its coarse blocks. (A controlled scan of
+the uniform mesh at 1, 4 and 16 particles per cell had earlier suggested a $1.2\times$
+gain from the gas work alone; that number is withdrawn.) The particle push, $55\%$ of a
+uniform cycle at four per cell, is untouched by refinement in any case. So the adaptive
+mesh presently buys resolution reach --- the finest cells where the filaments are, at a
+third of the cell count --- and not wall-clock; the remedy is to confine the image of a
+coarse block to the cells within a kernel width of a level boundary, which is where the
+interface argument of \S\ref{sec:phase5} needs it, and let the interior deposit at its
+own resolution.
 
 Run AB reproduces the other half of JY07, their cavitation sequence. The uniform $256^2$
 reference is complete to $t = 40$ and follows their Figure~5 (Fig.~\ref{fig:ab-jy07}): the
@@ -2099,12 +2124,12 @@ tenth of the mean density. Rendered by
 
 \begin{figure}[htbp]
 \centering
-\includegraphics[width=0.86\linewidth]{figures/dust6_ba_amr4_mb8.png}
-\caption{Run BA with four levels on $8^2$ MeshBlocks at $t = 500$ (cividis, mesh drawn):
-magenta the six level-1 blocks ($64^2$ effective), spring green the $175$ at level 2
-($128^2$) and red the $228$ at the finest ($256^2$, JY07's resolution), $40\%$ of the
-cells of the uniform mesh. Rendered by \file{validation/figures/plot\_dust6\_ba\_amr3.jl}
-with \code{DUST6\_BA=BA\_amr4\_mb8}.}
+\includegraphics[width=0.86\linewidth]{figures/dust6_ba_amr4_mb8_fix.png}
+\caption{Run BA with four levels on $8^2$ MeshBlocks at $t = 500$, the repeat on the fixed
+binary (cividis, mesh drawn): magenta the $13$ level-1 blocks ($64^2$ effective), spring
+green the $174$ at level 2 ($128^2$) and red the $120$ at the finest ($256^2$, JY07's
+resolution), $30\%$ of the cells of the uniform mesh. Rendered by
+\file{validation/figures/plot\_dust6\_ba\_amr3.jl} with \code{DUST6\_BA=BA\_amr4\_mb8\_fix}.}
 \label{fig:ba-mesh4}
 \end{figure}
 
@@ -2112,10 +2137,10 @@ with \code{DUST6\_BA=BA\_amr4\_mb8}.}
 \centering
 \includegraphics[width=\linewidth]{figures/dust6_ba_sbs.png}
 \caption{Run BA at $t = 500$ on the uniform $256^2$ mesh (left, the Vista run) and on
-the four-level adaptive mesh with $8^2$ MeshBlocks (right, mesh drawn), same colour scale.
-The particle counts in the titles are read from the histories at that time: the
-adaptive run's $1.1\times10^6$ is the defect of \S\ref{sec:phase6-plev}, to be replaced
-by the repeat. Rendered by \file{validation/figures/plot\_dust6\_ba\_sbs.jl}.}
+the four-level adaptive mesh with $8^2$ MeshBlocks (right, mesh drawn; the repeat on the
+fixed binary), same colour scale. The particle counts in the titles are read from the
+histories at that time: $262{,}144$ on both sides. Rendered by
+\file{validation/figures/plot\_dust6\_ba\_sbs.jl}.}
 \label{fig:ba-sbs}
 \end{figure}
 
@@ -2124,8 +2149,9 @@ by the repeat. Rendered by \file{validation/figures/plot\_dust6\_ba\_sbs.jl}.}
 \includegraphics[width=\linewidth]{figures/dust6_ba_hist.png}
 \caption{Run BA, the four meshes against time: the peak particle-mesh dust density, the
 radial velocity dispersion of the dust, and the particle count relative to the initial
-$262{,}144$. The $16^2$-block runs hold their count through every re-refinement; the
-$8^2$-block run's rise from $t = 100$ is the uninitialised sampling level of
+$262{,}144$. The $16^2$-block runs and the repeat of the $8^2$-block run (crimson) hold
+their count through every re-refinement; the grey dashed rise from $t = 100$ is the
+original $8^2$-block run with the uninitialised sampling level of
 \S\ref{sec:phase6-plev}. Rendered by \file{validation/figures/plot\_dust6\_ba\_hist.jl}.}
 \label{fig:ba-hist}
 \end{figure}
@@ -2289,15 +2315,18 @@ physics allows (\S\ref{sec:phase6-si}); run~BA reproduces their Figure-2 sequenc
 including the box-spanning tilted filament, on $54\%$ of the cells of the uniform $256^2$
 mesh with three levels and on $35\%$ with four levels on $8^2$ MeshBlocks, and at
 $t = 500$ its dust velocity dispersion agrees with the uniform twin run on Vista to
-$1\%$. Three operating rules came out of it: a root grid that cannot grow the
+$2\%$ at matched particle sampling. Three operating rules came out of it: a root grid that cannot grow the
 instability leaves the criterion nothing to refine, so an adaptive SI run must be seeded
 by holding a refined mesh through the linear phase; the refined region can only be as
 coarse as its MeshBlocks allow the voids to become, which on this problem means $8^2$
 blocks; and a run that starts fully refined must hold its particle count exactly --- the
 one that did not exposed a sampling level initialised before the block id it needed
-(\S\ref{sec:phase6-plev}), now fixed, certified on every rank, and being re-run. The cost
-accounting is sober: particles are $55\%$ of the work at four per cell and are untouched
-by refinement, so the adaptive mesh buys reach rather than speed. The linear BA mode,
+(\S\ref{sec:phase6-plev}), now fixed, certified on every rank, and the run repeated. The
+cost accounting is sobering: with finest-kernel deposits a derefined block carries a
+finest-resolution image and costs more than the refined blocks it replaced, so the
+four-level mesh at a third of the cells runs at $2.2\times$ the cost of the fully refined
+one per cycle; the adaptive mesh buys resolution reach, not wall-clock, until the image
+of a coarse block is confined to the level boundaries. The linear BA mode,
 solved from the YG05 dispersion relation and seeded on uniform and refined meshes, converges
 at second order (within $0.7\%$ of analytic at $32$ cells per wavelength) and grows at a
 single rate on a partially refined mesh, set mostly by its coarse part.

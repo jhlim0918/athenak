@@ -3,13 +3,15 @@
 # MeshBlocks (BA_amr4_mb8) with its MeshBlocks drawn.  Both at the same finest resolution;
 # the particle counts in the panel titles are read from the phst files at that time (the
 # adaptive run carries more: see the validation doc, sec. 12).
-#   DUST6_RUN=<dir with the dust6 runs> julia plot_dust6_ba_sbs.jl [t]     (default t = 500)
+#   DUST6_RUN=<dir with the dust6 runs> [DUST6_SBS_AMR=<case>] julia plot_dust6_ba_sbs.jl [t]   (default t = 500)
 using CairoMakie, Printf, Statistics, DelimitedFiles
 CairoMakie.activate!(type="png"); set_theme!(Theme(fontsize=14))
 const HERE = @__DIR__
 const RUN  = get(ENV, "DUST6_RUN", joinpath(dirname(HERE), "run", "dust6"))
 include(joinpath(dirname(HERE), "..", "scripts", "athenak_bin.jl"))
 tsnap = length(ARGS) > 0 ? parse(Float64, ARGS[1]) : 500.0
+# the adaptive run: the repeat on the fixed sampling level if archived, else the original
+const AMRCASE = get(ENV, "DUST6_SBS_AMR", isdir(joinpath(RUN, "BA_amr4_mb8_fix")) ? "BA_amr4_mb8_fix" : "BA_amr4_mb8")
 
 # the dump of `base` under `dir` (top level or bin/) nearest to tsnap
 function nearest_dump(dir, base, t)
@@ -43,7 +45,7 @@ EPS0 = 0.2; CR = (-1.7, 0.8)
 LC = (:white, :magenta, :springgreen, :red); LW = (2.0, 1.6, 1.0, 0.6)
 panels = [(nearest_dump(joinpath(RUN, "BA_u256"), "si_BA", tsnap), joinpath(RUN, "BA_u256", "si_BA.phst"),
            "uniform 256²", false),
-          (nearest_dump(joinpath(RUN, "BA_amr4_mb8"), "si_BA4m8", tsnap), joinpath(RUN, "BA_amr4_mb8", "si_BA4m8.phst"),
+          (nearest_dump(joinpath(RUN, AMRCASE), "si_BA4m8", tsnap), joinpath(RUN, AMRCASE, "si_BA4m8.phst"),
            "AMR, 4 levels, 8² MeshBlocks", true)]
 fig = Figure(size=(1320, 700))
 hm = nothing

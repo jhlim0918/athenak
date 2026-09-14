@@ -12,7 +12,8 @@ labs(p) = (for l in eachline(p); occursin("[1]=", l) && return [split(t, "=")[2]
 runs = [("BA_u256/si_BA.phst",        "uniform 256²",              :black,      2.6, :solid),
         ("BA_amr3c/si_BA3.phst",      "AMR 3 levels, 16² blocks",  :steelblue,  1.8, :dash),
         ("BA_amr4/si_BA4.phst",       "AMR 4 levels, 16² blocks",  :darkorange, 1.8, :dashdot),
-        ("BA_amr4_mb8/si_BA4m8.phst", "AMR 4 levels,  8² blocks",  :crimson,    2.0, :solid)]
+        ("BA_amr4_mb8/si_BA4m8.phst", "AMR 4 levels,  8² blocks, defective PLEV", :gray50, 1.4, :dash),
+        ("BA_amr4_mb8_fix/si_BA4m8.phst", "AMR 4 levels,  8² blocks",  :crimson,    2.0, :solid)]
 fig = Figure(size=(1500, 460))
 ax1 = Axis(fig[1,1], xlabel="t  (Ω⁻¹)", ylabel="max ρ_p / ⟨ρ_p⟩", yscale=log10, title="peak dust density")
 ax2 = Axis(fig[1,2], xlabel="t  (Ω⁻¹)", ylabel="σ(v_px)  (c_s)", title="radial velocity dispersion of the dust")
