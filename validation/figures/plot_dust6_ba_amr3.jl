@@ -16,8 +16,9 @@ const HERE = @__DIR__
 const RUN  = get(ENV, "DUST6_RUN", joinpath(dirname(HERE), "run", "dust6"))
 include(joinpath(dirname(HERE), "..", "scripts", "athenak_bin.jl"))
 tsnap = length(ARGS) > 0 ? parse(Float64, ARGS[1]) : Inf
-const CASE = get(ENV, "DUST6_BA", "BA_amr4")          # BA_amr3 (three levels) | BA_amr4 (four)
-bindir = joinpath(RUN, CASE, "bin"); base = (CASE == "BA_amr3") ? "si_BA3" : "si_BA4"
+const CASE = get(ENV, "DUST6_BA", "BA_amr4_mb8")   # BA_amr3 | BA_amr4 | BA_amr4_mb8
+bindir = joinpath(RUN, CASE, "bin")
+base = CASE == "BA_amr3" ? "si_BA3" : (CASE == "BA_amr4_mb8" ? "si_BA4m8" : "si_BA4")
 fs = sort(filter(f -> occursin("$base.dust_dpm.", f), readdir(bindir)))
 times = [read_bin(joinpath(bindir, f)).time for f in fs]
 k = isfinite(tsnap) ? argmin(abs.(times .- tsnap)) : length(fs)
@@ -61,6 +62,6 @@ let hs = [], ls = []
                patchsize=(26, 12))
 end
 Colorbar(fig[1, 2], hm, label="log₁₀ ρ_p / ⟨ρ_p⟩", width=14)
-out = joinpath(HERE, (CASE == "BA_amr3") ? "dust6_ba_amr3.png" : "dust6_ba_amr4.png")
+out = joinpath(HERE, "dust6_ba_" * lowercase(replace(CASE, "BA_" => "")) * ".png")
 save(out, fig, px_per_unit=1.6)
 println("wrote ", out, "  t=", fd.time, "  blocks per level=", nlev)
