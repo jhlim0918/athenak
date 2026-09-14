@@ -125,18 +125,6 @@ Particles::~Particles() {
 // those with tag numbers less than ntrack.
 
 void Particles::CreateParticleTags(ParameterInput *pin) {
-  // dust: the sampling level starts at the level of the block the particle sits in (the
-  // generators set PGID before creating the tags); a block that later derefines and
-  // refines again must not split its particles a second time
-  if (particle_type == ParticleType::dust && nprtcl_thispack > 0) {
-    auto &pi0 = prtcl_idata;
-    auto &mblev = pmy_pack->pmb->mb_lev;
-    int gids = pmy_pack->gids;
-    par_for("plev_init",DevExeSpace(),0,(nprtcl_thispack-1),
-    KOKKOS_LAMBDA(const int p) {
-      pi0(PLEV,p) = mblev.d_view(pi0(PGID,p) - gids);
-    });
-  }
   std::string assign = pin->GetOrAddString("particles","assign_tag","index_order");
 
   // tags are assigned sequentially within this rank, starting at 0 with rank=0
@@ -174,6 +162,28 @@ void Particles::CreateParticleTags(ParameterInput *pin) {
 } // namespace particles
 
 namespace particles {
+
+//----------------------------------------------------------------------------------------
+//! \fn void Particles::InitSamplingLevel()
+//! \brief Dust: the sampling level PLEV of every particle starts at the level of the
+//! MeshBlock it sits in, so a block that later derefines and refines again does not
+//! split its particles a second time.  Called from the ProblemGenerator constructors
+//! AFTER the generator has returned, never from inside it: the generators assign PGID
+//! after creating the tags, and initialising PLEV inside CreateParticleTags indexed the
+//! level array with an unset PGID, which left every rank but the first with garbage
+//! (found on the JY07 BA runs: ranks whose garbage happened to pass the split test
+//! quadrupled their particles at the first re-refinement, the others never split).
+
+void Particles::InitSamplingLevel() {
+  if (particle_type != ParticleType::dust || nprtcl_thispack <= 0) {return;}
+  auto &pi0 = prtcl_idata;
+  auto &mblev = pmy_pack->pmb->mb_lev;
+  int gids = pmy_pack->gids;
+  par_for("plev_init",DevExeSpace(),0,(nprtcl_thispack-1),
+  KOKKOS_LAMBDA(const int p) {
+    pi0(PLEV,p) = mblev.d_view(pi0(PGID,p) - gids);
+  });
+}
 
 //----------------------------------------------------------------------------------------
 //! \fn int Particles::RemoveDead()

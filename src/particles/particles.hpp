@@ -73,6 +73,7 @@ class Particles {
 
   // functions...
   void CreateParticleTags(ParameterInput *pin);
+  void InitSamplingLevel();   // dust: PLEV = level of the particle's block (after the pgen)
   void AssembleTasks(std::map<std::string, std::shared_ptr<TaskList>> tl);
   TaskStatus Push(Driver *pdriver, int stage);
   TaskStatus NewGID(Driver *pdriver, int stage);

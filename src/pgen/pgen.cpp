@@ -53,6 +53,9 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm) :
 
   // second argument false since this IS NOT a restart
   CallProblemGenerator(pin, false);
+  // dust: the sampling level of every particle the generator created (it needs PGID,
+  // which the generators assign last, so it cannot be done inside them)
+  if (pm->pmb_pack->ppart != nullptr) {pm->pmb_pack->ppart->InitSamplingLevel();}
 
   // Check that user defined BCs were enrolled if needed
   if (user_bcs) {
@@ -737,6 +740,9 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   // call problem generator again to re-initialize data, fn ptrs, as needed
   // second argument true since this IS a restart
   CallProblemGenerator(pin, true);
+  // dust inserted by the generator on restart (<particles>/restart_insert): their
+  // sampling level; particles read from the file keep the level the file carries
+  if (ppart != nullptr && prtcl_insert) {ppart->InitSamplingLevel();}
 
   // Check that user defined BCs were enrolled if needed
   if (user_bcs) {
