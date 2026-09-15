@@ -253,20 +253,25 @@ particles has never been compiled here -- do the one-node test before committing
 the allocation).  On a Vista login node:
 
 ```bash
-module load nvidia/24.7 openmpi/5.0.5_nvc249 cuda
-cd $HOME/athenak-multigrid
+module load nvidia/24.7 openmpi/5.0.5_nvc249     # the SDK's CUDA-aware OpenMPI (AthenaK hands
+export NVCC_WRAPPER_DEFAULT_COMPILER=/usr/bin/g++  # device buffers to MPI) and its CUDA; g++
+cd $HOME/athenak-multigrid                          # as nvcc's host compiler, like the CPU build
 cmake -B build-gpu -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON \
       -D Kokkos_ENABLE_CUDA=ON -D Kokkos_ARCH_HOPPER90=ON -D Kokkos_ARCH_ARMV9_GRACE=ON \
       -D CMAKE_CXX_COMPILER=$HOME/athenak-multigrid/kokkos/bin/nvcc_wrapper
 cmake --build build-gpu -j 16
 ```
 
+(`nvidia` and `gcc` are the same Lmod family, so gcc's OpenMPI cannot be loaded beside
+the SDK; if `nvcc` is not on the path after loading the SDK, add `module load cuda`.)
 kokkos-fft picks cuFFT for the CUDA backend.  Then, from run directories in
 `$SCRATCH`:
 
 ```bash
-# one-node timing test first (a few hundred cycles)
-mkdir -p $SCRATCH/gt16/test && cd $SCRATCH/gt16/test && sbatch -N 1 -n 1 -t 00:30:00 $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage1_gpu.slurm
+# one-node timing test first: the full resolution on a 4H x 4H x 6.4H domain (5.2e7
+# cells, 320 x 320 x 512, ~1000 cycles to t = 0.5); its elapsed= lines are the
+# cell-updates/s per GPU that fix the cost table
+mkdir -p $SCRATCH/gt16/test && cd $SCRATCH/gt16/test && TLIM=0.5 XOVR="mesh/nx1=320 mesh/nx2=320 mesh/x1min=-4.33756 mesh/x1max=4.33756 mesh/x2min=-4.33756 mesh/x2max=4.33756" sbatch -N 1 -n 1 -t 01:00:00 $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage1_gpu.slurm
 # stage 1, then stage 2 from the dump after the first burst
 mkdir -p $SCRATCH/gt16/stage1 && cd $SCRATCH/gt16/stage1 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage1_gpu.slurm
 mkdir -p $SCRATCH/gt16/dust && cd $SCRATCH/gt16/dust && RST=$SCRATCH/gt16/stage1/rst/gt16.00005.rst TLIM=100 sbatch $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage2_gpu.slurm

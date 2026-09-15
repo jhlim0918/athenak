@@ -25,9 +25,12 @@ RST=${RST:-}
 if [ -n "${CONT:-}" ] && [ -z "$RST" ]; then RST=$(ls rst/*.rst | tail -1); fi
 if [ -n "$RST" ]; then START=(-r "$RST"); else START=(-i "$INPUT"); fi
 if [ -n "${TLIM:-}" ]; then OVR=(time/tlim=$TLIM); else OVR=(); fi
+# extra overrides, e.g. the one-node timing test's smaller (4H x 4H) domain (README sec. 4)
+OVR+=(${XOVR:-})
 
-# the modules the GPU binary was built with (README section 4)
-module load nvidia/24.7 openmpi/5.0.5_nvc249 cuda
+# the modules the GPU binary was built with (README section 4): the NVIDIA HPC SDK's
+# CUDA-aware OpenMPI (AthenaK hands device buffers to MPI); the SDK carries CUDA
+module load nvidia/24.7 openmpi/5.0.5_nvc249
 
 cd $SLURM_SUBMIT_DIR
 {

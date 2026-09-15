@@ -28,7 +28,7 @@ OVR=${OVR:-}
 BIN=${BIN:-$ATHENAK/build-gpu/src/athena}
 if [ -n "$ADDON" ]; then ADD=(-i "$ADDON"); else ADD=(); fi
 
-module load nvidia/24.7 openmpi/5.0.5_nvc249 cuda
+module load nvidia/24.7 openmpi/5.0.5_nvc249
 
 cd $SLURM_SUBMIT_DIR
 {
