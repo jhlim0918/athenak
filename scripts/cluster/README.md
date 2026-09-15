@@ -226,3 +226,63 @@ dt ~ 3e-3 (the SC14 box: 4e-3), so ~17,000 cycles per 50/Omega; expect well unde
 first `elapsed=` lines of run.log and scale down the node count if it is faster than
 needed.  The earlier "memory-bandwidth-bound, 11.8 s*node/cycle" numbers of sec. 2 were
 dominated by the old slab gather and no longer apply.
+
+## 4. The 16H proof-of-concept box at 80 cells per H_g (GPU queue)
+
+For the fellowship proposal: Booth & Clarke (2019) geometry, Lx = Ly = 16 H_g,
+Lz = 6.4 H_g, 1280 x 1280 x 512 cubic cells (80 per H_g; 40 x 40 x 16 MeshBlocks of
+32^3), the Baehr+22 physics otherwise (beta = 10, Q0 = 1.02, irradiation floor), and
+`hse_outflow` z faces (section 5).  BC19 find boxes below 32 H bursty -- the dominant
+spiral's azimuthal wavelength is the box -- which a proof of concept can live with; two
+arms fit at 16 H.  Inputs: `inputs/shearing_box/gravito_turb_bc16.athinput` (stage 1,
+gas to t = 50; with the floor our disk starts cooling late, so check Q(t) in the history
+and continue with `CONT=1 TLIM=...` if the first burst has not happened) and
+`gravito_turb_bc16_dust.athinput` (stage 2: one species at St = 0.3, Z = 0.01, 1.6e7
+particles, hybrid coupling, back-reaction on, radial pressure gradient on at
+Pi = eta v_K / cs = 0.1 so that eta r = 8 cells).
+
+Cost, scaled from the measured Baehr stage 1 (5.2e12 cell-updates for 150/Omega at
+20 per H_g; cycles scale with the resolution because the step is set by the halo's
+free fall): stage 1 to t = 50 is ~8e13 cell-updates, stage 2 (50/Omega with dust)
+about the same plus a few percent for the particles.  At 1--2e8 cell-updates/s per
+GH200 (assumed; measure it): 110--220 GPU-hours per stage, 250--500 for both.  Eight
+nodes hold the box (1e8 cells per GPU, ~40 GB); 16 halve the wall time.
+
+GPU build (UNTESTED as of 2026-09-15: the CUDA path of multigrid + kokkos-fft +
+particles has never been compiled here -- do the one-node test before committing to
+the allocation).  On a Vista login node:
+
+```bash
+module load nvidia/24.7 openmpi/5.0.5_nvc249 cuda
+cd $HOME/athenak-multigrid
+cmake -B build-gpu -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON \
+      -D Kokkos_ENABLE_CUDA=ON -D Kokkos_ARCH_HOPPER90=ON -D Kokkos_ARCH_ARMV9_GRACE=ON \
+      -D CMAKE_CXX_COMPILER=$HOME/athenak-multigrid/kokkos/bin/nvcc_wrapper
+cmake --build build-gpu -j 16
+```
+
+kokkos-fft picks cuFFT for the CUDA backend.  Then, from run directories in
+`$SCRATCH`:
+
+```bash
+# one-node timing test first (a few hundred cycles)
+mkdir -p $SCRATCH/gt16/test && cd $SCRATCH/gt16/test && sbatch -N 1 -n 1 -t 00:30:00 $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage1_gpu.slurm
+# stage 1, then stage 2 from the dump after the first burst
+mkdir -p $SCRATCH/gt16/stage1 && cd $SCRATCH/gt16/stage1 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage1_gpu.slurm
+mkdir -p $SCRATCH/gt16/dust && cd $SCRATCH/gt16/dust && RST=$SCRATCH/gt16/stage1/rst/gt16.00005.rst TLIM=100 sbatch $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage2_gpu.slurm
+```
+
+The one-node test's `elapsed=` lines give the cell-updates per second that fix the
+table above; 1280^2 x 512 cells on one GPU need ~40 GB and run at 1/8 the speed.
+
+## 5. The z boundary: `hse_outflow`
+
+`diode` (ghost = copy of the edge cell, normal momentum clamped outward) leaks mass
+INTO the box once the halo lifts off the density floor (HANDOFF_ZBC.md: every high-beta
+SC14 run died of it; the Baehr stage 1 gained 8% by t = 150).  The ghost is a flat
+reservoir at the edge density with dP/dz = 0 across the face, so gravity accelerates
+the edge cell inward and the Riemann solver draws mass in.  `hse_outflow` (Booth &
+Clarke 2019) fills the ghosts with the hydrostatic isothermal extrapolation of the edge
+cell under -Omega^2 z, the same temperature, copied velocities with the normal one
+zeroed if inward, and a consistent energy.  Set `ix3_bc = ox3_bc = hse_outflow` in the
+mesh block; the particle removal at physical faces is unchanged.

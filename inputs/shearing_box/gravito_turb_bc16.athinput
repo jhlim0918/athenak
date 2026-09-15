@@ -1,0 +1,120 @@
+# AthenaK input file: the proof-of-concept gravito-turbulent box for the fellowship
+# proposal -- Booth & Clarke (2019) geometry at streaming-instability resolution.
+# Lx = Ly = 16 H_g, Lz = 6.4 H_g at 80 cells per H_g (1280 x 1280 x 512 cubic cells,
+# 32^3 MeshBlocks: 40 x 40 x 16 = 25600 blocks), otherwise the Baehr+22 physics of
+# gravito_turb_baehr.athinput in SC14 units (H_g = cs0/Omega = 2.16878, beta = 10,
+# Q0 = 1.02, gamma = 5/3, irradiation floor at cs0).  BC19 find boxes below 32 H bursty
+# (the dominant spiral's azimuthal wavelength is the box), which a proof of concept can
+# live with; at 16 H two arms fit.  STAGE 1: the gas alone to t = 50 (BC19 average from
+# t = 50; with the floor our disk starts cooling late, so check Q(t) and continue with
+# CONT=1 TLIM=... if the first burst has not happened).  STAGE 2 restarts from a dump
+# with gravito_turb_bc16_dust.athinput (St = 0.3, radial pressure gradient on).
+# z faces: hse_outflow -- outflow with the ghost density on the hydrostatic isothermal
+# extrapolation of the edge cell (BC19), which closes the inflow leak of diode.
+# Cost scaling from the 512^2 x 256 Baehr stage 1: 12x the cells, 4x the cycles per
+# unit time -> ~1e5 cycles to t = 50, ~8e13 cell-updates.
+#   small-box sanity test: mesh/nx1=128 mesh/nx2=128 mesh/nx3=64 (5 cells per H_g)
+
+<comment>
+problem   = 16H gravito-turbulent box at 80 cells/H, stage 1 (gas only, beta = 10)
+
+<job>
+basename  = gt16
+
+<mesh>
+nghost    = 3         # Number of ghost cells
+nx1       = 1280      # 80 cells per H_g
+x1min     = -17.35024 # Lx = 16 H_g, H_g = 2.16878
+x1max     = 17.35024
+ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
+ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
+
+nx2       = 1280
+x2min     = -17.35024 # Ly = 16 H_g
+x2max     = 17.35024
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 512
+x3min     = -6.940096 # Lz = 6.4 H_g (BC19 use 6 H; 512 cells keeps the cells cubic)
+x3max     = 6.940096
+ix3_bc    = hse_outflow  # outflow with hydrostatic ghost density (BC19); diode leaks
+ox3_bc    = hse_outflow  # mass in through the z faces once the halo lifts off the floor
+
+<meshblock>
+nx1       = 32        # cubic MeshBlocks (multigrid requirement); 40 x 40 x 16 of them
+nx2       = 32
+nx3       = 32
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integrator
+cfl_number = 0.3      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = -1       # cycle limit
+tlim       = 50.0     # BC19 average from t = 50; extend with CONT=1 TLIM=... if needed
+ndiag      = 100      # cycles between diagnostic output
+
+<hydro>
+eos         = ideal   # EOS type
+gamma       = 1.6666666666666667
+reconstruct = plm     # spatial reconstruction method
+rsolver     = hllc    # Riemann-solver to be used
+dfloor      = 1.0e-4  # density floor (SC14: 1e-4 rho0)
+pfloor      = 1.0e-10 # pressure floor (halo shocks; SC14 used Athena's default floors)
+
+<shearing_box>
+qshear    = 1.5       # shear rate parameter q
+omega0    = 1.0       # rotation frequency
+stratified = true     # vertical tidal gravity -Omega^2 z
+orbital_advection = true
+
+<gravity>
+solver    = multigrid # fft | multigrid
+four_pi_G = 4.25231   # = 4*pi*0.3384 (SC14 fiducial G)
+mg_bc     = slab      # slab-open (vacuum) x3 boundaries
+vert_bc   = open      # FFT solver only (solver=fft cross-checks; ignored by MG)
+mg_remap  = ppmx      # shear ghost + slab plane remap order
+threshold = -1.0      # FIXED iteration count, not the stagnation rule: 6
+niteration = 6        # warm-started V-cycles reach defect ~5e-7 (far below the
+                      # ~1e-4 discretization error) at ~1/3 the cost; the
+                      # validated 2026-08 b10 run used threshold=0.0 -- results
+                      # are insensitive (solver tolerance << physics)
+full_multigrid = false  # iterative mode: warm-start from the previous potential
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+beta_cooling = true
+bcool_beta   = 10.0   # beta = Omega*t_cool
+bcool_cs2_floor = 4.70361  # irradiation floor: cool toward the initial T (cs0^2)
+thermal_cooling = false  # SC14 "b" runs: t_cool = tcool_b*(rho/P)^3 (set
+tcool_b      = 200.0     # beta_cooling=false when enabling)
+cool_eps     = 0.02      # dt <= cool_eps*t_cool
+
+<problem>
+pgen_name = gravito_turb
+user_hist = true
+rho0      = 1.0
+cs0       = 2.16878   # midplane sound speed: Q0 = 1.02 (Q scales with cs0)
+dfloor_ic = 1.0e-4    # initial-condition halo floor
+pert_amp  = 0.1       # velocity perturbations up to pert_amp*cs0 ...
+pert_zmax = 4.34      # ... for |z| < 2 H_g
+pert_seed = 1
+
+<output1>
+file_type = hst
+dt        = 0.25
+
+<output2>
+file_type = bin
+variable  = hydro_w
+dt        = 5.0
+
+<output3>
+file_type = bin
+variable  = grav_phi
+dt        = 5.0
+
+<output4>
+file_type = rst
+dt        = 10.0      # stage 2 restarts from the dump after the first burst
