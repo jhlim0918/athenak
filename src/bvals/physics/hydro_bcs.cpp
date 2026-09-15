@@ -13,6 +13,7 @@
 #include "mesh/mesh.hpp"
 #include "hydro/hydro.hpp"
 #include "eos/eos.hpp"
+#include "shearing_box/shearing_box.hpp"
 
 void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Real> u0,
                     int is, int ie, int js, int je, int ks, int ke, int n1, int n2,
@@ -250,6 +251,29 @@ void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Rea
 
   // only apply BCs if not periodic
   if (pm->mesh_bcs[BoundaryFace::inner_x3] == BoundaryFlag::periodic) return;
+
+  // hse_outflow (Booth & Clarke 2019): the ghost density follows the hydrostatic,
+  // isothermal extrapolation of the edge cell under the shearing box's vertical gravity
+  // -Omega^2 z, rho(z) = rho_e exp(-Omega^2 (z^2 - z_e^2) / (2 a^2)), a^2 = P_e/rho_e;
+  // velocities are copied and the normal one clamped outward (diode); the energy is
+  // rebuilt from a^2 and the ghost velocity.  A plain diode ghost is a flat reservoir at
+  // the edge density with dP/dz = 0 across the face, so gravity accelerates the edge cell
+  // inward and the Riemann solver draws mass in from the ghost; with hydrostatic support
+  // in the ghost the edge cell stays balanced.  Without a stratified shearing box
+  // (Omega = 0) this reduces to diode.  Disc self-gravity is not included in the
+  // extrapolation.  Not implemented for x1/x2 (falls to default there).
+  auto &size = ppack->pmb->mb_size;
+  auto &eos = ppack->phydro->peos->eos_data;
+  const bool ideal = eos.is_ideal;
+  const Real gm1 = eos.gamma - 1.0;
+  const Real ciso2 = SQR(eos.iso_cs);
+  const Real dfloor = eos.dfloor;
+  Real om2 = 0.0;
+  if (ppack->phydro->psbox_u != nullptr && ppack->phydro->psbox_u->is_stratified) {
+    om2 = SQR(ppack->phydro->psbox_u->omega0);
+  }
+  const int nk = ke - ks + 1;
+
   par_for("hydrobc_x3", DevExeSpace(), 0,(nmb-1),0,(nvar-1),0,(n2-1),0,(n1-1),
   KOKKOS_LAMBDA(int m, int n, int j, int i) {
     // apply physical boundaries to inner_x3
@@ -282,6 +306,37 @@ void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Rea
           }
         }
         break;
+      case BoundaryFlag::hse_outflow: {
+        Real de = u0(m,IDN,ks,j,i);
+        Real mx = u0(m,IM1,ks,j,i), my = u0(m,IM2,ks,j,i), mz = u0(m,IM3,ks,j,i);
+        Real vx = mx/de, vy = my/de, vz = fmin(0.0, mz/de);
+        Real a2 = ciso2;
+        if (ideal) {
+          Real ekin = 0.5*(mx*mx + my*my + mz*mz)/de;
+          a2 = fmax(gm1*(u0(m,IEN,ks,j,i) - ekin)/de, 1.0e-30);
+        }
+        Real dz = (size.d_view(m).x3max - size.d_view(m).x3min)/static_cast<Real>(nk);
+        Real ze = size.d_view(m).x3min + 0.5*dz;
+        for (int k=0; k<ng; ++k) {
+          Real z = ze - (k+1)*dz;
+          Real f = exp(-om2*(z*z - ze*ze)/(2.0*a2));
+          Real dg = fmax(de*f, dfloor);
+          if (n==IDN) {
+            u0(m,n,ks-k-1,j,i) = dg;
+          } else if (n==IM1) {
+            u0(m,n,ks-k-1,j,i) = dg*vx;
+          } else if (n==IM2) {
+            u0(m,n,ks-k-1,j,i) = dg*vy;
+          } else if (n==IM3) {
+            u0(m,n,ks-k-1,j,i) = dg*vz;
+          } else if (ideal && n==IEN) {
+            u0(m,n,ks-k-1,j,i) = dg*a2/gm1 + 0.5*dg*(vx*vx + vy*vy + vz*vz);
+          } else {
+            u0(m,n,ks-k-1,j,i) = u0(m,n,ks,j,i)*(dg/de);   // passive scalars
+          }
+        }
+        break;
+      }
       case BoundaryFlag::vacuum:
         for (int k=0; k<ng; ++k) {
           u0(m,n,ks-k-1,j,i) = 0.0;
@@ -321,6 +376,37 @@ void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Rea
           }
         }
         break;
+      case BoundaryFlag::hse_outflow: {
+        Real de = u0(m,IDN,ke,j,i);
+        Real mx = u0(m,IM1,ke,j,i), my = u0(m,IM2,ke,j,i), mz = u0(m,IM3,ke,j,i);
+        Real vx = mx/de, vy = my/de, vz = fmax(0.0, mz/de);
+        Real a2 = ciso2;
+        if (ideal) {
+          Real ekin = 0.5*(mx*mx + my*my + mz*mz)/de;
+          a2 = fmax(gm1*(u0(m,IEN,ke,j,i) - ekin)/de, 1.0e-30);
+        }
+        Real dz = (size.d_view(m).x3max - size.d_view(m).x3min)/static_cast<Real>(nk);
+        Real ze = size.d_view(m).x3max - 0.5*dz;
+        for (int k=0; k<ng; ++k) {
+          Real z = ze + (k+1)*dz;
+          Real f = exp(-om2*(z*z - ze*ze)/(2.0*a2));
+          Real dg = fmax(de*f, dfloor);
+          if (n==IDN) {
+            u0(m,n,ke+k+1,j,i) = dg;
+          } else if (n==IM1) {
+            u0(m,n,ke+k+1,j,i) = dg*vx;
+          } else if (n==IM2) {
+            u0(m,n,ke+k+1,j,i) = dg*vy;
+          } else if (n==IM3) {
+            u0(m,n,ke+k+1,j,i) = dg*vz;
+          } else if (ideal && n==IEN) {
+            u0(m,n,ke+k+1,j,i) = dg*a2/gm1 + 0.5*dg*(vx*vx + vy*vy + vz*vz);
+          } else {
+            u0(m,n,ke+k+1,j,i) = u0(m,n,ke,j,i)*(dg/de);   // passive scalars
+          }
+        }
+        break;
+      }
       case BoundaryFlag::vacuum:
         for (int k=0; k<ng; ++k) {
           u0(m,n,ke+k+1,j,i) = 0.0;

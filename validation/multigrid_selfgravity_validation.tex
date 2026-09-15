@@ -21,7 +21,7 @@
        Gravity on Refined Meshes (Phase 2),\\
        and the Stratified Box with Open-$z$ Boundaries (Phase 3)}
 \author{\code{athenak-multigrid} tree, branch \code{multigrid}}
-\date{August 14, 2026}
+\date{August 14, 2026 (addendum September 15)}
 
 \begin{document}
 \maketitle
@@ -1872,6 +1872,32 @@ at whatever velocity gravity establishes. With \code{diode} boundaries the same
 test holds: midplane profile unchanged over $10\,\Om^{-1}$, disk-body velocities
 $\lesssim 2\%$ of $c_s(0)$, mass constant to $0.25\%$ (floor injection in the
 halo). All Phase-3 inputs use \code{diode}.
+
+\paragraph{Addendum (September 15, 2026): the diode leaks too, and
+\code{hse\_outflow} closes it.} The high-$\beta$ SC14 runs later died of a slower
+version of the same fountain (\file{HANDOFF\_ZBC.md}): once the halo lifts off the
+density floor, \code{diode} lets mass \emph{enter} the box --- the ghost is a flat
+reservoir at the edge density with $dP/dz = 0$ across the face, so the vertical
+gravity accelerates the edge cell inward and the Riemann solver draws mass in from a
+ghost that is regenerated every step; the clamp constrains the ghost \emph{state}, not
+the \emph{flux}. Booth \& Clarke (2019) avoid it by extrapolating the ghost density
+along the hydrostatic profile at the edge cell's temperature, which is now the
+boundary flag \code{hse\_outflow} (\file{src/bvals/physics/hydro\_bcs.cpp}, $x_3$
+faces): $\rho(z) = \rho_e\exp[-\Om^2(z^2 - z_e^2)/(2a^2)]$ with $a^2 = P_e/\rho_e$,
+velocities copied with the normal one zeroed if inward, the energy rebuilt from $a^2$
+and the ghost velocity, scalars scaled; it reduces to \code{diode} without a
+stratified shearing box and is applied to the fine and coarse arrays alike. In the
+hand-off's test box ($32\times32\times24$, $8\times8\times6$ $H$, $\beta = 80$,
+$150\,\Om^{-1}$ from scratch, data \file{run/zbc/}) the diode box gains $15.8\%$
+in mass and is still gaining at $0.4\%$ per $\Om^{-1}$, $\langle c_s\rangle$
+doubles, and the face density sits at $6\times10^{-2}$; with \code{hse\_outflow}
+the mass is constant to $0.1\%$ (peak $1.9\%$, then a slow \emph{outflow} of
+$-0.07\%$ per $\Om^{-1}$, as an evaporating halo should), $\langle c_s\rangle$
+saturates at $1.10\times$ its initial value, and the face density is $10^{-2}$,
+falling from $2\times10^{-2}$ two cells in. At $\beta = 10$ the two boundaries agree
+to every digit for as long as the halo stays on the floor. The new inputs
+(\file{gravito\_turb\_bc16.athinput}) use \code{hse\_outflow}; the SC14 and Baehr
+inputs keep \code{diode} so their archived runs stay reproducible.
 
 \subsection{Dynamic validation: the evolution twin and adaptive refinement}
 
