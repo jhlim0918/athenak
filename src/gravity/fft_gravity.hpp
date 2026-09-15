@@ -62,6 +62,9 @@ class FFTGravitySolver {
 
   std::unique_ptr<FFTPlan> plan_fwd_, plan_bwd_;
 
+ public:
+  // Kernel-enclosing members must be public: nvcc rejects an extended device lambda
+  // whose enclosing member function has private or protected access.
   // qshear*omega0*(time since last shear-periodic instant); 0 if not shearing
   Real ComputeQomt(Real time) const;
   // pack u0(IDN) active zones -> rbuf_a_, scaled by four_pi_G

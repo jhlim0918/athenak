@@ -468,7 +468,6 @@ class MultigridDriver {
   Multigrid* FindMultigrid(int tgid);
   // shear-periodic x1 support (Phase 1: uniform grid; Phase 2b: boundary annuli)
   Real ComputeShearQomt(Real time) const;
-  void RootShearBoundaryX1();
   void FillShearOctetGhosts(int lev, bool folddata);
   // driver-independent task-list runner (MG tasks never use their Driver* argument,
   // so this also supports static solves from pgens where no Driver exists yet)
@@ -531,9 +530,15 @@ class MultigridDriver {
   MGSlabFFTPlans *slab_plans_ = nullptr;
   void AllocateSlabPlanes();             // pyramid + offset tables; PrepareForAMR-safe
   void CheckSlabBlockLevels();           // fatal unless x3-boundary blocks at root level
+  void FreeSlabPlanes();                 // release plans + pyramid (dtor)
+
+ public:
+  // Kernel-enclosing members must be public: nvcc rejects an extended device lambda
+  // whose enclosing member function has private or protected access.
+  void RootShearBoundaryX1();
   void ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int ivar, Real four_pi_G,
                          Real qomt);
-  void FreeSlabPlanes();                 // release plans + pyramid (dtor)
+ protected:
 
   // Source masking (zero source outside mask_radius_)
   Real mask_radius_;
