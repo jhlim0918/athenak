@@ -39,6 +39,17 @@
 
 namespace dust {
 
+//----------------------------------------------------------------------------------------
+//! \fn PhysicalFace
+//! \brief true for a mesh face that is a physical boundary (not periodic, shear-periodic
+//! or internal).  A namespace-scope device function: nvcc does not allow a function-local
+//! lambda to be captured by a device lambda.
+KOKKOS_INLINE_FUNCTION
+bool PhysicalFace(BoundaryFlag f) {
+  return (f != BoundaryFlag::block) && (f != BoundaryFlag::periodic) &&
+         (f != BoundaryFlag::shear_periodic);
+}
+
 namespace {
 void RequireDone(TaskStatus status, const char *operation) {
   if (status == TaskStatus::fail) {
@@ -145,24 +156,20 @@ void DustGasDrag::ComputeForceField() {
   // and internal faces are filled by the exchanges that follow)
   auto &mb_bcs = pmy_pack->pmb->mb_bcs;
   int n1 = g.extent_int(4), n2 = g.extent_int(3), n3 = g.extent_int(2);
-  auto physical = [] (BoundaryFlag f) {
-    return (f != BoundaryFlag::block) && (f != BoundaryFlag::periodic) &&
-           (f != BoundaryFlag::shear_periodic);
-  };
   par_for("dust_grav_force_bc",DevExeSpace(),0,nmb1,0,2,0,n3-1,0,n2-1,0,n1-1,
   KOKKOS_LAMBDA(const int m, const int v, const int k, const int j, const int i) {
     int kk = k, jj = j, ii = i;
     bool in_ghost = false;
     auto &bc = mb_bcs.d_view;
-    if (i < is && physical(bc(m,BoundaryFace::inner_x1))) {ii = is; in_ghost = true;}
-    if (i > ie && physical(bc(m,BoundaryFace::outer_x1))) {ii = ie; in_ghost = true;}
+    if (i < is && PhysicalFace(bc(m,BoundaryFace::inner_x1))) {ii = is; in_ghost = true;}
+    if (i > ie && PhysicalFace(bc(m,BoundaryFace::outer_x1))) {ii = ie; in_ghost = true;}
     if (multi_d) {
-      if (j < js && physical(bc(m,BoundaryFace::inner_x2))) {jj = js; in_ghost = true;}
-      if (j > je && physical(bc(m,BoundaryFace::outer_x2))) {jj = je; in_ghost = true;}
+      if (j < js && PhysicalFace(bc(m,BoundaryFace::inner_x2))) {jj = js; in_ghost = true;}
+      if (j > je && PhysicalFace(bc(m,BoundaryFace::outer_x2))) {jj = je; in_ghost = true;}
     }
     if (three_d) {
-      if (k < ks && physical(bc(m,BoundaryFace::inner_x3))) {kk = ks; in_ghost = true;}
-      if (k > ke && physical(bc(m,BoundaryFace::outer_x3))) {kk = ke; in_ghost = true;}
+      if (k < ks && PhysicalFace(bc(m,BoundaryFace::inner_x3))) {kk = ks; in_ghost = true;}
+      if (k > ke && PhysicalFace(bc(m,BoundaryFace::outer_x3))) {kk = ke; in_ghost = true;}
     }
     if (in_ghost) {
       // clamp the remaining indices into the active zone (corner ghosts of a physical
