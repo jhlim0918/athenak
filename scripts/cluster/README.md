@@ -242,18 +242,21 @@ particles, hybrid coupling, back-reaction on, radial pressure gradient on at
 Pi = eta v_K / cs = 0.1 so that eta r = 8 cells).
 
 Cost, measured 2026-09-16 on one GH200 with the full resolution on a 4H x 4H x 6.4H
-domain (5.2e7 cells, `test`, `test_fft`, `test_mb64`, `test_it3` under $SCRATCH/gt16):
-1.00 s per cycle with the multigrid at 6 V-cycles per solve (4.9e7 cell-updates/s),
-0.80 s at 3 (5.9e7), 0.18 s with the FFT solver (2.1e8 -- single-rank only, so not an
-option for the box), and no change with 64^3 blocks.  The multigrid is thus ~80% of
-the cycle, and most of that is a fixed ~0.2 s per solve rather than the V-cycles
-(~0.03 s each); 3 V-cycles reproduce the converged Jeans growth rate to 3e-6, which
-is why the input uses 3.  With dt ~ 1.2e-3 (the halo's free fall in the 6.4H box),
-t = 50 is ~4e4 cycles: stage 1 ~3.3e13 cell-updates = ~155 GPU-hours at 5.9e7/s,
-stage 2 (50/Omega with dust) about the same plus a few percent for the particles --
-~300-350 GPU-hours for both at single-GPU efficiency, more with the MPI losses of 8
-ranks.  Eight nodes hold the box (1e8 cells per GPU, ~40 GB); 16 halve the wall time
-(the 48 h queue limit needs 16 nodes or the CONT=1 continuation).
+domain (5.2e7 cells; `test*` under $SCRATCH/gt16).  The first measurement gave 1.00 s
+per cycle (4.9e7 cell-updates/s) with the multigrid at ~80% of it, almost all of that
+in a fixed cost per solve: ComputeSlabPlanes handled the 512 root k-planes one at a
+time (~3600 kernel launches per solve, latency-bound on a GPU).  After batching the
+planes (bf1a4446) and taking 3 V-cycles per solve instead of 6 (3 reproduce the
+converged Jeans growth rate to 3e-6), the phase timer (`gravity/show_defect = 1`
+prints `mg_phase_times` per solve) reads slab 0.015 s, V-cycles 0.096 s, the rest
+< 2 ms; the cycle is 0.57 s, i.e. 9.2e7 cell-updates/s per GPU, with the same defect
+norms to every digit.  The FFT solver would give 2.1e8 but is single-rank only.
+With dt ~ 1.2e-3 (the halo's free fall in the 6.4H box), t = 50 is ~4e4 cycles:
+stage 1 ~3.3e13 cell-updates = ~100 GPU-hours, stage 2 (50/Omega with dust) about the
+same plus a few percent for the particles -- ~200-220 GPU-hours for both at
+single-GPU efficiency, ~260-300 with the MPI losses of 8 ranks.  Eight nodes hold the
+box (1e8 cells per GPU, ~40 GB) and finish a stage in ~13 h; the first `elapsed=`
+lines of the production run are the check on the parallel efficiency.
 
 GPU build (UNTESTED as of 2026-09-15: the CUDA path of multigrid + kokkos-fft +
 particles has never been compiled here -- do the one-node test before committing to
