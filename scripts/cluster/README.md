@@ -241,12 +241,19 @@ and continue with `CONT=1 TLIM=...` if the first burst has not happened) and
 particles, hybrid coupling, back-reaction on, radial pressure gradient on at
 Pi = eta v_K / cs = 0.1 so that eta r = 8 cells).
 
-Cost, scaled from the measured Baehr stage 1 (5.2e12 cell-updates for 150/Omega at
-20 per H_g; cycles scale with the resolution because the step is set by the halo's
-free fall): stage 1 to t = 50 is ~8e13 cell-updates, stage 2 (50/Omega with dust)
-about the same plus a few percent for the particles.  At 1--2e8 cell-updates/s per
-GH200 (assumed; measure it): 110--220 GPU-hours per stage, 250--500 for both.  Eight
-nodes hold the box (1e8 cells per GPU, ~40 GB); 16 halve the wall time.
+Cost, measured 2026-09-16 on one GH200 with the full resolution on a 4H x 4H x 6.4H
+domain (5.2e7 cells, `test`, `test_fft`, `test_mb64`, `test_it3` under $SCRATCH/gt16):
+1.00 s per cycle with the multigrid at 6 V-cycles per solve (4.9e7 cell-updates/s),
+0.80 s at 3 (5.9e7), 0.18 s with the FFT solver (2.1e8 -- single-rank only, so not an
+option for the box), and no change with 64^3 blocks.  The multigrid is thus ~80% of
+the cycle, and most of that is a fixed ~0.2 s per solve rather than the V-cycles
+(~0.03 s each); 3 V-cycles reproduce the converged Jeans growth rate to 3e-6, which
+is why the input uses 3.  With dt ~ 1.2e-3 (the halo's free fall in the 6.4H box),
+t = 50 is ~4e4 cycles: stage 1 ~3.3e13 cell-updates = ~155 GPU-hours at 5.9e7/s,
+stage 2 (50/Omega with dust) about the same plus a few percent for the particles --
+~300-350 GPU-hours for both at single-GPU efficiency, more with the MPI losses of 8
+ranks.  Eight nodes hold the box (1e8 cells per GPU, ~40 GB); 16 halve the wall time
+(the 48 h queue limit needs 16 nodes or the CONT=1 continuation).
 
 GPU build (UNTESTED as of 2026-09-15: the CUDA path of multigrid + kokkos-fft +
 particles has never been compiled here -- do the one-node test before committing to
@@ -277,8 +284,8 @@ mkdir -p $SCRATCH/gt16/stage1 && cd $SCRATCH/gt16/stage1 && sbatch $HOME/athenak
 mkdir -p $SCRATCH/gt16/dust && cd $SCRATCH/gt16/dust && RST=$SCRATCH/gt16/stage1/rst/gt16.00005.rst TLIM=100 sbatch $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage2_gpu.slurm
 ```
 
-The one-node test's `elapsed=` lines give the cell-updates per second that fix the
-table above; 1280^2 x 512 cells on one GPU need ~40 GB and run at 1/8 the speed.
+The one-node test's `elapsed=` lines are the cell-updates per second per GPU quoted
+above; rerun it after any change to the multigrid.
 
 ## 5. The z boundary: `hse_outflow`
 
