@@ -93,10 +93,14 @@ constexpr int PAD = 3;
 struct MultigridDriver::MGSlabFFTPlans {
 #if FFT_ENABLED
   using ComplexArray2D = DvceArray2D<Kokkos::complex<Real>>;
+  using ComplexArray3D = DvceArray3D<Kokkos::complex<Real>>;
   using Plan1D = KokkosFFT::Plan<DevExeSpace, ComplexArray2D, ComplexArray2D, 1>;
+  using PlanB1D = KokkosFFT::Plan<DevExeSpace, ComplexArray3D, ComplexArray3D, 1>;
   // the (ny,nx) plane is transformed one axis at a time so that the shear roll can be
-  // applied as an exact phase between the y and the x transforms
+  // applied as an exact phase between the y and the x transforms; the forward
+  // transforms of the density planes run batched over a (batch,ny,nx) stack
   std::unique_ptr<Plan1D> fwd_y, fwd_x, bwd_y, bwd_x;
+  std::unique_ptr<PlanB1D> bfwd_y, bfwd_x;
 #endif
 };
 
@@ -123,6 +127,9 @@ void MultigridDriver::AllocateSlabPlanes() {
     Kokkos::realloc(slab_dens_, ny, nx);   // one padded root-resolution plane
     Kokkos::realloc(slab_zin_, ny, nx);
     Kokkos::realloc(slab_zout_, ny, nx);
+    Kokkos::realloc(slab_dens3_, slab_batch_, ny, nx);
+    Kokkos::realloc(slab_zin3_, slab_batch_, ny, nx);
+    Kokkos::realloc(slab_zout3_, slab_batch_, ny, nx);
     Kokkos::realloc(slab_zplanes_, 2, ny, nx);
     Kokkos::realloc(slab_mu_, ny, nx);
     Kokkos::realloc(slab_wt_, ny, nx);
@@ -281,6 +288,12 @@ void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int i
     slab_plans_->bwd_y = std::make_unique<MGSlabFFTPlans::Plan1D>(
         DevExeSpace(), slab_zin_, slab_zout_,
         KokkosFFT::Direction::backward, KokkosFFT::axis_type<1>({0}));
+    slab_plans_->bfwd_y = std::make_unique<MGSlabFFTPlans::PlanB1D>(
+        DevExeSpace(), slab_zin3_, slab_zout3_,
+        KokkosFFT::Direction::forward, KokkosFFT::axis_type<1>({1}));
+    slab_plans_->bfwd_x = std::make_unique<MGSlabFFTPlans::PlanB1D>(
+        DevExeSpace(), slab_zin3_, slab_zout3_,
+        KokkosFFT::Direction::forward, KokkosFFT::axis_type<1>({2}));
   }
 
   // per-mode decay factor mu and face weight of the discrete vacuum Green's function
@@ -321,100 +334,109 @@ void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int i
     int js = indcs.js, je = indcs.je;
     int ks = indcs.ks, ke = indcs.ke;
     int nmb = pmy_pack_->nmb_thispack;
-    int nmb1 = nmb - 1;
     auto goffs = slab_goffs_;
     Real fpg = four_pi_G;
-    auto plane = slab_dens_;   // (ny,nx) padded root-resolution plane
     auto mu = slab_mu_;
     auto wt = slab_wt_;
     Real dz2 = dx3*dx3;
 
-    // the distinct root k-planes this rank's blocks cover, and for each the list of
-    // blocks that intersect it (host: goffs is small).  Each plane's gather then
-    // launches over exactly those blocks and their intersecting k-rows, so a solve
-    // visits every cell once -- a sweep of the whole grid per plane (the previous
-    // form) is nz full sweeps per solve, ~0.2 s on one GPU at 512 planes.
+    // Planes are processed in batches of B = slab_batch_ aligned to multiples of B (a
+    // root-level block's 32 k-rows then fall in one batch): one gather launch over the
+    // blocks intersecting the batch, the forward transforms batched over the stack, one
+    // weighted accumulation.  ~100 launches per solve instead of ~7 per plane -- the
+    // per-plane form was latency-bound on a GPU (0.11 s per solve at 512 planes).
+    const int B = slab_batch_;
+    const int nbatch = (nz + B - 1)/B;
     auto h_goffs = Kokkos::create_mirror_view_and_copy(HostMemSpace(), slab_goffs_);
-    std::vector<int> kplanes, plane_off, plane_blk;
+    std::vector<int> batches, batch_off, batch_blk;
     {
-      std::vector<std::vector<int>> blocks_of(nz);
+      std::vector<std::vector<int>> blocks_of(nbatch);
       int nmbz = indcs.nx3;
       for (int m = 0; m < nmb; ++m) {
         int lev = h_goffs(m,3);
         int k0 = h_goffs(m,2) >> lev;
         int k1 = (h_goffs(m,2) + nmbz - 1) >> lev;
-        for (int kg = k0; kg <= k1; ++kg) blocks_of[kg].push_back(m);
+        for (int bt = k0/B; bt <= k1/B; ++bt) blocks_of[bt].push_back(m);
       }
-      for (int kg = 0; kg < nz; ++kg) {
-        if (blocks_of[kg].empty()) continue;
-        kplanes.push_back(kg);
-        plane_off.push_back(static_cast<int>(plane_blk.size()));
-        plane_blk.insert(plane_blk.end(), blocks_of[kg].begin(), blocks_of[kg].end());
+      for (int bt = 0; bt < nbatch; ++bt) {
+        if (blocks_of[bt].empty()) continue;
+        batches.push_back(bt);
+        batch_off.push_back(static_cast<int>(batch_blk.size()));
+        batch_blk.insert(batch_blk.end(), blocks_of[bt].begin(), blocks_of[bt].end());
       }
-      plane_off.push_back(static_cast<int>(plane_blk.size()));
+      batch_off.push_back(static_cast<int>(batch_blk.size()));
     }
-    DvceArray1D<int> d_blk("mgslab_plane_blocks", std::max<int>(1, plane_blk.size()));
+    DvceArray1D<int> d_blk("mgslab_batch_blocks", std::max<int>(1, batch_blk.size()));
     {
       auto h_blk = Kokkos::create_mirror_view(d_blk);
-      for (std::size_t n = 0; n < plane_blk.size(); ++n) h_blk(n) = plane_blk[n];
+      for (std::size_t n = 0; n < batch_blk.size(); ++n) h_blk(n) = batch_blk[n];
       Kokkos::deep_copy(d_blk, h_blk);
     }
+    auto dens3 = slab_dens3_;
+    auto zin3 = slab_zin3_;
+    auto zout3 = slab_zout3_;
 
-    for (std::size_t ip = 0; ip < kplanes.size(); ++ip) {
-      const int kg = kplanes[ip];
-      const int boff = plane_off[ip];
-      const int nblk = plane_off[ip+1] - plane_off[ip];
-      // gather this rank's cells of root plane kg (conservative average of refined
-      // blocks), zero elsewhere
-      Kokkos::deep_copy(plane, 0.0);
-      par_for("mgslab_gather", DevExeSpace(), 0, nblk-1, js, je, is, ie,
-      KOKKOS_LAMBDA(const int b, const int j, const int i) {
+    for (std::size_t ib = 0; ib < batches.size(); ++ib) {
+      const int kb0 = batches[ib]*B;
+      const int nkb = std::min(B, nz - kb0);
+      const int boff = batch_off[ib];
+      const int nblk = batch_off[ib+1] - batch_off[ib];
+      // gather this rank's cells of the batch's planes (conservative average of
+      // refined blocks), zero elsewhere
+      Kokkos::deep_copy(dens3, 0.0);
+      par_for("mgslab_gather", DevExeSpace(), 0, nblk-1, ks, ke, js, je, is, ie,
+      KOKKOS_LAMBDA(const int b, const int k, const int j, const int i) {
         const int m = d_blk(boff + b);
         const int lev = goffs(m,3);
+        const int kl = ((goffs(m,2) + (k-ks)) >> lev) - kb0;
+        if (kl < 0 || kl >= nkb) return;
         const int gi = (goffs(m,0) + (i-is)) >> lev;
         const int gj = (goffs(m,1) + (j-js)) >> lev;
         const Real w = 1.0/static_cast<Real>(1 << (3*lev));
-        // the block's k-rows whose finest index >> lev is kg
-        const int kfirst = (kg << lev) - goffs(m,2) + ks;
-        Real sum = 0.0;
-        for (int kk = 0; kk < (1 << lev); ++kk) {
-          const int k = kfirst + kk;
-          if (k >= ks && k <= ke) sum += u0(m,ivar,k,j,i);
-        }
-        Kokkos::atomic_add(&plane(gj,gi), w*fpg*sum);
+        Kokkos::atomic_add(&dens3(kl,gj,gi), w*fpg*u0(m,ivar,k,j,i));
       });
 
       // horizontal transform into the strictly periodic (rolled) frame: FFT along y,
       // then the roll rho'(x,y) = rho(x, y - qomt*x) as the exact phase
-      // exp(-i ky qomt x) per column, then FFT along x.  Linear in the density (so the
-      // per-rank partial planes add up exactly) and free of any remap error.
-      par_for("mgslab_r2z", DevExeSpace(), 0, ny-1, 0, nx-1,
-      KOKKOS_LAMBDA(const int j, const int i) {
-        zin(j,i) = Kokkos::complex<Real>(plane(j,i), 0.0);
+      // exp(-i ky qomt x) per column, then FFT along x -- batched over the stack.
+      // Linear in the density (so the per-rank partial planes add up exactly) and free
+      // of any remap error.
+      par_for("mgslab_r2z", DevExeSpace(), 0, B-1, 0, ny-1, 0, nx-1,
+      KOKKOS_LAMBDA(const int kl, const int j, const int i) {
+        zin3(kl,j,i) = Kokkos::complex<Real>((kl < nkb) ? dens3(kl,j,i) : 0.0, 0.0);
       });
-      KokkosFFT::execute(*(slab_plans_->fwd_y), slab_zin_, slab_zout_,
+      KokkosFFT::execute(*(slab_plans_->bfwd_y), slab_zin3_, slab_zout3_,
                          KokkosFFT::Normalization::backward);
-      par_for("mgslab_phase", DevExeSpace(), 0, ny-1, 0, nx-1,
-      KOKKOS_LAMBDA(const int j, const int i) {
+      par_for("mgslab_phase", DevExeSpace(), 0, B-1, 0, ny-1, 0, nx-1,
+      KOKKOS_LAMBDA(const int kl, const int j, const int i) {
         int jp = (j <= ny/2) ? j : j - ny;
         Real ky = 2.0*M_PI*static_cast<Real>(jp)/ly;
         Real x1v = x1min + (static_cast<Real>(i) + 0.5)*dx1;
         Real arg = -ky*qomt*x1v;
-        zin(j,i) = zout(j,i)*Kokkos::complex<Real>(cos(arg), sin(arg));
+        zin3(kl,j,i) = zout3(kl,j,i)*Kokkos::complex<Real>(cos(arg), sin(arg));
       });
-      KokkosFFT::execute(*(slab_plans_->fwd_x), slab_zin_, slab_zout_,
+      KokkosFFT::execute(*(slab_plans_->bfwd_x), slab_zin3_, slab_zout3_,
                          KokkosFFT::Normalization::backward);
-      const int k = kg;
       par_for("mgslab_accum", DevExeSpace(), 0, ny-1, 0, nx-1,
       KOKKOS_LAMBDA(const int j, const int i) {
+        Kokkos::complex<Real> a0(0.0, 0.0), a1(0.0, 0.0);
         if (j == 0 && i == 0) {
           // kperp = 0: discrete isolated-slab potential, symmetric gauge
-          zplanes(0,0,0) += zout(0,0)*(0.5*dz2*(static_cast<Real>(k) + 0.5));
-          zplanes(1,0,0) += zout(0,0)*(0.5*dz2*(static_cast<Real>(nz-k) - 0.5));
+          for (int kl = 0; kl < nkb; ++kl) {
+            const int k = kb0 + kl;
+            a0 += zout3(kl,0,0)*(0.5*dz2*(static_cast<Real>(k) + 0.5));
+            a1 += zout3(kl,0,0)*(0.5*dz2*(static_cast<Real>(nz-k) - 0.5));
+          }
         } else {
-          zplanes(0,j,i) += zout(j,i)*(wt(j,i)*pow(mu(j,i), k));
-          zplanes(1,j,i) += zout(j,i)*(wt(j,i)*pow(mu(j,i), nz-1-k));
+          const Real w = wt(j,i), m_ = mu(j,i);
+          for (int kl = 0; kl < nkb; ++kl) {
+            const int k = kb0 + kl;
+            a0 += zout3(kl,j,i)*(w*pow(m_, k));
+            a1 += zout3(kl,j,i)*(w*pow(m_, nz-1-k));
+          }
         }
+        zplanes(0,j,i) += a0;
+        zplanes(1,j,i) += a1;
       });
     }
   }

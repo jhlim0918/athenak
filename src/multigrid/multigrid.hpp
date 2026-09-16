@@ -524,6 +524,9 @@ class MultigridDriver {
   DvceArray2D<int> slab_goffs_;          // per-block (gox,goy,goz,lev) for the gather
   DvceArray2D<Real> slab_dens_;          // (ny,nx) padded root plane of 4piG*rho
   DvceArray2D<Kokkos::complex<Real>> slab_zin_, slab_zout_;  // (ny,nx) FFT slice bufs
+  static constexpr int slab_batch_ = 32;  // planes per batched forward transform
+  DvceArray3D<Real> slab_dens3_;         // (batch,ny,nx) gathered planes of a batch
+  DvceArray3D<Kokkos::complex<Real>> slab_zin3_, slab_zout3_;  // (batch,ny,nx) FFT bufs
   DvceArray3D<Kokkos::complex<Real>> slab_zplanes_;  // (2,ny,nx) face spectra accum
   DvceArray2D<Real> slab_mu_, slab_wt_;  // (ny,nx) per-mode decay factor and weight
   struct MGSlabFFTPlans;                 // KokkosFFT plans; defined in multigrid_slab.cpp
