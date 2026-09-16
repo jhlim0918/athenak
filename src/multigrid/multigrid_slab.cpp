@@ -329,33 +329,59 @@ void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int i
     auto wt = slab_wt_;
     Real dz2 = dx3*dx3;
 
-    // the distinct root k-planes this rank's blocks cover (host: goffs is small)
+    // the distinct root k-planes this rank's blocks cover, and for each the list of
+    // blocks that intersect it (host: goffs is small).  Each plane's gather then
+    // launches over exactly those blocks and their intersecting k-rows, so a solve
+    // visits every cell once -- a sweep of the whole grid per plane (the previous
+    // form) is nz full sweeps per solve, ~0.2 s on one GPU at 512 planes.
     auto h_goffs = Kokkos::create_mirror_view_and_copy(HostMemSpace(), slab_goffs_);
-    std::vector<int> kplanes;
+    std::vector<int> kplanes, plane_off, plane_blk;
     {
-      std::vector<char> seen(nz, 0);
+      std::vector<std::vector<int>> blocks_of(nz);
       int nmbz = indcs.nx3;
       for (int m = 0; m < nmb; ++m) {
         int lev = h_goffs(m,3);
         int k0 = h_goffs(m,2) >> lev;
         int k1 = (h_goffs(m,2) + nmbz - 1) >> lev;
-        for (int kg = k0; kg <= k1; ++kg) seen[kg] = 1;
+        for (int kg = k0; kg <= k1; ++kg) blocks_of[kg].push_back(m);
       }
-      for (int kg = 0; kg < nz; ++kg) if (seen[kg]) kplanes.push_back(kg);
+      for (int kg = 0; kg < nz; ++kg) {
+        if (blocks_of[kg].empty()) continue;
+        kplanes.push_back(kg);
+        plane_off.push_back(static_cast<int>(plane_blk.size()));
+        plane_blk.insert(plane_blk.end(), blocks_of[kg].begin(), blocks_of[kg].end());
+      }
+      plane_off.push_back(static_cast<int>(plane_blk.size()));
+    }
+    DvceArray1D<int> d_blk("mgslab_plane_blocks", std::max<int>(1, plane_blk.size()));
+    {
+      auto h_blk = Kokkos::create_mirror_view(d_blk);
+      for (std::size_t n = 0; n < plane_blk.size(); ++n) h_blk(n) = plane_blk[n];
+      Kokkos::deep_copy(d_blk, h_blk);
     }
 
-    for (int kg : kplanes) {
+    for (std::size_t ip = 0; ip < kplanes.size(); ++ip) {
+      const int kg = kplanes[ip];
+      const int boff = plane_off[ip];
+      const int nblk = plane_off[ip+1] - plane_off[ip];
       // gather this rank's cells of root plane kg (conservative average of refined
       // blocks), zero elsewhere
       Kokkos::deep_copy(plane, 0.0);
-      par_for("mgslab_gather", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
-      KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-        int lev = goffs(m,3);
-        if (((goffs(m,2) + (k-ks)) >> lev) != kg) return;
-        int gi = (goffs(m,0) + (i-is)) >> lev;
-        int gj = (goffs(m,1) + (j-js)) >> lev;
-        Real w = 1.0/static_cast<Real>(1 << (3*lev));
-        Kokkos::atomic_add(&plane(gj,gi), w*fpg*u0(m,ivar,k,j,i));
+      par_for("mgslab_gather", DevExeSpace(), 0, nblk-1, js, je, is, ie,
+      KOKKOS_LAMBDA(const int b, const int j, const int i) {
+        const int m = d_blk(boff + b);
+        const int lev = goffs(m,3);
+        const int gi = (goffs(m,0) + (i-is)) >> lev;
+        const int gj = (goffs(m,1) + (j-js)) >> lev;
+        const Real w = 1.0/static_cast<Real>(1 << (3*lev));
+        // the block's k-rows whose finest index >> lev is kg
+        const int kfirst = (kg << lev) - goffs(m,2) + ks;
+        Real sum = 0.0;
+        for (int kk = 0; kk < (1 << lev); ++kk) {
+          const int k = kfirst + kk;
+          if (k >= ks && k <= ke) sum += u0(m,ivar,k,j,i);
+        }
+        Kokkos::atomic_add(&plane(gj,gi), w*fpg*sum);
       });
 
       // horizontal transform into the strictly periodic (rolled) frame: FFT along y,
