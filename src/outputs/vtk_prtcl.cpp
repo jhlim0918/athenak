@@ -52,9 +52,18 @@ void ParticleVTKOutput::LoadOutputData(Mesh *pm) {
                                                     outpart_rdata);
   auto d_outpart_idata = Kokkos::create_mirror_view(Kokkos::DefaultHostExecutionSpace(),
                                                     outpart_idata);
-  // Copy particle positions into device mirrors
-  Kokkos::deep_copy(d_outpart_rdata, pp->prtcl_rdata);
-  Kokkos::deep_copy(d_outpart_idata, pp->prtcl_idata);
+  // Copy particle positions into device mirrors -- the valid prefix only: the particle
+  // arrays may hold more columns than particles (they are allocated with at least one
+  // column, and grow-only after a compaction), so on a rank with no particles the full
+  // arrays are (n,1) against an output buffer of (n,0)
+  {
+    auto src_r = Kokkos::subview(pp->prtcl_rdata, Kokkos::ALL,
+                                 std::make_pair(0, npout_thisrank));
+    auto src_i = Kokkos::subview(pp->prtcl_idata, Kokkos::ALL,
+                                 std::make_pair(0, npout_thisrank));
+    Kokkos::deep_copy(d_outpart_rdata, src_r);
+    Kokkos::deep_copy(d_outpart_idata, src_i);
+  }
   // Copy particle positions from device mirror to host output array
   Kokkos::deep_copy(outpart_rdata, d_outpart_rdata);
   Kokkos::deep_copy(outpart_idata, d_outpart_idata);
