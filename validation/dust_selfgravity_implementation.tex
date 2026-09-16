@@ -1298,8 +1298,17 @@ it --- $\Delta t$ collapses to $5\times10^{-5}$, the halo gas is blown up and a 
 of the dust leaves the box. The add-on therefore uses \code{coupling = hybrid}: PC2
 while a cell's $\chi = \Delta t\,\epsilon/t_s$ is below $0.5$, split backward-Euler
 drag where it is not (the merged module's own switch, \code{DUST\_HYBRID\_SUMMARY});
-\code{coupling = imex} under \code{imex2+} is the other stiff-safe choice. Second, the
-optional radial pressure gradient: the constant acceleration on the gas of the NSH
+\code{coupling = imex} under \code{imex2+} is the other stiff-safe choice. (A third
+thing came out of the first production attempt, commit \code{95c3e955}: stage 2 died at
+cycle 1 on Vista with an invalid MPI request in \fn{ParticlesBoundaryValues::ClearPrtclSend},
+at 128, 512 and 2048 ranks alike and never on the laptop. The particle exchange's
+counters \code{nsends}, \code{nrecvs}, \code{nprtcl\_send}, \code{nprtcl\_recv} had no
+initializer --- harmless under the stock particle task list, where a clear always
+follows a send --- but the dust graph clears the exchange at the end of every active
+stage and the hybrid coupling migrates only at stage 2, so the first clear ran before
+any migration had happened and waited over a garbage count: zero by luck on the laptop,
+not on Vista. The counters are now initialized and the clears loop over the requests
+they hold.) Second, the optional radial pressure gradient: the constant acceleration on the gas of the NSH
 tests, $a_x = 2\Omega\eta v_K$ (\code{hydro\_srcterms/const\_accel}, keys present in
 the add-on, off by default), is balanced by the uniform azimuthal offset $v_y =
 -a_x/(2\Omega) = -\eta v_K$, so the insertion applies that offset to the restarted gas
