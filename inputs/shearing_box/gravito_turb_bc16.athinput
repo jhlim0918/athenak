@@ -3,11 +3,12 @@
 # Lx = Ly = 16 H_g, Lz = 6.4 H_g at 80 cells per H_g (1280 x 1280 x 512 cubic cells,
 # 32^3 MeshBlocks: 40 x 40 x 16 = 25600 blocks), otherwise the Baehr+22 physics of
 # gravito_turb_baehr.athinput in SC14 units (H_g = cs0/Omega = 2.16878, beta = 10,
-# Q0 = 1.02, gamma = 5/3, irradiation floor at cs0).  BC19 find boxes below 32 H bursty
+# Q0 = 1.02, gamma = 5/3) but WITHOUT the irradiation floor, as in BC19, so the cooling
+# starts at t = 0 and the state is Gammie's alpha ~ 0.04 at Q ~ 1 (a thicker dust layer,
+# ~0.3 H_g at St = 0.3).  BC19 find boxes below 32 H bursty
 # (the dominant spiral's azimuthal wavelength is the box), which a proof of concept can
 # live with; at 16 H two arms fit.  STAGE 1: the gas alone to t = 50 (BC19 average from
-# t = 50; with the floor our disk starts cooling late, so check Q(t) and continue with
-# CONT=1 TLIM=... if the first burst has not happened).  STAGE 2 restarts from a dump
+# t = 50; check Q(t) in the history and continue with CONT=1 TLIM=... if needed).  STAGE 2 restarts from a dump
 # with gravito_turb_bc16_dust.athinput (St = 0.3, radial pressure gradient on).
 # z faces: hse_outflow -- outflow with the ghost density on the hydrostatic isothermal
 # extrapolation of the edge cell (BC19), which closes the inflow leak of diode.
@@ -22,7 +23,7 @@ problem   = 16H gravito-turbulent box at 80 cells/H, stage 1 (gas only, beta = 1
 basename  = gt16
 
 <mesh>
-nghost    = 3         # Number of ghost cells
+nghost    = 4         # 4 (not 3): leaves mesh refinement open; ~17% more cells per block
 nx1       = 1280      # 80 cells per H_g
 x1min     = -17.35024 # Lx = 16 H_g, H_g = 2.16878
 x1max     = 17.35024
@@ -88,7 +89,10 @@ show_defect = 0
 self_gravity = true
 beta_cooling = true
 bcool_beta   = 10.0   # beta = Omega*t_cool
-bcool_cs2_floor = 4.70361  # irradiation floor: cool toward the initial T (cs0^2)
+bcool_cs2_floor = 0.0    # NO irradiation floor (BC19: pure beta cooling): cooling starts at
+                         # t = 0, first burst by t ~ 15-20, Gammie's alpha ~ 0.04 at Q ~ 1;
+                         # with the floor at cs0^2 (Baehr) the disk sits quiet to t ~ 40
+                         # and saturates at alpha ~ 0.015, Q ~ 1.23 (4.70361 restores it)
 thermal_cooling = false  # SC14 "b" runs: t_cool = tcool_b*(rho/P)^3 (set
 tcool_b      = 200.0     # beta_cooling=false when enabling)
 cool_eps     = 0.02      # dt <= cool_eps*t_cool
