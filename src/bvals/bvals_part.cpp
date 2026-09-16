@@ -686,8 +686,10 @@ TaskStatus ParticlesBoundaryValues::RecvAndUnpackPrtcls() {
 TaskStatus ParticlesBoundaryValues::ClearPrtclSend() {
 #if MPI_PARALLEL_ENABLED
   bool no_errors=true;
-  // wait for all non-blocking sends for vars to finish before continuing
-  for (int n=0; n<nsends; ++n) {
+  // wait for all non-blocking sends for vars to finish before continuing.  The loop
+  // runs over the requests actually posted (the vectors are empty when no migration
+  // has happened this stage), never over a stale count.
+  for (std::size_t n=0; n<rsend_req.size() && n<isend_req.size(); ++n) {
     int ierr = MPI_Wait(&(rsend_req[n]), MPI_STATUS_IGNORE);
     if (ierr != MPI_SUCCESS) {no_errors=false;}
     ierr = MPI_Wait(&(isend_req[n]), MPI_STATUS_IGNORE);
@@ -713,8 +715,9 @@ TaskStatus ParticlesBoundaryValues::ClearPrtclSend() {
 TaskStatus ParticlesBoundaryValues::ClearPrtclRecv() {
 #if MPI_PARALLEL_ENABLED
   bool no_errors=true;
-  // wait for all non-blocking receives to finish before continuing
-  for (int n=0; n<nrecvs; ++n) {
+  // wait for all non-blocking receives to finish before continuing (over the requests
+  // actually posted, see ClearPrtclSend)
+  for (std::size_t n=0; n<rrecv_req.size() && n<irecv_req.size(); ++n) {
     int ierr = MPI_Wait(&(rrecv_req[n]), MPI_STATUS_IGNORE);
     if (ierr != MPI_SUCCESS) {no_errors=false;}
     ierr = MPI_Wait(&(irecv_req[n]), MPI_STATUS_IGNORE);
