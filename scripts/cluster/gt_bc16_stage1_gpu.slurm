@@ -32,6 +32,15 @@ OVR+=(${XOVR:-})
 # CUDA-aware OpenMPI (AthenaK hands device buffers to MPI); the SDK carries CUDA
 module load nvidia/24.7 openmpi/5.0.5_nvc249
 
+# AthenaK posts its MPI sends straight from Kokkos device views, so every inter-rank
+# exchange hands UCX a GPU pointer.  UCX caches the memory type of an address range,
+# and when that cache answers "host" for a device pointer it does a CPU memcpy on GPU
+# memory: SIGSEGV, "invalid permissions for mapped object", inside libmpi at the first
+# exchange -- which is what killed the first multi-rank GPU run (a single rank never
+# posts one, so the one-node timing test could not see it).  Disabling the cache costs
+# a pointer-type query per transfer and is the standard remedy.
+export UCX_MEMTYPE_CACHE=n
+
 cd $SLURM_SUBMIT_DIR
 {
   echo "# job $SLURM_JOB_ID on $SLURM_JOB_NUM_NODES node(s): $SLURM_JOB_NODELIST, $SLURM_NTASKS ranks (GPU)"

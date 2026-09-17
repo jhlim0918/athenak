@@ -5,8 +5,10 @@
 # Same mechanics as gravito_turb_baehr_dust.athinput (blocks merge over the dump's input,
 # restart_insert makes the generator place the layer), but the layer is three species
 # St = 0.01, 0.1, 1 interleaved in every cell, each with 1.5e6 particles (ppc = 3 x
-# 0.02235) and each carrying Z_s = 0.01/3 of the gas mass (problem/dust_Z_s; set them to
-# 0.01 apiece for a Z = 0.03 layer).  With back_reaction = false the species do not
+# 0.02235) and each carrying Z_s = 0.04/3 of the gas mass, Z = 0.04 in total: metal-rich
+# enough for the dust to concentrate rather than merely trace the gas (problem/dust_Z_s
+# -- they are read with problem/dust_Z / nspecies only as their DEFAULT, so the four keys
+# have to be changed together or the split silently wins).  With back_reaction = false the species do not
 # interact and the run is three single-species experiments at once; with it on the total
 # Z is what the gas feels.  Purpose: do the St ~ 1 particles lock into the GI spirals
 # while the small ones are stirred over the gas scale height?  Read H_d per species from
@@ -23,7 +25,7 @@
 # on the command line (those dumps carry the particles).
 
 <time>
-tlim       = 100.0    # 50 more orbits^-1 of dust evolution
+tlim       = 200.0    # 50 more orbits^-1 of dust evolution, from the t = 150 dump
 
 <particles>
 particle_type = dust
@@ -60,10 +62,10 @@ const_accel_dir = 1
 const_accel_val = 0.2126  # eta v_K = 0.05 cs0 (Pi = 0.05)
 
 <problem>
-dust_Z    = 0.01          # total dust-to-gas ratio (default split: dust_Z/nspecies each)
-dust_Z_1  = 0.0033333333333333335   # per-species ratios; 0.01 apiece for Z = 0.03
-dust_Z_2  = 0.0033333333333333335
-dust_Z_3  = 0.0033333333333333335
+dust_Z    = 0.04          # total dust-to-gas ratio (default split: dust_Z/nspecies each)
+dust_Z_1  = 0.01333333333333333   # per-species ratios -- these OVERRIDE the split
+dust_Z_2  = 0.01333333333333333   # above, so all four move together
+dust_Z_3  = 0.01333333333333333
 dust_hz   = 2.16878       # Gaussian half-width of the inserted layer = H_g
 dust_seed = 7
 gas_vy_shift = auto       # -a_x/(2 Omega) when const_accel is on (no epicycle); or a number

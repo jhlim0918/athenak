@@ -13,7 +13,7 @@
 # particles that leave (DUST_ESCAPE_SUMMARY, history column d_escaped).
 
 <time>
-tlim       = 100.0    # 50 more orbits^-1 of dust evolution
+tlim       = 200.0    # 50 more orbits^-1 of dust evolution, from the t = 150 dump
 
 <particles>
 particle_type = dust

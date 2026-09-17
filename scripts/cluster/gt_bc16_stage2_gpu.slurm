@@ -30,6 +30,9 @@ if [ -n "$ADDON" ]; then ADD=(-i "$ADDON"); else ADD=(); fi
 
 module load nvidia/24.7 openmpi/5.0.5_nvc249
 
+# see gt_bc16_stage1_gpu.slurm: UCX must not cache the memory type of a device pointer
+export UCX_MEMTYPE_CACHE=n
+
 cd $SLURM_SUBMIT_DIR
 {
   echo "# job $SLURM_JOB_ID on $SLURM_JOB_NUM_NODES node(s): $SLURM_JOB_NODELIST, $SLURM_NTASKS ranks (GPU)"
