@@ -1333,6 +1333,23 @@ matches its archive until the shear phase builds and differs at $10^{-6}$--$10^{
 thereafter (the planes are now free of remap error), 4 ranks now reproduce serial
 exactly, and a $64^3$ box went from 25 s to 0.33 s per cycle.
 
+\paragraph{And the same code again, on a GPU.} Batching the slab gather and forward
+transforms over a stack of planes (\code{73204c3a}, \code{bf1a4446}) removed the
+launch-latency floor that dominated the solve on a GPU and took the $16H$ box from
+$4.9\times10^{7}$ to $9.2\times10^{7}$ cell-updates per second. It also, for a week,
+made every stage-2 run above $64$ ranks fail --- of signal 9 at $128$ ranks and of a UCX
+\emph{Transport retry count exceeded} on an \code{RDMA\_READ} at $512$, which read as a
+fault of the interconnect and was not. The stack was sized by a compile-time batch of
+$32$ and the $y$ transform ran on a non-trailing axis, so kokkos-fft allocated and freed
+two arrays the size of the whole stack inside every call: $320$ MiB held and $256$ MiB
+churned per rank at the Baehr root grid, $72$ GiB of slab buffers on a $128$-rank node,
+and the churn is what invalidates the registration cache UCX serves RDMA from.
+Commit \code{cb3b4b8a} puts every transform on a trailing axis (the shear-phase kernel
+carries the index swap) and sizes the batch from a memory budget, $48$ MiB per rank on a
+host build and $2$ GiB on a device build; the box falls to $36$ MiB per rank and the
+slab tests are unchanged to the last digit. The multigrid document has the full
+account, under ``The slab planes on a GPU, and the memory fault they hid''.
+
 %=========================================================================================
 \section{What the next phases must add}
 \label{sec:next}

@@ -2021,6 +2021,66 @@ field, with $\Sigma$ contrasts of $\sim\times5$.}
 \label{fig:sc14_colden}
 \end{figure}
 
+\subsection{The slab planes on a GPU, and the memory fault they hid}
+\label{sec:slabgpu}
+
+The distributed rewrite above made the slab boundary affordable on a CPU, but on a GPU
+it was latency-bound rather than work-bound: the per-plane form issued about seven
+kernels per root $k$-plane, $\sim3600$ launches per solve at $512$ planes, and the
+phase timer added under \code{show\_defect} $\ge 1$ put $0.113$ s of a $1.0$ s solve in
+the slab phase alone. Batching the gather and the forward transforms over a stack of
+$B$ planes (commits \code{73204c3a}, \code{bf1a4446}) cut that to $0.015$ s and took the
+$16H$ box from $4.9\times10^{7}$ to $9.2\times10^{7}$ cell-updates per second, the
+defect norms unchanged.
+
+That batching then caused every large-rank failure of the dust stage-2 runs, and it is
+worth recording how well it hid. Two faults compounded. The $y$ transform ran along
+axis 1 of the $(B, n_y, n_x)$ stack rather than its last axis, and kokkos-fft answers a
+non-trailing transform axis by transposing into work arrays that it allocates and frees
+\emph{inside every} \fn{execute} call --- two arrays the size of the whole stack, once
+per batch, per solve. And $B$ was a compile-time $32$, so the stack grew with the box
+without limit. At the Baehr root grid, $512\times512\times256$, one complex plane is
+$4$ MiB and the stack $128$ MiB: each rank held $320$ MiB of slab buffers and churned a
+further $256$ MiB through the allocator on every batch. With $128$ ranks to a Vista
+node that is $72$ GiB of slab buffers on one node.
+
+The failures it produced looked like three unrelated cluster problems. At $128$ ranks
+the job died of signal 9 with no \code{MaxRSS} recorded. At $512$ ranks it died inside
+\fn{MPI\_Test} with a UCX \emph{Transport retry count exceeded} on an \code{RDMA\_READ},
+reproducibly, on disjoint node sets, always on a rank holding no particles and always
+before the first cycle line --- because a large allocate/free cycle is exactly what
+invalidates the memory-registration cache UCX serves RDMA from. Disabling that cache
+(\code{UCX\_RCACHE\_ENABLE=n}) as a control test removed the disguise rather than the
+fault: the run then failed with \code{Kokkos ERROR: Host memory space failed to
+allocate 128 MiB (label="out\_T")} on $86$ of the $128$ ranks of one node, \code{out\_T}
+being kokkos-fft's transpose scratch and $128$ MiB being the stack size to the byte.
+
+The fix (\code{cb3b4b8a}) is two changes. Every transform now runs along the last axis
+of its buffers, the $y$ transforms taking $x$-major copies; the kernel that applies the
+shear phase between the two transforms rewrites the stack in any case, so it carries the
+index swap at no cost, and kokkos-fft never transposes and never allocates --- which
+also removes the two per-call allocations the original \emph{per-plane} path had been
+making all along. And $B$ is sized from a memory budget rather than fixed: $48$ MiB per
+rank on a host build, where the ranks of a node share its memory and batching buys
+nothing because kernel launches are free, and $2$ GiB on a device build, where one rank
+owns the GPU and launch latency is the binding constraint. The Baehr box falls from
+$576$ MiB to $36$ MiB per rank, $72$ GiB to $4.5$ GiB per node.
+
+$B$ is a pure performance knob and the physics does not see it: batches of $1$, $3$ and
+$32$ give bit-identical solutions. Against the previous code the three slab tests agree
+to the last digit --- \code{mg\_poisson\_slab} sheet $\max_{\rm rel} = 1.203474\times
+10^{-12}$, \code{mg\_poisson\_slab\_shear} MG-vs-FFT $\max = 8.764760\times10^{-8}$,
+\code{mg\_poisson\_slab\_smr} $\max_{\rm rel,all} = 4.851125\times10^{-12}$ --- and the
+shear test on 4 MPI ranks gives $6.591364\times10^{-6}$ against $6.591365\times10^{-6}$,
+the last digit moving with the Allreduce order.
+
+The lesson generalises past this solver. A library call that allocates internally is
+invisible in the source, and the allocation churn it creates surfaces first as a
+\emph{network} error on a cluster with an RDMA registration cache --- three days were
+spent on the interconnect before the arithmetic of the error message ($4$ MiB per plane
+$\times\,32$) identified it. Where a transform axis can be made the trailing one, it
+should be.
+
 \subsection{Summary}
 
 \begin{itemize}\itemsep2pt
