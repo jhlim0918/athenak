@@ -6,9 +6,18 @@ directory and a cluster build with **FFT enabled** (the slab boundary needs
 kokkos-fft):
 
 ```bash
+module load gcc openmpi fftw3          # on Vista; the modules of the CPU job scripts
 cmake -B build-cluster -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON
-cmake --build build-cluster -j
+cmake --build build-cluster -j 16
 ```
+
+Load the modules **before** `cmake -B`: the configure step is what records the MPI
+compiler and library paths in the cache, so a configure run in a shell without
+`openmpi` loaded bakes the wrong MPI in and the mistake surfaces much later, as a link
+failure or a wrong `MPI_CXX_LIB_NAMES`. The job scripts then load the same modules, so
+that they match what the binary was built against. Rebuilding after a module change,
+or after the cache has been carried across several of them, is best done by deleting
+`build-cluster` and configuring afresh rather than incrementally.
 
 kokkos-fft is fetched by CMake at *configure* time — run the configure step on a
 node with network access (or pre-clone `github.com/kokkos/kokkos-fft` and point
