@@ -522,6 +522,13 @@ class MultigridDriver {
   DvceArray3D<Real> *slab_planes_ = nullptr;   // [p](2, ny_p+2*ngh, nx_p+2*ngh)
   DvceArray2D<int> slab_lloc_;           // per-block root-level (lx1,lx2); -1 if unused
   DvceArray2D<int> slab_goffs_;          // per-block (gox,goy,goz,lev) for the gather
+  // the batch -> block lists of ComputeSlabPlanes, rebuilt only when the mesh changes
+  // (no per-solve allocation: frees of registered memory are what stale InfiniBand
+  // registration caches trip on)
+  std::vector<int> slab_batches_, slab_batch_off_;
+  DvceArray1D<int> slab_batch_blk_;
+  int slab_batch_nmb_ = -1;
+  int slab_batch_seq_ = -1;
   DvceArray2D<Real> slab_dens_;          // (ny,nx) padded root plane of 4piG*rho
   DvceArray2D<Kokkos::complex<Real>> slab_zin_, slab_zout_;  // (ny,nx) FFT slice bufs
   static constexpr int slab_batch_ = 32;  // planes per batched forward transform

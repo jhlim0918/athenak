@@ -347,9 +347,11 @@ void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int i
     // per-plane form was latency-bound on a GPU (0.11 s per solve at 512 planes).
     const int B = slab_batch_;
     const int nbatch = (nz + B - 1)/B;
-    auto h_goffs = Kokkos::create_mirror_view_and_copy(HostMemSpace(), slab_goffs_);
-    std::vector<int> batches, batch_off, batch_blk;
-    {
+    const int mseq = pmy_mesh_->GetAMRLoadBalanceUpdateSeq();
+    if (slab_batch_nmb_ != nmb || slab_batch_seq_ != mseq || slab_batches_.empty()) {
+      auto h_goffs = Kokkos::create_mirror_view_and_copy(HostMemSpace(), slab_goffs_);
+      std::vector<int> batch_blk;
+      slab_batches_.clear(); slab_batch_off_.clear();
       std::vector<std::vector<int>> blocks_of(nbatch);
       int nmbz = indcs.nx3;
       for (int m = 0; m < nmb; ++m) {
@@ -360,18 +362,22 @@ void MultigridDriver::ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int i
       }
       for (int bt = 0; bt < nbatch; ++bt) {
         if (blocks_of[bt].empty()) continue;
-        batches.push_back(bt);
-        batch_off.push_back(static_cast<int>(batch_blk.size()));
+        slab_batches_.push_back(bt);
+        slab_batch_off_.push_back(static_cast<int>(batch_blk.size()));
         batch_blk.insert(batch_blk.end(), blocks_of[bt].begin(), blocks_of[bt].end());
       }
-      batch_off.push_back(static_cast<int>(batch_blk.size()));
-    }
-    DvceArray1D<int> d_blk("mgslab_batch_blocks", std::max<int>(1, batch_blk.size()));
-    {
-      auto h_blk = Kokkos::create_mirror_view(d_blk);
+      slab_batch_off_.push_back(static_cast<int>(batch_blk.size()));
+      if (slab_batch_blk_.extent_int(0) < std::max<int>(1, batch_blk.size())) {
+        Kokkos::realloc(slab_batch_blk_, std::max<int>(1, batch_blk.size()));
+      }
+      auto h_blk = Kokkos::create_mirror_view(slab_batch_blk_);
       for (std::size_t n = 0; n < batch_blk.size(); ++n) h_blk(n) = batch_blk[n];
-      Kokkos::deep_copy(d_blk, h_blk);
+      Kokkos::deep_copy(slab_batch_blk_, h_blk);
+      slab_batch_nmb_ = nmb; slab_batch_seq_ = mseq;
     }
+    const auto &batches = slab_batches_;
+    const auto &batch_off = slab_batch_off_;
+    auto d_blk = slab_batch_blk_;
     auto dens3 = slab_dens3_;
     auto zin3 = slab_zin3_;
     auto zout3 = slab_zout3_;
