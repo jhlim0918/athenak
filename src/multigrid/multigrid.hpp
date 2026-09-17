@@ -529,11 +529,18 @@ class MultigridDriver {
   DvceArray1D<int> slab_batch_blk_;
   int slab_batch_nmb_ = -1;
   int slab_batch_seq_ = -1;
-  DvceArray2D<Real> slab_dens_;          // (ny,nx) padded root plane of 4piG*rho
-  DvceArray2D<Kokkos::complex<Real>> slab_zin_, slab_zout_;  // (ny,nx) FFT slice bufs
-  static constexpr int slab_batch_ = 32;  // planes per batched forward transform
-  DvceArray3D<Real> slab_dens3_;         // (batch,ny,nx) gathered planes of a batch
-  DvceArray3D<Kokkos::complex<Real>> slab_zin3_, slab_zout3_;  // (batch,ny,nx) FFT bufs
+  // Every transform runs along the LAST axis of its buffer, so kokkos-fft never has to
+  // transpose -- a transpose makes it allocate two work arrays the size of the whole
+  // stack inside each execute() call, which on a CPU node (every rank holds the whole
+  // horizontal plane, ~100 ranks to a node) exhausts the node's memory outright.  The
+  // y-transform therefore uses the x-major buffers below and the kernel between the two
+  // transforms, which rewrites the stack anyway to apply the shear phase, swaps i and j.
+  DvceArray2D<Kokkos::complex<Real>> slab_zin_, slab_zout_;    // (ny,nx) FFT slice bufs
+  DvceArray2D<Kokkos::complex<Real>> slab_zint_, slab_zoutt_;  // (nx,ny), for the y FFT
+  int slab_batch_ = 1;                   // planes per batched forward transform
+  DvceArray3D<Real> slab_dens3_;         // (batch,nx,ny) gathered planes of a batch
+  DvceArray3D<Kokkos::complex<Real>> slab_zin3_, slab_zout3_;    // (batch,ny,nx) bufs
+  DvceArray3D<Kokkos::complex<Real>> slab_zin3t_, slab_zout3t_;  // (batch,nx,ny) bufs
   DvceArray3D<Kokkos::complex<Real>> slab_zplanes_;  // (2,ny,nx) face spectra accum
   DvceArray2D<Real> slab_mu_, slab_wt_;  // (ny,nx) per-mode decay factor and weight
   struct MGSlabFFTPlans;                 // KokkosFFT plans; defined in multigrid_slab.cpp
