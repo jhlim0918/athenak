@@ -19,7 +19,13 @@
 # particles) has not been compiled or timed yet -- do the one-node test first.
 
 ATHENAK=$HOME/athenak-multigrid
-INPUT=$ATHENAK/inputs/shearing_box/gravito_turb_bc16.athinput
+# INPUT is overridable so the same script runs the pilot, which has the dust in from
+# t = 0 and must be a COMPLETE input rather than an add-on (a second -i replaces the
+# first on a fresh start; only -r restart -i addon merges).  Give it its own -J too:
+#   mkdir -p $SCRATCH/gt16/pilot && cd $SCRATCH/gt16/pilot \
+#     && INPUT=$HOME/athenak-multigrid/inputs/shearing_box/gravito_turb_bc16_pilot.athinput \
+#        sbatch -J gt16_pilot -t 48:00:00 $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage1_gpu.slurm
+INPUT=${INPUT:-$ATHENAK/inputs/shearing_box/gravito_turb_bc16.athinput}
 BIN=${BIN:-$ATHENAK/build-gpu/src/athena}
 RST=${RST:-}
 if [ -n "${CONT:-}" ] && [ -z "$RST" ]; then RST=$(ls rst/*.rst | tail -1); fi

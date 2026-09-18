@@ -1,21 +1,29 @@
-# AthenaK input file: the proof-of-concept gravito-turbulent box for the fellowship
-# proposal -- Booth & Clarke (2019) geometry at streaming-instability resolution.
-# Lx = Ly = 16 H_g, Lz = 6.4 H_g at 80 cells per H_g (1280 x 1280 x 512 cubic cells,
-# 32^3 MeshBlocks: 40 x 40 x 16 = 25600 blocks), otherwise the Baehr+22 physics of
-# gravito_turb_baehr.athinput in SC14 units (H_g = cs0/Omega = 2.16878, beta = 10,
-# Q0 = 1.02, gamma = 5/3) but WITHOUT the irradiation floor, as in BC19, so the cooling
-# starts at t = 0 and the state is Gammie's alpha ~ 0.04 at Q ~ 1 (a thicker dust layer,
-# ~0.3 H_g at St = 0.3).  BC19 find boxes below 32 H bursty
-# (the dominant spiral's azimuthal wavelength is the box), which a proof of concept can
-# live with; at 16 H two arms fit.  STAGE 1: the gas alone to t = 50 (BC19 average from
-# t = 50; check Q(t) in the history and continue with CONT=1 TLIM=... if needed).  STAGE 2 restarts from a dump
-# with gravito_turb_bc16_dust.athinput (St = 0.3, radial pressure gradient on).
-# z faces: hse_outflow -- outflow with the ghost density on the hydrostatic isothermal
-# extrapolation of the edge cell (BC19), which closes the inflow leak of diode.
-# Cost scaling from the 512^2 x 256 Baehr stage 1: 12x the cells, 4x the cycles per
-# unit time -> ~1e5 cycles to t = 50, ~8e13 cell-updates.
-#   small-box sanity test: mesh/nx1=128 mesh/nx2=128 mesh/nx3=64 (5 cells per H_g)
-
+# AthenaK input file: the 16H proof-of-concept box at 80 cells per H_g with the dust
+# present from t = 0 -- a PILOT.  A COMPLETE input, run fresh (AthenaK takes only one -i
+# on a fresh start; a second one replaces rather than merges it, so this cannot be an
+# add-on the way the stage-2 layers are).  Generated from gravito_turb_bc16.athinput --
+# if that file changes, regenerate rather than hand-editing both.
+#     mkdir -p $SCRATCH/gt16/pilot && cd $SCRATCH/gt16/pilot \
+#       && BIN=$HOME/athenak-multigrid/build-gpu/src/athena \
+#          INPUT=$HOME/athenak-multigrid/inputs/shearing_box/gravito_turb_bc16_pilot.athinput \
+#          sbatch -t 48:00:00 $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage1_gpu.slurm
+#
+# WHAT THIS IS NOT.  The production experiment is two-stage: gas to saturation, then the
+# particles into a state that is already gravito-turbulent.  Here they go into the
+# LAMINAR initial condition, which changes their history twice over.  The grains settle
+# on ~1/(Omega*St) -- one orbit for St = 1 -- while gravito-turbulence needs tens of
+# orbits to appear, so the layer first collapses to a thickness no turbulence set and
+# reaches a midplane dust-to-gas ratio far above the saturated one; it then rides out the
+# first gravitational-instability burst, which overshoots.  H_d, rho_d,max and the
+# clumping measured here are NOT the two-stage numbers and should not be quoted as them.
+#
+# WHAT IT IS FOR.  It exercises the whole coupled stack -- particles, back-reaction, dust
+# self-gravity, the multigrid, managed memory and MPI -- at production resolution in one
+# job, hours after launch instead of after a stage 1.  Nothing else tests that
+# combination at this scale.  Run it ALONGSIDE stage 1, not instead of it.
+#
+# Mass is split by size as MRN would (dn/da ~ a^-3.5 with St ~ a gives mass ~ St^0.5), so
+# the St = 1 grains carry 71% of Z while the particle COUNT stays equal per species.
 <comment>
 problem   = 16H gravito-turbulent box at 80 cells/H, stage 1 (gas only, beta = 10)
 
@@ -56,7 +64,7 @@ evolution  = dynamic  # dynamic/kinematic/static
 integrator = rk2      # time integrator
 cfl_number = 0.3      # The Courant, Friedrichs, & Lewy (CFL) Number
 nlim       = -1       # cycle limit
-tlim       = 50.0     # BC19 average from t = 50; extend with CONT=1 TLIM=... if needed
+tlim       = 30.0     # the first burst and a few orbits after it (pilot)
 ndiag      = 100      # cycles between diagnostic output
 
 <hydro>
@@ -100,8 +108,18 @@ bcool_cs2_floor = 0.0    # NO irradiation floor (BC19: pure beta cooling): cooli
 thermal_cooling = false  # SC14 "b" runs: t_cool = tcool_b*(rho/P)^3 (set
 tcool_b      = 200.0     # beta_cooling=false when enabling)
 cool_eps     = 0.02      # dt <= cool_eps*t_cool
+const_accel     = true   # radial pressure gradient on the gas, a_x = 2 Omega eta v_K,
+const_accel_dir = 1      # Pi = eta v_K / cs0 = 0.1: eta*r = 0.1 H_g = 8 cells, so the
+const_accel_val = 0.43376 # fastest streaming mode (~2 pi eta r) spans ~50 cells
 
 <problem>
+dust_Z    = 0.02          # total; the per-species values below OVERRIDE the even split
+dust_Z_1  = 0.001412202   # MRN weights, St^0.5 normalized:  7.1%
+dust_Z_2  = 0.004465776   #                                 22.3%
+dust_Z_3  = 0.014122022   #                                 70.6%
+dust_hz   = 2.16878       # initial layer width = H_g
+dust_seed = 7
+gas_vy_shift = auto       # -eta v_K, so the pressure gradient launches no epicycle
 pgen_name = gravito_turb
 user_hist = true
 rho0      = 1.0
@@ -128,3 +146,41 @@ dt        = 5.0
 <output4>
 file_type = rst
 dt        = 10.0      # stage 2 restarts from the dump after the first burst
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 0.3       # 0.1 per species: 8.4e7 each, 2.5e8 in the 1280^2 x 512 box
+insert_at_t0  = true      # place them in the initial state; NOT restart_insert
+
+<dust>
+coupling      = hybrid    # the St = 0.01 grains are stiff where the gas is at the floor
+nspecies      = 3
+taus_1        = 0.01
+taus_2        = 0.1
+taus_3        = 1.0
+back_reaction = true
+deposit       = tsc
+gravity       = true
+gravity_source = true
+gravity_force  = true
+dt_cfl        = 0.5
+dt_transport  = relative
+dt_block_safety = 0.5
+shear_fold    = true
+shear_remap   = plm
+stopping_time_mode = species_fixed
+
+<output5>
+file_type = bin
+variable  = dust_dpm
+dt        = 2.0
+
+<output6>
+file_type = pvtk
+variable  = prtcl_all
+dt        = 2.0
+
+<output7>
+file_type = phst
+dt        = 0.1
