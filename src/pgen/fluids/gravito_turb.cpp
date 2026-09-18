@@ -141,10 +141,18 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   if (restart) {
     if (pmbp->ppart != nullptr &&
         pin->GetOrAddBoolean("particles", "restart_insert", false)) {
-      GravitoTurbInsertDust(pin);
+      GravitoTurbInsertDust(pin, true);
     }
     return;
   }
+  // ... or, for a pilot, <particles>/insert_at_t0 puts them into the LAMINAR initial
+  // state instead.  That is not the two-stage experiment: the grains settle on
+  // 1/(Omega*St) while gravito-turbulence takes tens of orbits to appear, so the layer
+  // collapses to a thickness the turbulence never set, and then rides out the first
+  // gravitational-instability burst, which overshoots the saturated state.  Read such a
+  // run as a shakedown of the coupled stack, not as a measurement of H_d or of the
+  // clumping.  The insertion itself happens at the END of this function, once the gas
+  // initial condition it reads has been built.
 
   // problem parameters (defaults = SC14 fiducial constants)
   Real rho0 = pin->GetOrAddReal("problem", "rho0", 1.0);
@@ -271,6 +279,12 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
     u0(m,IEN,k,j,i) = prs/gm1 + 0.5*den*(SQR(vx) + SQR(vy) + SQR(vz));
   });
 
+  // pilot runs: the particles go into the laminar state just built (see above)
+  if (pmbp->ppart != nullptr &&
+      pin->GetOrAddBoolean("particles", "insert_at_t0", false)) {
+    GravitoTurbInsertDust(pin, false);
+  }
+
   return;
 }
 
@@ -288,16 +302,21 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
 //! z range, so the placement is deterministic and decomposition-independent (hash of the
 //! global block id and the particle's index in the block, <problem>/dust_seed).
 
-void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin) {
+void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin, bool from_restart) {
   MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
   if (pmbp->pdust == nullptr) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "restart_insert needs a <dust> block" << std::endl;
+              << "inserting dust needs a <dust> block" << std::endl;
     exit(EXIT_FAILURE);
   }
-  if (pmy_mesh_->nprtcl_total != 0) {
+  // On a restart a non-zero count means the dump already carries its particles and this
+  // would double them.  On a fresh start it means nothing: the particles are allocated
+  // from <particles>/ppc before the generator runs, and this function replaces that
+  // placeholder state wholesale -- it reallocates prtcl_rdata/idata and sets every
+  // count below.
+  if (from_restart && pmy_mesh_->nprtcl_total != 0) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "restart_insert on a restart file that already carries particles; set "
+              << "inserting dust into a restart that already carries particles; set "
               << "particles/restart_insert = false to continue such a run" << std::endl;
     exit(EXIT_FAILURE);
   }
