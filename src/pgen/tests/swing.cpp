@@ -284,7 +284,7 @@ void SwingMovingRingRefine(MeshBlockPack *pmbp) {
     }
   }
   // sync host array with device
-  refine_flag.template modify<HostMemSpace>();
-  refine_flag.template sync<DevExeSpace>();
+  refine_flag.modify_host();
+  refine_flag.sync_device();
   return;
 }

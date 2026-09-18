@@ -208,8 +208,8 @@ void ProblemGenerator::DustDamping(ParameterInput *pin, const bool restart) {
     Real eps_s = has_eps ? pin->GetReal("problem","eps_" + std::to_string(s+1)) : 0.0;
     spdat.h_view(s,1) = eps_s*rho0*static_cast<Real>(nspec)/ppc;
   }
-  spdat.template modify<HostMemSpace>();
-  spdat.template sync<DevExeSpace>();
+  spdat.modify_host();
+  spdat.sync_device();
   auto &taus_ = pmbp->pdust->taus;
   par_for("dustdamp_part_vel", DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m = p/npart_permb;
@@ -446,8 +446,8 @@ void DustDampingErrors(ParameterInput *pin, Mesh *pm) {
     Real Lx = pm->mesh_size.x1max - pm->mesh_size.x1min;
     DualArray1D<Real> sref("decel_sref",nspec);
     for (int s=0; s<nspec; ++s) {sref.h_view(s) = y[nspec+1+s];}
-    sref.template modify<HostMemSpace>();
-    sref.template sync<DevExeSpace>();
+    sref.modify_host();
+    sref.sync_device();
     int lnx1 = ulat ? lat_nx1 : nx1;
     for (int s=0; s<nspec; ++s) {
       Real ssum = 0.0, smin = (std::numeric_limits<Real>::max)(), smax = -smin;

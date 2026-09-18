@@ -92,8 +92,8 @@ void ProblemGenerator::DustJeans(ParameterInput *pin, const bool restart) {
     spdat.h_view(s,5) = pin->GetOrAddReal("problem", "vdy_amp_"+n, 0.0);
     spdat.h_view(s,6) = pin->GetOrAddReal("problem", "vdy_phase_"+n, 0.0);
   }
-  spdat.template modify<HostMemSpace>();
-  spdat.template sync<DevExeSpace>();
+  spdat.modify_host();
+  spdat.sync_device();
   Real kx = jeans_kx;
 
   EOS_Data &eos = pmbp->phydro->peos->eos_data;

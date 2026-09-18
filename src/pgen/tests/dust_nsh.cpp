@@ -353,8 +353,8 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
     spdat.h_view(s,1) = vp[s];
     spdat.h_view(s,2) = eps[s]*rho0*static_cast<Real>(nspec)/ppc;
   }
-  spdat.template modify<HostMemSpace>();
-  spdat.template sync<DevExeSpace>();
+  spdat.modify_host();
+  spdat.sync_device();
 
   par_for("nsh_part", DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m, s;

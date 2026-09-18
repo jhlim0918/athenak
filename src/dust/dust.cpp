@@ -352,8 +352,8 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
     taus_max = std::max(taus_max, ts);
     taus_min = std::min(taus_min, ts);
   }
-  taus.template modify<HostMemSpace>();
-  taus.template sync<DevExeSpace>();
+  taus.modify_host();
+  taus.sync_device();
 
   // deposit scheme
   {

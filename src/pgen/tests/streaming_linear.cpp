@@ -228,8 +228,8 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
     lat_r.h_view(m) = r;
     lat_off.h_view(m+1) = lat_off.h_view(m) + ppc_int*ncells*r*r;
   }
-  lat_r.template modify<HostMemSpace>();  lat_r.template sync<DevExeSpace>();
-  lat_off.template modify<HostMemSpace>(); lat_off.template sync<DevExeSpace>();
+  lat_r.modify_host();  lat_r.sync_device();
+  lat_off.modify_host(); lat_off.sync_device();
   if (lattice_finest) {
     npart = lat_off.h_view(nmb);
     Kokkos::realloc(ppar->prtcl_rdata, ppar->nrdata, std::max(npart, 1));

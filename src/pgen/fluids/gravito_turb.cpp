@@ -395,8 +395,8 @@ void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin) {
     mps.h_view(s) = zs[s]*mgas*static_cast<Real>(nsp)
                     /static_cast<Real>(std::max<int64_t>(ntot, 1));
   }
-  mps.template modify<HostMemSpace>();
-  mps.template sync<DevExeSpace>();
+  mps.modify_host();
+  mps.sync_device();
 
   ppar->nprtcl_thispack = npart;
   Kokkos::realloc(ppar->prtcl_rdata, ppar->nrdata, std::max(npart, 1));
