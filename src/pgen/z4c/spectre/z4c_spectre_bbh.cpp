@@ -97,7 +97,7 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 void LoadSpectreInitialData(MeshBlockPack *pmbp, const std::string &filename_glob,
                             const std::string &subfile_name, const int observation_step) {
   auto &u_adm = pmbp->padm->u_adm;
-  HostArray5D<Real>::HostMirror host_u_adm = create_mirror(u_adm);
+  auto host_u_adm = create_mirror(u_adm);
   z4c::Z4c::ADMhost_vars host_adm;
   host_adm.psi4.InitWithShallowSlice(host_u_adm, adm::ADM::I_ADM_PSI4);
   host_adm.g_dd.InitWithShallowSlice(

@@ -260,9 +260,9 @@ void SetupSystem(ParameterInput *pin, Mesh* pmy_mesh_) {
   // Because Elliptica only operates on the CPU, we can't construct the data on
   // the GPU. Instead, we create a mirror guaranteed to be on the CPU, populate
   // the data there, then move it back to the GPU.
-  HostArray5D<Real>::HostMirror host_u_adm = create_mirror_view(u_adm);
-  HostArray5D<Real>::HostMirror host_w0    = create_mirror_view(w0);
-  HostArray5D<Real>::HostMirror host_u_z4c = create_mirror_view(u_z4c);
+  auto host_u_adm = create_mirror_view(u_adm);
+  auto host_w0    = create_mirror_view(w0);
+  auto host_u_z4c = create_mirror_view(u_z4c);
   adm::ADM::ADMhost_vars host_adm;
   host_adm.alpha.InitWithShallowSlice(host_u_z4c, z4c::Z4c::I_Z4C_ALPHA);
   host_adm.beta_u.InitWithShallowSlice(

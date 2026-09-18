@@ -169,9 +169,9 @@ void SetupBNS(ParameterInput *pin, Mesh* pmy_mesh_) {
   // Because Lorene operates only on the CPU, we can't construct the data on the GPU.
   // Instead, we create a mirror guaranteed to be on the CPU, populate the data there,
   // then move it back to the GPU if applicable.
-  HostArray5D<Real>::HostMirror host_u_adm = Kokkos::create_mirror_view(u_adm);
-  HostArray5D<Real>::HostMirror host_w0 = Kokkos::create_mirror_view(w0);
-  HostArray5D<Real>::HostMirror host_u_z4c;
+  auto host_u_adm = Kokkos::create_mirror_view(u_adm);
+  auto host_w0 = Kokkos::create_mirror_view(w0);
+  decltype(Kokkos::create_mirror_view(pmbp->pz4c->u0)) host_u_z4c;
   adm::ADM::ADMhost_vars host_adm;
   if (pmbp->pz4c != nullptr) {
     host_u_z4c = Kokkos::create_mirror_view(pmbp->pz4c->u0);

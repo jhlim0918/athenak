@@ -182,9 +182,9 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   // TODO(JMF): This needs to be tested on CPUs to ensure that it functions
   // properly; In theory, create_mirror_view shouldn't copy the data unless it's
   // in a different memory space.
-  HostArray5D<Real>::HostMirror host_u_adm = create_mirror_view(u_adm);
-  HostArray5D<Real>::HostMirror host_w0 = create_mirror_view(w0);
-  HostArray5D<Real>::HostMirror host_u_z4c = create_mirror_view(u_z4c);
+  auto host_u_adm = create_mirror_view(u_adm);
+  auto host_w0 = create_mirror_view(w0);
+  auto host_u_z4c = create_mirror_view(u_z4c);
   adm::ADM::ADMhost_vars host_adm;
   host_adm.alpha.InitWithShallowSlice(host_u_z4c, z4c::Z4c::I_Z4C_ALPHA);
   host_adm.beta_u.InitWithShallowSlice(host_u_z4c, z4c::Z4c::I_Z4C_BETAX,
