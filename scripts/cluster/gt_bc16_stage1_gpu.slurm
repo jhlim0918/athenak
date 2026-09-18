@@ -32,14 +32,19 @@ OVR+=(${XOVR:-})
 # CUDA-aware OpenMPI (AthenaK hands device buffers to MPI); the SDK carries CUDA
 module load nvidia/24.7 openmpi/5.0.5_nvc249
 
-# AthenaK posts its MPI sends straight from Kokkos device views, so every inter-rank
-# exchange hands UCX a GPU pointer.  UCX caches the memory type of an address range,
-# and when that cache answers "host" for a device pointer it does a CPU memcpy on GPU
-# memory: SIGSEGV, "invalid permissions for mapped object", inside libmpi at the first
-# exchange -- which is what killed the first multi-rank GPU run (a single rank never
-# posts one, so the one-node timing test could not see it).  Disabling the cache costs
-# a pointer-type query per transfer and is the standard remedy.
+# Vista's openmpi/5.0.5_nvc249 is built WITHOUT CUDA support
+# (opal_built_with_cuda_support = false, read-only; the only accelerator component is
+# "null"), so it treats every pointer as host memory.  AthenaK posts its sends straight
+# from Kokkos views, so MPI memcpys GPU memory on the CPU and every rank takes SIGSEGV,
+# "invalid permissions for mapped object", inside libmpi at the first exchange.  No
+# environment variable reaches this: the binary must be built with
+# Kokkos_ENABLE_IMPL_CUDA_UNIFIED_MEMORY=ON (README section 4), which allocates with
+# cudaMallocManaged and advises the pages into HBM -- host-accessible, so the memcpy is
+# legal, and a memory type UCX does support ("cuda-managed" in ucx_info -d).
+# UCX still caches the memory type of an address range, and that cache has a history of
+# answering wrongly for managed pointers, so it stays off.
 export UCX_MEMTYPE_CACHE=n
+
 
 cd $SLURM_SUBMIT_DIR
 {

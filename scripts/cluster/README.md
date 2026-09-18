@@ -277,9 +277,35 @@ export NVCC_WRAPPER_DEFAULT_COMPILER=/usr/bin/g++  # device buffers to MPI) and 
 cd $HOME/athenak-multigrid                          # as nvcc's host compiler, like the CPU build
 cmake -B build-gpu -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON \
       -D Kokkos_ENABLE_CUDA=ON -D Kokkos_ARCH_HOPPER90=ON -D Kokkos_ARCH_ARMV9_GRACE=ON \
+      -D Kokkos_ENABLE_IMPL_CUDA_UNIFIED_MEMORY=ON \
       -D CMAKE_CXX_COMPILER=$HOME/athenak-multigrid/kokkos/bin/nvcc_wrapper
 cmake --build build-gpu -j 16
 ```
+
+**`Kokkos_ENABLE_IMPL_CUDA_UNIFIED_MEMORY=ON` is not optional on Vista, and it is what
+multi-rank GPU runs stand or fall on.** Vista's `openmpi/5.0.5_nvc249` is built *without*
+CUDA support -- `ompi_info --parsable --all | grep opal_built_with_cuda_support` reports
+`false`, `status:read-only`, and the only `accelerator` component is `null` -- so it
+treats every pointer as host memory. AthenaK posts its MPI sends straight from Kokkos
+device views (`rank_sendbuf_vars_` in `src/bvals/bvals_cc.cpp`, and the multigrid's
+`MPI_Allreduce` over `zplanes`), so MPI memcpys GPU memory on the CPU and every rank dies
+of SIGSEGV, *invalid permissions for mapped object*, inside `libmpi` at the first
+exchange. A one-rank job never posts an inter-rank message, so the one-node timing test
+cannot see this -- it first appeared on the 8-node stage 1 (2026-09-17) and reproduces on
+two ranks in two minutes. No environment variable reaches a read-only build option.
+
+The flag is the Grace-Hopper path and it fits what is installed: Kokkos allocates with
+`cudaMallocManaged` and `cudaMemAdvise`s the pages to live in device HBM, so the GPU
+keeps HBM bandwidth while the host can reach the same pages over NVLink-C2C. That makes
+MPI's host memcpy legal, and *managed* memory is a type this UCX does support --
+`ucx_info -d` lists `cuda-managed` among its memory types, while plain device memory is
+absent. It needs CUDA >= 12.2 (the 24.7 SDK has 12.5) and a device with
+`cudaDevAttrConcurrentManagedAccess`, which GH200 has; Kokkos checks both and aborts with
+a clear message otherwise. The cost against a true CUDA-aware MPI has not been measured
+-- compare the `elapsed=` lines with the 9.2e7 cell-updates/s of the one-node test.
+
+To check whether TACC has since installed a CUDA-aware MPI (which would be better than
+managed memory), `module spider openmpi` and look for a CUDA-enabled build.
 
 (`nvidia` and `gcc` are the same Lmod family, so gcc's OpenMPI cannot be loaded beside
 the SDK; if `nvcc` is not on the path after loading the SDK, add `module load cuda`.)
