@@ -67,8 +67,9 @@ TaskStatus ShearingBox::InitRecv(Real time) {
           int sgid, srank;
           FindTargetMB(gid,jshift,sgid,srank);
           if (srank != global_variable::my_rank) {
-            // create tag using local ID of *receiving* MeshBlock
-            int tag = CreateBvals_MPI_Tag(gid, ((n<<2) | l));
+            // tag from the LOCAL id of the receiving MeshBlock: CreateBvals_MPI_Tag
+            // gives it only NUM_BITS_LID bits (see athena.hpp)
+            int tag = CreateBvals_MPI_Tag(mm, ((n<<2) | l));
 
             // get pointer to variables
             using Kokkos::ALL;
@@ -98,8 +99,9 @@ TaskStatus ShearingBox::InitRecv(Real time) {
           int sgid, srank;
           FindTargetMB(gid,jshift,sgid,srank);
           if (srank != global_variable::my_rank) {
-            // create tag using local ID of *receiving* MeshBlock
-            int tag = CreateBvals_MPI_Tag(gid, ((n<<2) | l));
+            // tag from the LOCAL id of the receiving MeshBlock: CreateBvals_MPI_Tag
+            // gives it only NUM_BITS_LID bits (see athena.hpp)
+            int tag = CreateBvals_MPI_Tag(mm, ((n<<2) | l));
 
             // get pointer to variables
             using Kokkos::ALL;
@@ -131,8 +133,9 @@ TaskStatus ShearingBox::InitRecv(Real time) {
           int sgid, srank;
           FindTargetMB(gid,jshift,sgid,srank);
           if (srank != global_variable::my_rank) {
-            // create tag using local ID of *receiving* MeshBlock
-            int tag = CreateBvals_MPI_Tag(gid, ((n<<2) | l));
+            // tag from the LOCAL id of the receiving MeshBlock: CreateBvals_MPI_Tag
+            // gives it only NUM_BITS_LID bits (see athena.hpp)
+            int tag = CreateBvals_MPI_Tag(mm, ((n<<2) | l));
 
             // get pointer to variables
             using Kokkos::ALL;
