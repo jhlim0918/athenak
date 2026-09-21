@@ -58,4 +58,22 @@ cd $SLURM_SUBMIT_DIR
   echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD); start ${START[*]} ${OVR[*]}"
 } >> run.log
 
-ibrun $BIN "${START[@]}" -d ./ -t 23:45:00 "${OVR[@]}" >> run.log 2>&1
+# Stop the binary ~15 min before SLURM kills the job, at whatever -t the job actually got.
+# This used to be hardcoded at 23:45:00, so `sbatch -t 48:00:00` still stopped at 23:45 and
+# the run died mid-flight without its own restart dump.
+tleft() {
+  local end="${SLURM_JOB_END_TIME:-}"
+  if [ -z "$end" ] && [ -n "${SLURM_JOB_ID:-}" ]; then
+    end=$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null \
+          | tr ' ' '\n' | sed -n 's/^EndTime=//p' | head -1)
+    [ -n "$end" ] && end=$(date -d "$end" +%s 2>/dev/null)
+  fi
+  [ -z "$end" ] && return 1
+  local left=$(( end - $(date +%s) - 900 ))
+  [ "$left" -le 0 ] && return 1
+  printf '%d:%02d:%02d' $((left/3600)) $(((left%3600)/60)) $((left%60))
+}
+ATIME=$(tleft) || ATIME=23:45:00
+echo "# athena wall-clock limit: $ATIME" >> run.log
+
+ibrun $BIN "${START[@]}" -d ./ -t $ATIME "${OVR[@]}" >> run.log 2>&1

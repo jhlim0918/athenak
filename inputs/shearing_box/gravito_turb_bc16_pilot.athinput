@@ -101,10 +101,15 @@ show_defect = 0
 self_gravity = true
 beta_cooling = true
 bcool_beta   = 10.0   # beta = Omega*t_cool
-bcool_cs2_floor = 0.0    # NO irradiation floor (BC19: pure beta cooling): cooling starts at
-                         # t = 0, first burst by t ~ 15-20, Gammie's alpha ~ 0.04 at Q ~ 1;
-                         # with the floor at cs0^2 (Baehr) the disk sits quiet to t ~ 40
-                         # and saturates at alpha ~ 0.015, Q ~ 1.23 (4.70361 restores it)
+bcool_cs2_floor = 4.70361  # irradiation floor at the initial temperature (cs0^2).  BC19 use
+                         # pure beta cooling (floor 0), and in THIS box that is a trap: with
+                         # Lz = 6.4 H_g there is no room for the overshoot.  The gas cools to
+                         # Q = 0.6 by t ~ 20, bursts at alpha = 0.22 (5x Gammie), and the burst
+                         # drives 16% of the mass out through the z faces -- Sigma never
+                         # recovers, Q climbs past 2.7 and the instability switches off
+                         # (validation/run/gt16_gpu_stage1, t = 40).  With the floor the disk
+                         # never overshoots: mild burst, alpha ~ 0.015, Q ~ 1.2, mass conserved
+                         # to ~0.1%, as the Baehr stage 1 did.  Set 0.0 only with a taller box.
 thermal_cooling = false  # SC14 "b" runs: t_cool = tcool_b*(rho/P)^3 (set
 tcool_b      = 200.0     # beta_cooling=false when enabling)
 cool_eps     = 0.02      # dt <= cool_eps*t_cool
