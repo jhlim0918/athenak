@@ -54,6 +54,48 @@ echo
 
 rc_all=0
 
+# Free space in KB at $1, and a human label for it.  On a Lustre filesystem (TACC
+# $WORK, $SCRATCH) `df` reports the whole shared filesystem -- 3.5 PB on Stockyard --
+# which says nothing about what this user may write, so a df-based guard sails past a
+# full quota and tar then dies mid-write with "Wrote only N of M bytes".  Ask the quota
+# first and fall back to df only when there is no usable answer.
+#
+# `lfs quota -q -u <user> <path>` prints one line per filesystem:
+#   <fs> <kbytes-used> <soft-quota> <hard-limit> <grace> <files> <fsoft> <fhard> <grace>
+# A value of 0 means "no limit" for that column, and a trailing '*' marks a limit that
+# is already exceeded.  Use the soft quota when it is set, otherwise the hard limit.
+# Prints "<available-KB> <source>".  It runs in a command substitution, so it cannot
+# set a variable in the caller -- the source is returned alongside the number.
+avail_kb() {
+  local d=$1 toks used lim soft hard
+  if command -v lfs >/dev/null 2>&1; then
+    # Flatten to a token stream: lfs wraps the numbers onto the next line when the
+    # filesystem path is long (it does for $WORK on Vista), so line-based field
+    # numbering is not reliable.  Drop the headers, drop the leading path token, and
+    # the remainder is: used soft hard grace files fsoft fhard fgrace.
+    toks=$(lfs quota -q -u "${USER:-$(id -un)}" "$d" 2>/dev/null \
+             | tr -d '*' | grep -v -i '^ *Disk quotas' | grep -v -i 'Filesystem' | tr -s ' \n' ' ')
+    set -- $toks
+    case "${1:-}" in /*) shift ;; esac
+    used=${1:-}; soft=${2:-}; hard=${3:-}
+    # plain integers only: a unit suffix (lfs -h) or anything odd falls through to df
+    case "$used$soft$hard" in
+      ''|*[!0-9]*) ;;
+      *) soft=$((soft)); hard=$((hard)); lim=$soft; [ "$lim" -gt 0 ] || lim=$hard
+         if [ "$lim" -gt 0 ]; then
+           if [ "$lim" -gt "$used" ]; then echo "$((lim - used)) quota"; else echo "0 quota"; fi
+           return
+         fi ;;
+    esac
+  fi
+  echo "$(df -Pk "$d" 2>/dev/null | tail -1 | awk '{print $4+0}') df"
+}
+
+hr_kb() {  # KB -> human, without assuming GNU numfmt
+  awk -v k="$1" 'BEGIN{ s="KMGTP"; i=1; while (k>=1024 && i<5) {k/=1024; i++}
+                        printf "%.1f%s", k, substr(s,i,1) }'
+}
+
 archive_one() {          # archive_one <tarball> <parent dir> <file list file>
   local tarball="$1" parent="$2" listfile="$3"
   local n_expected n_actual
@@ -90,12 +132,15 @@ for arg in "$@"; do
   mkdir -p "$dest" || { rc_all=1; continue; }
 
   need_kb=$(du -sk "$run" | cut -f1)
-  free_kb=$(df -Pk "$dest" | tail -1 | awk '{print $4}')
+  read -r free_kb SPACE_SRC <<< "$(avail_kb "$dest")"
   echo "== $name  ($(du -sh "$run" | cut -f1) in $run)"
-  echo "    tars -> $dest   (free there: $(df -Ph "$dest" | tail -1 | awk '{print $4}'))"
-  if [ "$free_kb" -lt "$need_kb" ]; then
-    echo "    NOT ENOUGH SPACE at $dest: the tars need about as much room as the run." >&2
-    echo "    Check your \$WORK quota, or re-run with DEST=<somewhere with room>." >&2
+  echo "    tars -> $dest   (need ~$(hr_kb "$need_kb"), $(hr_kb "$free_kb") available by $SPACE_SRC)"
+  if [ "${free_kb:-0}" -lt "$need_kb" ]; then
+    echo "    NOT ENOUGH SPACE at $dest: the tars need about as much room as the run" >&2
+    echo "    ($(hr_kb "$need_kb") needed, $(hr_kb "$free_kb") available by $SPACE_SRC)." >&2
+    echo "    Check the quota with:  lfs quota -h -u \$USER $dest" >&2
+    echo "    \$WORK is usually the tight one; stage on \$SCRATCH instead:" >&2
+    echo "      sbatch --export=ALL,DEST=\$SCRATCH/athenak_archive $0 $run" >&2
     rc_all=1; echo; continue
   fi
 
