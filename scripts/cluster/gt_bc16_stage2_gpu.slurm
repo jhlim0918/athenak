@@ -3,16 +3,19 @@
 #SBATCH -p gh
 #SBATCH -N 16                    # one rank per GH200.  8 nodes OOMs (job 1012936, exit
 #SBATCH -n 16                    #   137): the dust grid arrays are fixed-width, NOT sized
-                                 #   by nspecies -- rho_dust 1 + gforce 3 + qdep 5 +
-                                 #   ustar 3 + dmom 4 + solver_r/p 6 + solver_ap 3 = 25
-                                 #   components per cell (dust.cpp:444).  At 8 ranks that
-                                 #   is 3200 blocks x 38^3 x 25 x 8 B = 33 GB of dust
-                                 #   fields per rank on top of the gas state, MG hierarchy
-                                 #   and fluxes, against ~96 GB of HBM.  16 ranks halves
-                                 #   it to 16 GB; 25600 blocks divides evenly by 8/16/32
-                                 #   so the load stays balanced.  Lowering <particles>/ppc
-                                 #   does NOT help -- 50e6 particles are well under 1 GB
-                                 #   per rank; the grid arrays are the cost.
+                                 #   by nspecies -- with drag_solver = local (the default,
+                                 #   and what these inputs use) that is rho_dust 1 +
+                                 #   gforce 3 + qdep 5 + ustar 3 + dmom 4 = 16 components
+                                 #   per cell (dust.cpp:444).  At 8 ranks, 3200 blocks x
+                                 #   38^3 cells x 16 x 8 B = 21 GB of dust fields per rank
+                                 #   on top of the gas state, MG hierarchy and fluxes,
+                                 #   against ~96 GB of HBM.  16 ranks halves it to 10 GB;
+                                 #   25600 blocks divides evenly by 8/16/32 so the load
+                                 #   stays balanced.  Lowering <particles>/ppc does NOT
+                                 #   help -- 50e6 particles are well under 1 GB per rank;
+                                 #   the grid arrays are the cost.  (drag_solver = pcg or
+                                 #   adaptive would add solver_r/p/ap, 9 more components:
+                                 #   33 GB/rank at 8 ranks, 16 GB at 16.)
 #SBATCH -t 24:00:00
 #SBATCH -A AST25015
 #SBATCH -o slurm.%j.out
