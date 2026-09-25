@@ -1,0 +1,128 @@
+# AthenaK input file: the Baehr, Zhu & Yang (2022, ApJ 933, 100) gravito-turbulent box
+# (gravito_turb_baehr.athinput: Lx = Ly = (80/pi) H_g = 25.5 H_g, Lz = (40/pi) H_g =
+# 12.7 H_g, beta = 10, Q0 = 1.02, irradiation floor at the initial temperature) at TWICE
+# their resolution: 1024^2 x 512, 40 cells per H_g (dx = 0.05394), on GPUs.
+# STAGE 1, the gas alone, run to t = 150 so the dust stage can restart from the same time
+# as the 20/H Baehr dust runs (gtb_*: dust from the t = 150 dump).
+#
+# Why this box and not the 16H one: gt16_stage1c (16H, same floor) stayed laminar to
+# t = 50 -- 92% of its Sigma power sat in the ny = 1 mode, lam_y = 16H, while the
+# saturated 20/H Baehr box keeps 70-80% of its power at its own ny = 1, lam_y = 25.5H.
+# The 16H box cuts off the wavelength the turbulence lives at.
+#
+# Differences from gravito_turb_baehr.athinput, all adopted from the 16H GPU input
+# (gravito_turb_bc16.athinput): hse_outflow z faces instead of diode, 32^3 MeshBlocks,
+# 3 V-cycles per multigrid solve, and tlim = 150 in one input.
+#
+# Size: 5.4e8 cells, 32 x 32 x 16 = 16384 MeshBlocks -- 2048 per rank on 8 GH200s
+# (~26 GB each; 4 also divide evenly at ~51 GB).  Estimated from the measured gt16 cost
+# (~0.5 s fixed + 5.3e-9 s per cell per GPU, per cycle) and ~1.4e5 cycles to t = 150:
+# ~0.9 s/cycle and ~34 h on 8 GPUs, ~270 GPU-hours; a 24 h job needs one CONT=1.
+#   mkdir -p $SCRATCH/gtb40/stage1 && cd $SCRATCH/gtb40/stage1 \
+#     && INPUT=$HOME/athenak-multigrid/inputs/shearing_box/gravito_turb_baehr40.athinput \
+#        sbatch -J gtb40_s1 -N 8 -n 8 -t 48:00:00 \
+#        $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage1_gpu.slurm
+# Output volume: hydro_w dumps 10.7 GB and grav_phi 2.1 GB each (every 10/Omega:
+# ~190 GB to t = 150); restarts ~22 GB each (every 25/Omega: ~130 GB).
+
+<comment>
+problem   = Baehr+22 box at 40 cells/H_g, stage 1 (gas only, beta = 10, Q0 = 1.02)
+
+<job>
+basename  = gtb40
+
+<mesh>
+nghost    = 3         # uniform grid: three suffice for plm (as gravito_turb_bc16)
+nx1       = 1024      # 40.2 cells per H_g
+x1min     = -27.6151  # Lx = (80/pi) H_g, H_g = 2.16878
+x1max     = 27.6151
+ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
+ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
+
+nx2       = 1024
+x2min     = -27.6151  # Ly = Lx
+x2max     = 27.6151
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 512       # cubic cells
+x3min     = -13.80755 # Lz = (40/pi) H_g
+x3max     = 13.80755
+ix3_bc    = hse_outflow  # outflow with hydrostatic ghost density; diode leaks mass
+ox3_bc    = hse_outflow  # in once the halo lifts off the floor (HANDOFF_ZBC.md)
+
+<meshblock>
+nx1       = 32        # cubic MeshBlocks (multigrid requirement); 32 x 32 x 16 of them
+nx2       = 32
+nx3       = 32
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integrator
+cfl_number = 0.3      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = -1       # cycle limit
+tlim       = 150.0    # the 20/H run turned on by t ~ 45 and saturated by ~75
+ndiag      = 100      # cycles between diagnostic output
+
+<hydro>
+eos         = ideal   # EOS type
+gamma       = 1.6666666666666667
+reconstruct = plm     # spatial reconstruction method
+rsolver     = hllc    # Riemann-solver to be used
+dfloor      = 1.0e-4  # density floor (SC14: 1e-4 rho0)
+pfloor      = 1.0e-10 # pressure floor (halo shocks; SC14 used Athena's default floors)
+
+<shearing_box>
+qshear    = 1.5       # shear rate parameter q
+omega0    = 1.0       # rotation frequency
+stratified = true     # vertical tidal gravity -Omega^2 z
+orbital_advection = true
+
+<gravity>
+solver    = multigrid # fft | multigrid
+four_pi_G = 4.25231   # = 4*pi*0.3384 (SC14 fiducial G)
+mg_bc     = slab      # slab-open (vacuum) x3 boundaries
+mg_remap  = ppmx      # shear ghost + slab plane remap order
+threshold = -1.0      # FIXED iteration count, not the stagnation rule
+niteration = 3        # warm-started V-cycles: 3 reproduce the converged Jeans growth
+                      # rate to 3e-6 (gravito_turb_bc16.athinput)
+full_multigrid = false  # iterative mode: warm-start from the previous potential
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+beta_cooling = true
+bcool_beta   = 10.0   # beta = Omega*t_cool
+bcool_cs2_floor = 4.70361  # irradiation floor: cool toward the initial T (cs0^2), as
+                         # Baehr+22; in this box the 20/H run burst mildly (Q min ~0.9)
+thermal_cooling = false  # SC14 "b" runs: t_cool = tcool_b*(rho/P)^3 (set
+tcool_b      = 200.0     # beta_cooling=false when enabling)
+cool_eps     = 0.02      # dt <= cool_eps*t_cool
+
+<problem>
+pgen_name = gravito_turb
+user_hist = true
+rho0      = 1.0
+cs0       = 2.16878   # midplane sound speed: Q0 = 1.02 (Q scales with cs0)
+dfloor_ic = 1.0e-4    # initial-condition halo floor
+pert_amp  = 0.1       # velocity perturbations up to pert_amp*cs0 ...
+pert_zmax = 4.34      # ... for |z| < 2 H_g
+pert_seed = 1
+
+<output1>
+file_type = hst
+dt        = 0.25
+
+<output2>
+file_type = bin
+variable  = hydro_w
+dt        = 10.0
+
+<output3>
+file_type = bin
+variable  = grav_phi
+dt        = 10.0
+
+<output4>
+file_type = rst
+dt        = 25.0      # 50, 75, 100, 125, 150: the dust stage restarts from t = 150
