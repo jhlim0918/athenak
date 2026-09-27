@@ -14,10 +14,12 @@
 # (gravito_turb_bc16.athinput): hse_outflow z faces instead of diode, 32^3 MeshBlocks,
 # 3 V-cycles per multigrid solve, and tlim = 150 in one input.
 #
-# Size: 5.4e8 cells, 32 x 32 x 16 = 16384 MeshBlocks -- 2048 per rank on 8 GH200s
-# (~26 GB each; 4 also divide evenly at ~51 GB).  Estimated from the measured gt16 cost
-# (~0.5 s fixed + 5.3e-9 s per cell per GPU, per cycle) and ~1.4e5 cycles to t = 150:
-# ~0.9 s/cycle and ~34 h on 8 GPUs, ~270 GPU-hours; a 24 h job needs one CONT=1.
+# Size: 5.4e8 cells, 32 x 32 x 16 = 16384 MeshBlocks -- 2048 per rank on 8 GH200s.  With
+# ghosts that is 9.0e8 padded cells, ~540 B each gas-only: ~60 GB per GPU on 8 (4 would
+# not fit).  The dust stage needs 16 (gravito_turb_baehr40_dust3.athinput).
+# Ran 2026-09-26 on 8 GH200s: t = 150 in 31.5 h, 1.6e5 cycles (saturated dt ~7.8e-4),
+# 0.71 s/cycle, 7.55e8 zone-cycles/s = 9.4e7 per GPU, 252 GPU-hours; saturated state
+# t = 75-150 matches the 20/H run (alpha' 0.0151 vs 0.0152, Q 1.253 vs 1.252).
 #   mkdir -p $SCRATCH/gtb40/stage1 && cd $SCRATCH/gtb40/stage1 \
 #     && INPUT=$HOME/athenak-multigrid/inputs/shearing_box/gravito_turb_baehr40.athinput \
 #        sbatch -J gtb40_s1 -N 8 -n 8 -t 48:00:00 \

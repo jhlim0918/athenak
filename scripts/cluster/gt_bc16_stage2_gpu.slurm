@@ -1,21 +1,18 @@
 #!/bin/bash
 #SBATCH -J gt16_dust
 #SBATCH -p gh
-#SBATCH -N 16                    # one rank per GH200.  8 nodes OOMs (job 1012936, exit
-#SBATCH -n 16                    #   137): the dust grid arrays are fixed-width, NOT sized
-                                 #   by nspecies -- with drag_solver = local (the default,
-                                 #   and what these inputs use) that is rho_dust 1 +
-                                 #   gforce 3 + qdep 5 + ustar 3 + dmom 4 = 16 components
-                                 #   per cell (dust.cpp:444).  At 8 ranks, 3200 blocks x
-                                 #   38^3 cells x 16 x 8 B = 21 GB of dust fields per rank
-                                 #   on top of the gas state, MG hierarchy and fluxes,
-                                 #   against ~96 GB of HBM.  16 ranks halves it to 10 GB;
-                                 #   25600 blocks divides evenly by 8/16/32 so the load
-                                 #   stays balanced.  Lowering <particles>/ppc does NOT
-                                 #   help -- 50e6 particles are well under 1 GB per rank;
-                                 #   the grid arrays are the cost.  (drag_solver = pcg or
-                                 #   adaptive would add solver_r/p/ap, 9 more components:
-                                 #   33 GB/rank at 8 ranks, 16 GB at 16.)
+#SBATCH -N 16                    # one rank per GH200.  8 nodes is killed (job 1012936,
+#SBATCH -n 16                    #   exit 137: the host OOM killer -- under the unified-
+                                 #   memory build, pages that do not fit in HBM spill to
+                                 #   the Grace LPDDR, and the job dies when both are full).
+                                 #   Measured footprint with dust: ~850 B per ghost-padded
+                                 #   cell (gtb_bench_gh4, 2026-09-27: 36 GB per GH200 for
+                                 #   4.4e7 padded cells, +1 GB in the first step), ~540 B
+                                 #   gas-only -- NOT the 16 dust components alone, which are
+                                 #   128 B of it.  The 16H box has 25600 x 38^3 = 1.4e9
+                                 #   padded cells: ~150 GB per rank at 8, ~75 GB at 16,
+                                 #   ~38 GB at 32 (all divide 25600 evenly).  Particles are
+                                 #   a small part: 1e8 is a few GB in total.
 #SBATCH -t 24:00:00
 #SBATCH -A AST25015
 #SBATCH -o slurm.%j.out
