@@ -38,8 +38,22 @@
 //!   8: rho_dv2    int rho*dv^2 dV           (-> rms dv = sqrt(h8/h0), dv includes
 //!                                              vx, dvy, vz;  SC14 eq. 18)
 //!   9: eint       int P/(gamma-1) dV        (thermal energy; cooling balance checks)
+//!
+//! Adaptive refinement (<amr_criterionN> method = user): a Jeans-number criterion,
+//!   nJ = lambda_J/dx = 2 pi cs/(dx sqrt(4 pi G rho)),  cs^2 = gamma P/rho (local),
+//! minimized over the cells of a MeshBlock that pass a density gate rho > amr_rho_min.
+//! The block refines when min nJ < amr_njeans and derefines when min nJ >
+//! amr_njeans*amr_njeans_deref (or when no cell passes the gate).  Because dx halves
+//! per level the criterion is graded: each level is entered at 4x the density of the
+//! one below at fixed cs.  The gate is needed because halo cells on the pressure floor
+//! have cs ~ 1e-3 and nJ < 1 at rho ~ 1e-4; amr_cs_min bounds cs from below inside the
+//! gate for the same reason (isolated floored cells in dense gas).  <problem>
+//! parameters: amr_njeans (16), amr_njeans_deref (2.5, must exceed 2), amr_rho_min
+//! (Roche density 9 Omega^2/(4 pi G)), amr_cs_min (0), amr_tstart (0: no flags are
+//! raised before this time, so one input serves a cold start and a saturated start).
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -51,6 +65,7 @@
 #include "parameter_input.hpp"
 #include "coordinates/cell_locations.hpp"
 #include "mesh/mesh.hpp"
+#include "mesh/mesh_refinement.hpp"
 #include "eos/eos.hpp"
 #include "hydro/hydro.hpp"
 #include "mhd/mhd.hpp"
@@ -64,12 +79,15 @@
 
 // User-defined history function
 void GravitoTurbHistory(HistoryData *pdata, Mesh *pm);
+// User-defined refinement criterion (Jeans number with a density gate)
+void GravitoTurbRefinement(MeshBlockPack *pmbp);
 
 namespace {
 struct GravitoTurbVariables {
   Real qshear, omega0, four_pi_G, gamma;
   Real lx, ly;
   bool orbital_advection;
+  Real amr_njeans, amr_njeans_deref, amr_rho_min, amr_cs_min, amr_tstart;
 };
 GravitoTurbVariables gt_var;
 
@@ -134,6 +152,22 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   gt_var.ly = msize.x2max - msize.x2min;
   gt_var.orbital_advection = pmbp->phydro->psbox_u->orbital_advection;
   user_hist_func = GravitoTurbHistory;
+
+  // Jeans-number refinement criterion (used by <amr_criterionN> method = user)
+  gt_var.amr_njeans = pin->GetOrAddReal("problem", "amr_njeans", 16.0);
+  gt_var.amr_njeans_deref = pin->GetOrAddReal("problem", "amr_njeans_deref", 2.5);
+  gt_var.amr_rho_min = pin->GetOrAddReal("problem", "amr_rho_min",
+      9.0*SQR(gt_var.omega0)/four_pi_G);
+  gt_var.amr_cs_min = pin->GetOrAddReal("problem", "amr_cs_min", 0.0);
+  gt_var.amr_tstart = pin->GetOrAddReal("problem", "amr_tstart", 0.0);
+  if (gt_var.amr_njeans_deref <= 2.0) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+              << "<problem>/amr_njeans_deref must exceed 2: derefining halves the Jeans "
+              << "number, so a smaller factor makes blocks flip every interval"
+              << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  user_ref_func = GravitoTurbRefinement;
 
   // two-stage dust runs (Baehr, Zhu & Yang 2022 style): a gas-only run to saturation,
   // then a restart with <particles>/<dust> blocks and restart_insert = true, which
@@ -630,5 +664,65 @@ void GravitoTurbHistory(HistoryData *pdata, Mesh *pm) {
     pdata->hdata[15] = dwr;
     pdata->hdata[16] = pdust->escaped_mass;
   }
+  return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void GravitoTurbRefinement()
+//! \brief Jeans-number AMR criterion with a density gate (see the file header).
+
+void GravitoTurbRefinement(MeshBlockPack *pmbp) {
+  auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
+  if (pmbp->pmesh->time < gt_var.amr_tstart) {return;}
+
+  int nmb = pmbp->nmb_thispack;
+  auto &indcs = pmbp->pmesh->mb_indcs;
+  int &is = indcs.is, nx1 = indcs.nx1;
+  int &js = indcs.js, nx2 = indcs.nx2;
+  int &ks = indcs.ks, nx3 = indcs.nx3;
+  const int nkji = nx3*nx2*nx1;
+  const int nji  = nx2*nx1;
+  int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
+
+  auto &w0 = pmbp->phydro->w0;
+  auto &size = pmbp->pmb->mb_size;
+  Real gamma = gt_var.gamma;
+  Real gm1 = gamma - 1.0;
+  Real fpG = gt_var.four_pi_G;
+  Real rho_min = gt_var.amr_rho_min;
+  Real cs2_min = SQR(gt_var.amr_cs_min);
+  Real njeans = gt_var.amr_njeans;
+  Real nderef = gt_var.amr_njeans*gt_var.amr_njeans_deref;
+
+  par_for_outer("GravitoTurbAMR", DevExeSpace(), 0, 0, 0, (nmb-1),
+  KOKKOS_LAMBDA(TeamMember_t tmember, const int m) {
+    // min over gated cells of cs^2/rho; nJ = 2 pi sqrt(cs^2/rho)/(dx sqrt(4 pi G))
+    Real team_qmin = (FLT_MAX);
+    Kokkos::parallel_reduce(Kokkos::TeamThreadRange(tmember, nkji),
+    [=](const int idx, Real &qmin) {
+      int k = (idx)/nji;
+      int j = (idx - k*nji)/nx1;
+      int i = (idx - k*nji - j*nx1) + is;
+      j += js;
+      k += ks;
+      Real rho = w0(m,IDN,k,j,i);
+      if (rho > rho_min) {
+        Real cs2 = fmax(gamma*gm1*w0(m,IEN,k,j,i)/rho, cs2_min);
+        qmin = fmin(cs2/rho, qmin);
+      }
+    }, Kokkos::Min<Real>(team_qmin));
+
+    // only derefine when flag has not been set by other criteria
+    int &flag = refine_flag.d_view(m+mbs);
+    if (team_qmin < (FLT_MAX)) {
+      Real nj = 2.0*M_PI*sqrt(team_qmin/fpG)/size.d_view(m).dx1;
+      if (nj < njeans) {flag = 1;}
+      if ((nj > nderef) && (flag == 0)) {flag = -1;}
+    } else if (flag == 0) {
+      flag = -1;
+    }
+  });
+  refine_flag.modify_device();
+  refine_flag.sync_host();
   return;
 }
