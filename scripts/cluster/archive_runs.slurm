@@ -32,7 +32,7 @@
 #     <name>_meta.tar   top-level regular files: .hst, logs, slurm scripts,
 #                       provenance, frozen input, .npz analysis products (small --
 #                       grab this alone when you only want the history)
-#     <name>_data.tar   bin/ and rst/ (the bulk)
+#     <name>_data.tar   bin/, rst/, vtk/ and pvtk/, whichever exist (the bulk)
 # Both store paths under <name>/, so `tar -xf <name>_data.tar` recreates the run
 # directory rather than spilling bin/ into the current directory.
 #
@@ -161,9 +161,9 @@ for arg in "$@"; do
     | sort > "$tmp/meta.list"
   archive_one "$dest/${name}_meta.tar" "$parent" "$tmp/meta.list" || rc_all=1
 
-  # bulk: bin/ and rst/, whichever exist
+  # bulk: bin/, rst/, vtk/ and pvtk/, whichever exist
   : > "$tmp/data.list"
-  for sub in bin rst; do
+  for sub in bin rst vtk pvtk; do
     [ -d "$run/$sub" ] && (cd "$parent" && find "$name/$sub" -type f) >> "$tmp/data.list"
   done
   sort -o "$tmp/data.list" "$tmp/data.list"
