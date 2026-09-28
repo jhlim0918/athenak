@@ -114,7 +114,20 @@ void DustGasDrag::AssembleDustGasDragTasks(
   id.p2_sendp  = tl["stagen"]->AddTask(&DustGasDrag::SendParticles2, this, id.p2_irecv);
   id.p2_recvp  = tl["stagen"]->AddTask(&DustGasDrag::RecvParticles2, this, id.p2_sendp);
   id.p2_remove = tl["stagen"]->AddTask(&DustGasDrag::RemoveEscaped2, this, id.p2_recvp);
-  id.sendbr    = tl["stagen"]->AddTask(&DustGasDrag::SendPMBR, this, id.gkp);
+  // The split-BE migration above and the PMBR fold below both contain BLOCKING
+  // collectives: CountSendsAndRecvs's Allgathers, the Allgather that closes
+  // RecvAndUnpackPrtcls, RemoveDead's Allgather, and the MPI_Allreduce inside FoldPMBR's
+  // shear fold.  Run side by side, a rank whose particle messages arrive first enters the
+  // Allgather while one whose PMBR messages arrive first enters the Allreduce, and each
+  // waits forever for the other -- a silent hang, every rank busy-polling at 100% CPU
+  // with the GPU idle.  The race grows with the migration traffic: the 40 cells/H
+  // three-species runs hung within ~300 cycles, the single-species St = 0.3 run after
+  // ~15500 once its clumps started crossing ranks.  So the PMBR exchange starts only
+  // after the migration has finished, and every rank enters the collectives in the same
+  // order.  In PC2 and IMEX the second migration chain no-ops, so this costs nothing
+  // there.
+  TaskID pmbr_ready = (id.gkp | id.p2_remove);
+  id.sendbr    = tl["stagen"]->AddTask(&DustGasDrag::SendPMBR, this, pmbr_ready);
   id.recvbr    = tl["stagen"]->AddTask(&DustGasDrag::RecvPMBR, this, id.sendbr);
   id.foldbr    = tl["stagen"]->AddTask(&DustGasDrag::FoldPMBR, this, id.recvbr);
   TaskID commit_ready = (id.foldbr | id.p2_remove);
