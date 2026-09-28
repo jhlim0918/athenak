@@ -54,6 +54,15 @@ echo
 
 rc_all=0
 
+# The path to quote in the resubmit hint.  Under sbatch, $0 is slurmd's spooled copy
+# (/var/spool/slurmd/job<N>/slurm_script), which is gone once the job ends; the
+# submitted path is in the job record.
+SELF=$0
+if [ -n "${SLURM_JOB_ID:-}" ] && command -v scontrol >/dev/null 2>&1; then
+  cmd=$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null | sed -n 's/^ *Command=\([^ ]*\).*/\1/p')
+  [ -n "$cmd" ] && SELF=$cmd
+fi
+
 # Free space in KB at $1, and a human label for it.  On a Lustre filesystem (TACC
 # $WORK, $SCRATCH) `df` reports the whole shared filesystem -- 3.5 PB on Stockyard --
 # which says nothing about what this user may write, so a df-based guard sails past a
@@ -140,7 +149,7 @@ for arg in "$@"; do
     echo "    ($(hr_kb "$need_kb") needed, $(hr_kb "$free_kb") available by $SPACE_SRC)." >&2
     echo "    Check the quota with:  lfs quota -h -u \$USER $dest" >&2
     echo "    \$WORK is usually the tight one; stage on \$SCRATCH instead:" >&2
-    echo "      sbatch --export=ALL,DEST=\$SCRATCH/athenak_archive $0 $run" >&2
+    echo "      sbatch --export=ALL,DEST=\$SCRATCH/athenak_archive $SELF $run" >&2
     rc_all=1; echo; continue
   fi
 
