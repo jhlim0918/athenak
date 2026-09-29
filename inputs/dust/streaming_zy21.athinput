@@ -1,0 +1,145 @@
+# AthenaK input file: Zhu & Yang (2021, MNRAS 501, 467) Table 1, Nsp = 1 -- the exact
+# single-mode streaming-instability test.  Twin of the Athena (C) input
+# tst/particle/athinput.streaming2d_linmode, from identical initial conditions.
+#
+# Mode: tau_s = 0.0505 (linear centre of the Ts in [1e-3, 0.1] bin), eps = 0.2,
+# K_x = K_z = 10 (K = k*eta r), published sigma = 0.00748144; the 8x8 YG05/YJ07
+# eigenproblem (Athena's vis/julia/si_linear_mode.jl) gives s = 0.007477297820032444,
+# omega_R = -0.4588403139218865.  Units Omega = c_s = rho0 = 1, eta v_K = 0.05, so
+# eta r = 0.05 and k_x = k_z = K/(eta r) = 200.  The box is ONE wavelength square,
+# L = 2 pi/200 = pi/100, so cells per wavelength = mesh/nx1 = mesh/nx2.
+#
+# The eigenvector (YJ07 normalisation drho_p/rho_p = 1, velocities in eta v_K) is scaled
+# to the Athena run's seed drho_p/rho_p = 2e-7 (amp = 1e-6 times the amp *= mratio
+# quirk) and converted to code units: densities times the background density,
+# velocities times eta v_K -- the same conversion as streaming_modelAs.athinput.
+#
+# Resolution by command-line override, e.g.
+#     athena -i streaming_zy21.athinput mesh/nx1=64 mesh/nx2=64 \
+#            meshblock/nx1=64 meshblock/nx2=64
+# Coupling scheme: as written, IMEX (integrator imex2+).  For PC2 override
+#     time/integrator=rk2 dust/coupling=pc2
+#
+# Diagnostic: <problem>/user_hist = true writes the Fourier projection onto the seeded
+# (k_x, k_z) mode to <basename>.user.hst (%.14e); the growth rate is a regression of
+# ln|projection|.  Mesh dumps must be float64 (vtk_dbl = true): float32 cannot resolve a
+# 2e-7 dust mode, let alone drho_g ~ 6e-12.  Athena (C) reference (4 ppc, CFL 0.4,
+# fit t = 5-60):
+#     16 c/lam decays | 32: -0.0056 | 64: +0.0058 (78%) | 128: +0.0073 (97%) |
+#     256: +0.00745 (99.6%)
+
+<comment>
+problem   = ZY21 Nsp = 1 single-mode SI test, K_x = K_z = 10
+
+<job>
+basename  = si_zy21
+
+<mesh>
+nghost    = 3
+nx1       = 64            # = cells per wavelength
+x1min     = -0.015707963267948967
+x1max     = 0.015707963267948967
+ix1_bc    = periodic
+ox1_bc    = periodic
+nx2       = 64
+x2min     = -0.015707963267948967
+x2max     = 0.015707963267948967
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 64
+nx2       = 64
+nx3       = 1
+
+<time>
+evolution  = dynamic
+integrator = imex2+       # rk2 with dust/coupling = pc2
+cfl_number = 0.4          # as the Athena (C) ZY21 runs
+nlim       = -1
+tlim       = 100.0        # 1/Omega, as the Athena (C) ZY21 runs
+ndiag      = 100000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = ppmx
+rsolver     = roe         # hlle suppresses the grid-scale residual that stalls the slow
+                          # modes (ZY21, linB) with roe -- see the 2026-09 SI tests
+
+<hydro_srcterms>
+const_accel     = true
+const_accel_val = 0.1     # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 4.0
+
+<dust>
+coupling      = imex      # or pc2 (with time/integrator = rk2)
+nspecies      = 1
+taus_1        = 0.0505
+dust_to_gas   = 0.2
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+drag_solver   = local
+
+<problem>
+pgen_name  = streaming_linear
+user_hist  = true
+rho0       = 1.0
+etavk      = 0.05
+eps        = 0.2
+kx         = 200.0     
+kz         = 200.0     
+omega_re   = -0.4588403139218865   # reference only (unused at t = 0)
+# eigenvector, drho_p/rho_p = 2e-7, in code units
+drhog_re   = -1.2499914805470444e-13
+drhog_im   = -6.0657681727747635e-12
+dugx_re    = -7.150484749044434e-12
+dugx_im    = -2.203228332746082e-09
+dugp_re    = 2.399030771925705e-09
+dugp_im    = -3.977015492495633e-11
+dugz_re    = 7.151085818081389e-12
+dugz_im    = 2.203246491108703e-09
+drhop_re   = 4e-08
+dvpx_re    = 2.609859830531131e-10
+dvpx_im    = -2.194697853978421e-09
+dvpp_re    = 2.390992507583611e-09
+dvpp_im    = 4.476589915288429e-11
+dvpz_re    = -1.9677376686083783e-11
+dvpz_im    = 2.202175151798451e-09
+
+<output1>
+file_type  = hst
+dt         = 0.1
+data_format = %.14e
+
+<output2>
+file_type  = phst         # particle history: mean dust velocity -> NSH background check
+dt         = 0.1
+
+<output3>
+file_type  = vtk          # particle-mesh dust density
+variable   = dust_dpm
+dt         = 1.0          # override to 0.1 for a movie
+vtk_dbl    = true
+
+<output4>
+file_type  = vtk          # gas primitives
+variable   = hydro_w
+dt         = 1.0
+vtk_dbl    = true

@@ -1,0 +1,142 @@
+# AthenaK input file: the linB streaming-instability growth-rate test of Youdin & Johansen
+# (2007, ApJ 662, 613), Table 1 -- the slow-growing mode also used by Bai & Stone (2010,
+# ApJS 190, 297), Sec. 4.3.  Twin of the Athena (C) input
+# tst/particle/athinput.streaming2d_linB, and of streaming_linA.athinput here.
+#
+# Mode: tau_s = 0.1, eps = 0.2, K_x = K_z = 6 (K = k*eta r), eta v_K/c_s = 0.05.
+# Eigenvalue omega = -0.4998786 + 0.0154764 i  (s = 0.01547638 Omega; YJ07 print omega_R
+# with the opposite sign, a convention difference that does not enter at t = 0).
+# Units Omega = c_s = rho0 = 1, eta v_K = 0.05, so eta r = 0.05 and k_x = k_z = 120;
+# the box is ONE wavelength square, L = 2 pi/120 = pi/60, so cells per wavelength =
+# mesh/nx1 = mesh/nx2.
+#
+# Eigenvector: the 8x8 YG05/YJ07 solution (Athena's vis/julia/si_linear_mode.jl), which
+# matches YJ07 Table 1 to the printed digits, at full precision; YJ07 normalisation
+# scaled to their seed drho_p/rho_p = 1e-6 and converted to code units (densities times
+# the background density, velocities times eta v_K).
+#
+# Resolution by command-line override (mesh/nx1, mesh/nx2, meshblock/nx1, meshblock/nx2).
+# Coupling as written: PC2 (integrator rk2); for IMEX override
+#     time/integrator=imex2+ dust/coupling=imex
+#
+# Diagnostic: the Fourier projection onto the seeded mode in <basename>.user.hst; growth
+# rate from ln|projection| over t = 10-90 /Omega (Bai & Stone 2010).  s = 0.0155 grows
+# the mode by only ~4.7x by t = 100.
+# Athena (C) reference (1 ppc, CFL 0.8, same window): 16 c/lam decays | 32: ~0 |
+#     64: 0.0127 | 128: 0.0151 (97.6%)
+
+<comment>
+problem   = YJ07 linB streaming-instability test, K_x = K_z = 6, tau_s = 0.1, eps = 0.2
+
+<job>
+basename  = si_linB
+
+<mesh>
+nghost    = 3
+nx1       = 32            # = cells per wavelength
+x1min     = -0.02617993877991494
+x1max     = 0.02617993877991494
+ix1_bc    = periodic
+ox1_bc    = periodic
+nx2       = 32
+x2min     = -0.02617993877991494
+x2max     = 0.02617993877991494
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 32
+nx2       = 32
+nx3       = 1
+
+<time>
+evolution  = dynamic
+integrator = rk2          # imex2+ with dust/coupling = imex
+cfl_number = 0.4
+nlim       = -1
+tlim       = 100.0        # 1/Omega, as the Athena (C) linB runs
+ndiag      = 100000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = ppmx
+rsolver     = roe         # hlle suppresses the grid-scale residual that stalls the slow
+                          # modes (ZY21, linB) with roe -- see the 2026-09 SI tests
+
+<hydro_srcterms>
+const_accel     = true
+const_accel_val = 0.1     # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 25.0      # 5 x 5 quiet-start sublattice per cell
+
+<dust>
+coupling      = pc2       # or imex (with time/integrator = imex2+)
+nspecies      = 1
+taus_1        = 0.1
+dust_to_gas   = 0.2
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+drag_solver   = local
+
+<problem>
+pgen_name  = streaming_linear
+user_hist  = true
+rho0       = 1.0
+etavk      = 0.05
+eps        = 0.2
+kx         = 120.0
+kz         = 120.0
+omega_re   = -0.499878570745996   # reference only (unused at t = 0)
+# eigenvector, drho_p/rho_p = 1e-6, in code units
+drhog_re   = -6.743944770510168e-12
+drhog_im   = -6.912498169557387e-11
+dugx_re    = -8.706035725786159e-10
+dugx_im    = -1.385173303257032e-08
+dugp_re    = 1.3839882340565335e-08
+dugp_im    = -9.37842391219636e-10
+dugz_re    = 8.706498825528489e-10
+dugz_im    = 1.3852115458416158e-08
+drhop_re   = 2e-07
+dvpx_re    = 2.314580738132442e-09
+dvpx_im    = -1.3715362636761866e-08
+dvpp_re    = 1.3696517681671905e-08
+dvpp_im    = 1.9646702413404843e-10
+dvpz_re    = 4.163162297888348e-10
+dvpz_im    = 1.3844332447881154e-08
+
+<output1>
+file_type  = hst
+dt         = 0.1
+data_format = %.14e
+
+<output2>
+file_type  = phst
+dt         = 0.1
+
+<output3>
+file_type  = vtk          # particle-mesh dust density
+variable   = dust_dpm
+dt         = 1.0          # override to 0.25 for a movie
+vtk_dbl    = true
+
+<output4>
+file_type  = vtk          # gas primitives
+variable   = hydro_w
+dt         = 1.0
+vtk_dbl    = true
