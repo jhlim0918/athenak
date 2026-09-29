@@ -1,12 +1,13 @@
 # AthenaK input file: Yang & Zhu (2021, MNRAS 508, 5538) Model As, SINGLE SPECIES, on a
-# UNIFORM grid, seeded with a linear streaming-instability eigenmode.  This is the exact
-# twin of the Athena (C) run tst/particle/athinput.streaming2d_modelAs, so the two codes
-# can be compared from identical initial conditions.
+# UNIFORM grid, seeded with a linear streaming-instability eigenmode.  Twin of the Athena
+# (C) run tst/particle/athinput.streaming2d_modelAs -- the same seeded mode, box and
+# resolution, so the two codes start from identical initial conditions -- except that
+# this file uses 1 particle per cell and CFL 0.25 where the Athena run used 4 and 0.4.
 #
 # Model As is the slow-growth case: tau_s in [1e-3, 0.1] with eps = 0.2.  The
 # single-species representative is the LINEAR centre of that bin (Zhu & Yang 2021 Table 1,
 # Nsp = 1, q = -3.5): tau_s = (0.001 + 0.1)/2 = 0.0505.  Box 0.2 H = 4 eta r square at
-# 256^2, 4 particles per cell -- Model As's own resolution.
+# 256^2 -- Model As's own resolution; 1 particle per cell (Model As and the Athena run: 4).
 #
 # Units Omega = c_s = rho0 = 1, eta v_K = 0.05 c_s (so eta r = 0.05 H); the radial
 # pressure gradient acts on the gas alone as a_x = 2*Omega*eta v_K = 0.1.  2D r-z: x1 =
@@ -43,8 +44,8 @@
 # s = 0.0026-0.0029, i.e. 36-40% of the analytic 0.0071294, reaching saturation only at
 # t ~ 1000 P, while 512^2 recovered 95%.  A slow measured rate here is therefore the
 # expected code-to-code agreement, not a defect; for a converged growth rate run the
-# same file with mesh/nx1 = mesh/nx2 = 512 (and, if the sideband is to stay below the
-# mode, particles/ppc = 4 kept).
+# same file with mesh/nx1 = mesh/nx2 = 512 (and, if the grid-scale sideband is to stay
+# below the mode, particles/ppc = 4: 1 ppc lets it grow ~1.5x faster).
 #
 # Vista: scripts/cluster/si_modelAs.slurm (1 node, 128 ranks; this file as written) and
 # scripts/cluster/si_modelAs_wenoz.slurm (WENO-Z + HLLE + IMEX2+, CFL 0.25, 1 ppc, float64
@@ -84,7 +85,7 @@ nx3       = 1
 <time>
 evolution  = dynamic
 integrator = imex2+
-cfl_number = 0.3
+cfl_number = 0.25         # WENO-Z + rk2 is unstable at 0.4 (linB); 0.25-0.3 is safe
 nlim       = -1
 tlim       = 6283.185307179586   # 1000 P  (P = 2 pi / Omega)
 ndiag      = 10000
@@ -107,7 +108,7 @@ omega0    = 1.0
 <particles>
 particle_type = dust
 pusher        = imex_dust
-ppc           = 4.0       # 2x2 quiet-start sublattice per cell -> 262144 particles
+ppc           = 1.0       # 1 particle per cell -> 65536 particles (4 for a quieter sideband)
 
 <dust>
 coupling      = imex

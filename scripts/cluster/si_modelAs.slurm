@@ -10,12 +10,15 @@
 #SBATCH --mail-user=jay.lim1@unlv.edu
 
 # Yang & Zhu (2021) Model As, single species, UNIFORM 256^2, seeded with the (6,6)
-# linear eigenmode -- the exact twin of the Athena (C) run
-# tst/particle/athinput.streaming2d_modelAs.  See inputs/dust/streaming_modelAs.athinput.
+# linear eigenmode -- the twin of the Athena (C) run tst/particle/athinput.streaming2d_modelAs
+# (same mode, box, resolution; here 1 ppc and CFL 0.25, there 4 and 0.4).  See
+# inputs/dust/streaming_modelAs.athinput.  For WENO-Z + HLLE and float64 dumps use
+# si_modelAs_wenoz.slurm, which also restarts and resubmits itself.
 #
-# COST.  The box is 0.2 H at 256^2, so dt = 2.34e-4 and t = 1000 P = 6283/Omega needs
-# 2.7e7 cycles.  Measured 0.072 s/cycle on 4 Apple-M cores => ~5e2 core-hours; on 128
-# Vista cores expect 20-40 h, i.e. ONE job if it scales well and TWO if it does not.
+# COST.  The box is 0.2 H at 256^2, so dt = 1.95e-4 at CFL 0.25 and t = 1000 P =
+# 6283/Omega needs 3.2e7 cycles.  Particle work dominates: at 1 ppc a 256^2 mesh measured
+# 0.7-0.9 ms/cycle on 128-256 cores (AMD Zen 5), i.e. ~6-18 h here -- ONE job.  (The older
+# figure, 0.072 s/cycle on 4 Apple-M cores, was for 4 ppc.)
 # THIS RUN IS DESIGNED TO BE CHAINED: restarts are written every 50 P, and the
 # resubmission line is at the bottom.  Check the rate in run.log after the first hour
 # (ndiag = 10000 cycles) before trusting the estimate.
