@@ -15,13 +15,13 @@
 #
 #     WENO-Z + HLLE + IMEX2+, CFL 0.25, 1 particle per cell, float64 vtk dumps
 #
-# (the tracked input has WENO-Z, CFL 0.25 and 1 ppc, but Roe and float32 dumps).  At
+# (the tracked input has all of this except float32 dumps).  At
 # CFL <= 0.3 WENO-Z grew linB at 100% of the analytic rate with residuals ~1e-5 of the
 # mode, where ppmx + Roe stalled; at CFL 0.4 WENO-Z is unstable with rk2 -- keep 0.25.
 #
 # THE INPUT.  AthenaK's command line can only change parameters already in the file, and
 # vtk_dbl is not in streaming_modelAs.athinput, so the FIRST job writes a run-local copy,
-# input_wenoz.athinput, with the changes below edited in and checked.  The tracked input
+# input_wenoz.athinput, with vtk_dbl added and the scheme checked.  The tracked input
 # is not modified.  Restarts never re-read the input (the .rst carries the parameters),
 # so every later job simply continues from the newest rst/*.rst.
 #
@@ -63,13 +63,12 @@ grep -q vtk_dbl $EXE 2>/dev/null || strings $EXE | grep -q vtk_dbl \
 
 # --- first job: derive the input and verify every change -------------------------------
 if ! ls rst/*.rst > /dev/null 2>&1; then
-  sed -e 's/^rsolver     = roe$/rsolver     = hlle/' \
-      -e '/^variable   = dust_dpm$/a\
+  sed -e '/^variable   = dust_dpm$/a\
 vtk_dbl    = true' \
       -e '/^variable   = hydro_w$/a\
 vtk_dbl    = true' \
       $TRACKED > $INPUT
-  for want in '^reconstruct = wenoz' '^rsolver     = hlle$' '^cfl_number = 0.25 ' \
+  for want in '^reconstruct = wenoz' '^rsolver     = hlle ' '^cfl_number = 0.25 ' \
               '^ppc           = 1.0 ' '^integrator = imex2\+$' '^coupling      = imex$' \
               '^tlim       = 6283.185307179586'; do
     grep -qE "$want" $INPUT || die "derived input lacks '$want' -- has $TRACKED changed?"

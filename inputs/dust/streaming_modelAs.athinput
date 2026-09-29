@@ -94,7 +94,7 @@ ndiag      = 10000
 eos         = isothermal
 iso_sound_speed = 1.0
 reconstruct = wenoz       # WENO-Z: 100% of the linB rate at CFL <= 0.3 (ppmx stalled)
-rsolver     = roe
+rsolver     = hlle        # roe let a grid-scale gas sideband stall the slow linB/ZY21 modes
 
 <hydro_srcterms>
 const_accel     = true

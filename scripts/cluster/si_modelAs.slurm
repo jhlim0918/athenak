@@ -12,7 +12,7 @@
 # Yang & Zhu (2021) Model As, single species, UNIFORM 256^2, seeded with the (6,6)
 # linear eigenmode -- the twin of the Athena (C) run tst/particle/athinput.streaming2d_modelAs
 # (same mode, box, resolution; here 1 ppc and CFL 0.25, there 4 and 0.4).  See
-# inputs/dust/streaming_modelAs.athinput (WENO-Z + Roe as written).  For HLLE and float64 dumps use
+# inputs/dust/streaming_modelAs.athinput (WENO-Z + HLLE as written).  For float64 dumps use
 # si_modelAs_wenoz.slurm, which also restarts and resubmits itself.
 #
 # COST.  The box is 0.2 H at 256^2, so dt = 1.95e-4 at CFL 0.25 and t = 1000 P =
