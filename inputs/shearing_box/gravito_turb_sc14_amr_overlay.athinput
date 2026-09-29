@@ -7,7 +7,7 @@
 # main.cpp loads the parameters stored in the restart file first, then this file over
 # them, then the command line.  Blocks and parameters that the restart file lacks are
 # added, parameters it has are replaced, and everything not named here (mesh,
-# MeshBlocks, boundaries, physics, outputs) stays what the archived run used.  That is
+# MeshBlocks, boundaries, physics) stays what the archived run used.  That is
 # why <mesh> and <meshblock> are deliberately absent: the restart file stores its
 # arrays with the ghost zones of the run that wrote it, and an overlay that named a
 # different nghost or block size would mis-size them.
@@ -33,6 +33,15 @@ threshold = 2.0e-5    # tolerance on the defect norm in place of the archived ru
                       # fixed 6 V-cycles: the first solve after every remesh starts
                       # cold and 6 V-cycles leave it at 2e-2..0.2.  Remove this block
                       # to keep the archived solver settings
+
+# Dump cadence.  The numbers are those of the archived run's own outputs (output2 =
+# hydro_w and output3 = grav_phi, both bin, every 10/Omega there); only dt is replaced.
+# Check them against the input of any other run this overlay is used on.
+<output2>
+dt        = 1.0
+
+<output3>
+dt        = 1.0
 
 <problem>
 amr_njeans = 16.0     # refine a block whose gas has lambda_J < 16 dx

@@ -148,12 +148,12 @@ dt        = 0.25
 <output2>
 file_type = bin
 variable  = hydro_w
-dt        = 5.0
+dt        = 1.0
 
 <output3>
 file_type = bin
 variable  = grav_phi
-dt        = 5.0
+dt        = 1.0
 
 <output4>
 file_type = rst
