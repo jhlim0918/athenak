@@ -1,0 +1,42 @@
+# AthenaK input file: OVERLAY that switches adaptive refinement on when the archived
+# standard-resolution SC14 run (256 x 256 x 48 in 16^3 MeshBlocks, nghost = 4) is
+# restarted.  It is not a complete input: pass it WITH the restart file,
+#
+#   athena -r <run>/GravitoTurb.00000.rst -i <this file> -d ./
+#
+# main.cpp loads the parameters stored in the restart file first, then this file over
+# them, then the command line.  Blocks and parameters that the restart file lacks are
+# added, parameters it has are replaced, and everything not named here (mesh,
+# MeshBlocks, boundaries, physics, outputs) stays what the archived run used.  That is
+# why <mesh> and <meshblock> are deliberately absent: the restart file stores its
+# arrays with the ghost zones of the run that wrote it, and an overlay that named a
+# different nghost or block size would mis-size them.
+#
+# With 16^3 blocks this box has three root blocks in z, and the slab-open policy that
+# keeps the z-face blocks at root level leaves room for ONE refinement level: the
+# middle row, |z| < 2H, to 8 cells/H.  The mesh cannot exceed 2336 blocks (768 root,
+# of which 224 can refine into 8 each).  Use gravito_turb_sc14_jeans_amr.athinput
+# (8^3 blocks, cold start) for more levels.
+
+<mesh_refinement>
+refinement = adaptive
+num_levels = 2        # the most this block layout admits
+max_nmb_per_rank = 12 # at 256 ranks: room for 3072 blocks, above the 2336 possible
+ncycle_check = 10     # cycles between checks of the criterion
+refinement_interval = 5
+
+<amr_criterion0>
+method    = user      # GravitoTurbRefinement: Jeans number, <problem>/amr_*
+
+<gravity>
+threshold = 2.0e-5    # tolerance on the defect norm in place of the archived run's
+                      # fixed 6 V-cycles: the first solve after every remesh starts
+                      # cold and 6 V-cycles leave it at 2e-2..0.2.  Remove this block
+                      # to keep the archived solver settings
+
+<problem>
+amr_njeans = 16.0     # refine a block whose gas has lambda_J < 16 dx
+amr_njeans_deref = 2.5  # derefine above 16*2.5 = 40 dx (must exceed 2)
+amr_rho_min = 2.1165  # density gate: the Roche density 9 Omega^2/(4 pi G)
+amr_cs_min = 1.0      # cs floor inside the gate
+amr_tstart = 0.0      # > 0 holds the root mesh until then

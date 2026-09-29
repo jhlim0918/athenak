@@ -336,3 +336,53 @@ Clarke 2019) fills the ghosts with the hydrostatic isothermal extrapolation of t
 cell under -Omega^2 z, the same temperature, copied velocities with the normal one
 zeroed if inward, and a consistent energy.  Set `ix3_bc = ox3_bc = hse_outflow` in the
 mesh block; the particle removal at physical faces is unchanged.
+
+## 6. The SC14 box on an adaptive mesh (the fragmentation boundary)
+
+From the same cold start the beta = 10 box does not fragment at 4 cells/H and keeps one
+fragment of the first collapse at 8 cells/H.  These runs refine the standard-resolution
+box on the Jeans number (`GravitoTurbRefinement` in the gravito_turb pgen,
+`<amr_criterion0> method = user`, parameters `<problem>/amr_*`).
+
+| script | mesh | start |
+|---|---|---|
+| `gt_sc14_b10_amr_restart.slurm` | 16^3 blocks, ONE level (8 cells/H in \|z\| < 2H) | the archived run's t = 0 dump + `gravito_turb_sc14_amr_overlay.athinput` |
+| `gt_sc14_b10_jeans_amr.slurm` | 8^3 blocks, `LEVELS` levels (3: 16 cells/H, 4: 32 cells/H) | cold, `gravito_turb_sc14_jeans_amr.athinput` |
+
+The number of levels is set by the block layout, not by the request: the slab-open x3
+policy keeps the z-face blocks at root level and grades the levels away from them, which
+with three root blocks in z (16^3) leaves room for one level and with six (8^3) for any
+number inside |z| < 2H.  A restart cannot change the block size.
+
+```bash
+# 1. the archived run from its t = 0 dump, refinement on (256 ranks, 2 nodes)
+mkdir -p $SCRATCH/gt_sc14_amr/b10_restart_L2 && cd $SCRATCH/gt_sc14_amr/b10_restart_L2 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_sc14_b10_amr_restart.slurm
+# 2. cold start, four levels (512 ranks, 4 nodes)
+mkdir -p $SCRATCH/gt_sc14_amr/b10_L4 && cd $SCRATCH/gt_sc14_amr/b10_L4 && sbatch --export=ALL,LEVELS=4,CAP=160 $HOME/athenak-multigrid/scripts/cluster/gt_sc14_b10_jeans_amr.slurm
+# 3. the same with an irradiation floor on the cooling (cs^2 units; 4.52094 = cs0^2)
+mkdir -p $SCRATCH/gt_sc14_amr/b10_L4_floor && cd $SCRATCH/gt_sc14_amr/b10_L4_floor && sbatch --export=ALL,LEVELS=4,CAP=32,FLOOR=4.52094 $HOME/athenak-multigrid/scripts/cluster/gt_sc14_b10_jeans_amr.slurm
+```
+
+Each job continues itself from the newest `rst/*.rst` of its run directory; resubmit the
+same line.  Rules measured on a 16H x 16H x 12H box (laptop, 2026-09-28):
+
+- **`max_nmb_per_rank` (CAP) is paid on every cycle.**  It sizes every array and
+  `Hydro::CopyCons` copies the allocated array, used or not: on the unrefined mesh 20
+  cycles take 2.2 s at a cap of 128 per rank, 3.2 s at 512 and ~16 s at 4096, against
+  2.1 s uniform.  The job script stores the cap in the file `cap` of the run directory
+  and reuses it; raise it when a run stops on "exceeds max_nmb_per_rank", lower it once
+  a collapse has passed.
+- **Use a tolerance on the multigrid defect, not a fixed count.**  The first solve after
+  every remesh and restart starts cold; 6 V-cycles leave it at 2e-2 to 0.2 against 2e-5
+  warm.  `threshold = 2e-5` takes 6-7 V-cycles warm and 11-12 cold, and held with four
+  levels present (140 solves, largest defect 1.6e-5).
+- **8^3 blocks cost 1.6x the 16^3 uniform run per cycle** at nghost = 4, unrefined, and
+  every level halves dt for the whole mesh (no sub-cycling).
+- **The density gate is needed.**  Halo cells on the pressure floor have cs ~ 1e-3 and a
+  Jeans length below one cell at rho ~ 1e-4.
+- **An irradiation floor does not give a gentle onset at 4 cells/H.**  Uniform mesh,
+  floor = f cs0^2: f = 0 bursts at t = 20 (peak alpha 0.97); f = 0.5 at t = 54 (0.30);
+  f = 0.6 at t = 93 (0.69); f = 0.7, 0.8 and 1.0 stay laminar (alpha = 0, rms dv = 0.05)
+  to t = 160, 80 and 60.  The floor delays the burst or removes the turbulence; check
+  the history of a floored run for alpha > 0 before letting the chain run on.  The 80
+  cells/H boxes of sections 3 and 4 do become turbulent at f = 1.

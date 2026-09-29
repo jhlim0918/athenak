@@ -115,6 +115,9 @@ show_defect = 0
 self_gravity = true
 beta_cooling = true
 bcool_beta   = 10.0   # beta = Omega*t_cool
+bcool_cs2_floor = 0.0 # irradiation floor: cool toward cs^2 = this, never below.
+                      # 0 = pure beta cooling (SC14).  4.52094 = cs0^2, the initial
+                      # midplane temperature (Q0 = 1), as in the Baehr and BC16 inputs
 thermal_cooling = false
 tcool_b      = 200.0
 cool_eps     = 0.02      # dt <= cool_eps*t_cool

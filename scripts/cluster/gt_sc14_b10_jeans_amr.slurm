@@ -30,13 +30,16 @@
 #
 # THE BLOCK CAP.  <mesh_refinement>/max_nmb_per_rank sizes every array and whole-array
 # operations run over the allocated blocks, used or not, so an oversized cap is paid on
-# every cycle (measured: 5x oversize = 1.4x per cycle, 40x = 7x).  CAP defaults to 112 per
-# rank (57344 blocks at 512 ranks), sized for the first collapse.  If the run stops on
+# every cycle (measured: 5x oversize = 1.4x per cycle, 40x = 7x).  CAP is per rank.  A
+# fresh start defaults to 112 (57344 blocks at 512 ranks), sized for the first collapse
+# at LEVELS=3; pass CAP=160 with LEVELS=4, and CAP=32 when FLOOR removes the collapse.
+# The value is written to the file `cap` in the run directory and a continuation reuses
+# it, so it need not be repeated.  If the run stops on
 #     "exceeds <mesh_refinement>/max_nmb_per_rank"
 # resubmit with a larger one; it continues from the last restart dump:
-#     sbatch --export=ALL,CAP=160 ...
-# Once the collapse has passed (t > 30) the mesh holds ~10000 blocks: resubmit the
-# continuation with CAP=32 (the cap can change at any restart).
+#     sbatch --export=ALL,CAP=200 ...
+# Once a collapse has passed and the mesh holds ~10000 blocks, resubmit the continuation
+# with CAP=32 (the cap can change at any restart).
 #
 # Submit FROM the run directory in $SCRATCH; outputs land there:
 #     mkdir -p $SCRATCH/gt_sc14_amr/b10_L3 && cd $SCRATCH/gt_sc14_amr/b10_L3
@@ -50,17 +53,21 @@
 #     BETA=20         cooling time, for the scan in beta
 #     NJEANS=16       Jeans-number threshold on a FRESH start
 #     TSTART=50       hold the root mesh until this time (saturated-state start)
+#     FLOOR=4.52094   irradiation floor of the cooling, in cs^2 (FRESH start).  0 is pure
+#                     beta cooling; 4.52094 = cs0^2 keeps the gas from cooling below its
+#                     initial midplane temperature, which removes the first collapse
 #     ATHENAK=/tree   source tree (needs the gravito_turb Jeans criterion and hse_outflow)
 
 set -u
 ATHENAK=${ATHENAK:-$HOME/athenak-multigrid}
 INPUT=$ATHENAK/inputs/shearing_box/gravito_turb_sc14_jeans_amr.athinput
 FRESH=${FRESH:-0}
-CAP=${CAP:-112}
+CAP=${CAP:-}
 LEVELS=${LEVELS:-3}
 BETA=${BETA:-10.0}
 NJEANS=${NJEANS:-16.0}
 TSTART=${TSTART:-0.0}
+FLOOR=${FLOOR:-0.0}
 
 ATH=$ATHENAK/build-cluster/src/athena
 [ -x "$ATH" ] || { echo "no athena binary at $ATH -- build it first" >&2; exit 1; }
@@ -69,6 +76,11 @@ ATH=$ATHENAK/build-cluster/src/athena
 module load gcc openmpi fftw3
 
 cd "$SLURM_SUBMIT_DIR"
+
+# the block cap: the command line, else what this run directory used last, else 112
+if [ -z "$CAP" ] && [ "$FRESH" != "1" ] && [ -r cap ]; then CAP=$(cat cap); fi
+CAP=${CAP:-112}
+echo "$CAP" > cap
 
 # continue if there is anything to continue from
 RST=""
@@ -82,7 +94,8 @@ if [ -n "$RST" ]; then
 else
   START=(-i "$INPUT")
   OVR=(mesh_refinement/max_nmb_per_rank=$CAP mesh_refinement/num_levels=$LEVELS
-       hydro_srcterms/bcool_beta=$BETA problem/amr_njeans=$NJEANS problem/amr_tstart=$TSTART)
+       hydro_srcterms/bcool_beta=$BETA hydro_srcterms/bcool_cs2_floor=$FLOOR
+       problem/amr_njeans=$NJEANS problem/amr_tstart=$TSTART)
   MODE="fresh start from $(basename "$INPUT")"
 fi
 
