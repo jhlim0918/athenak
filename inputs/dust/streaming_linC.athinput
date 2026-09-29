@@ -1,0 +1,144 @@
+# AthenaK input file: the linC streaming-instability growth-rate test of Bai & Stone (2010,
+# ApJS 190, 297), Appendix / Table 2 -- a small-grain, fast-growing mode.  Twin of Athena (C)
+# src/prob/streaming2d_single.c, ipert = 11.
+#
+# Mode: tau_s = 0.01, eps = 2.0, K_x = K_z = 1500 (K = k*eta r), eta v_K/c_s = 0.05.
+# Eigenvalue omega = 0.1049236 + 0.5980690 i  (s = 0.5980690 Omega, e-folding 1.67/Omega).
+# Units Omega = c_s = rho0 = 1, eta v_K = 0.05, so eta r = 0.05 and k_x = k_z = 30000;
+# the box is ONE wavelength square, L = 2 pi/30000 = 0.00020943951023931953, so cells per
+# wavelength = mesh/nx1 = mesh/nx2.  The sound-speed CFL time step is therefore tiny
+# (dt ~ CFL * L/N): ~1e8 steps to t = 20 at 256 cells per wavelength.
+# Measured on 256 AMD Zen 5 cores (256 16^2 MeshBlocks): ~37 ms/step at 25 ppc but
+# ~0.7-0.9 ms/step at particles/ppc=1 (particle work dominates), i.e. t = 10 in ~12 h.
+# Bai & Stone used 1 ppc for these tests.
+#
+# Eigenvector: the 8x8 YG05/YJ07 solution (Athena's vis/julia/si_linear_mode.jl), which
+# matches Bai & Stone Table 2 to all 7 printed digits, at full precision; YJ07
+# normalisation scaled to the seed drho_p/rho_p = 1e-6 and converted to code units
+# (densities times the background density, velocities times eta v_K).  Note drho_g/rho_g
+# is only ~5e-13: float64 dumps (vtk_dbl) are required to see it at all.
+#
+# Resolution by command-line override (mesh/nx1, mesh/nx2, meshblock/nx1, meshblock/nx2).
+# Scheme as written: WENO-Z + HLLE, IMEX (imex2+), CFL 0.25 (tau_s = 0.01 is stiff).
+#
+# Diagnostic: the Fourier projection onto the seeded mode in <basename>.user.hst.
+# s = 0.598 grows the seed by e^12 = 1.6e5 by t = 20, i.e. to drho_p/rho_p ~ 0.16: the
+# mode leaves the linear regime near the end; fit the growth rate over t <~ 15.
+# Bai & Stone (2010) Fig. 7 (Athena C, CFL 0.4): rho_p converges to ~s at 128-256 c/lambda;
+# rho_g converges slowest.
+
+<comment>
+problem   = Bai & Stone (2010) linC streaming-instability test, K_x = K_z = 1500, tau_s = 0.01, eps = 2
+
+<job>
+basename  = si_linC
+
+<mesh>
+nghost    = 3
+nx1       = 256           # = cells per wavelength
+x1min     = -0.00010471975511965977
+x1max     = 0.00010471975511965977
+ix1_bc    = periodic
+ox1_bc    = periodic
+nx2       = 256
+x2min     = -0.00010471975511965977
+x2max     = 0.00010471975511965977
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 256
+nx2       = 256
+nx3       = 1
+
+<time>
+evolution  = dynamic
+integrator = imex2+       # rk2 with dust/coupling = pc2
+cfl_number = 0.25
+nlim       = -1
+tlim       = 20.0         # 1/Omega
+ndiag      = 100000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = wenoz       # clean at CFL <= 0.3 in linB; blew up at 0.4 with rk2
+rsolver     = hlle        # hlle suppresses the grid-scale residual that stalls the slow
+                          # modes (ZY21, linB) with roe -- see the 2026-09 SI tests
+
+<hydro_srcterms>
+const_accel     = true
+const_accel_val = 0.1     # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 25.0      # 5 x 5 quiet-start sublattice per cell
+
+<dust>
+coupling      = imex      # or pc2 (with time/integrator = rk2)
+nspecies      = 1
+taus_1        = 0.01
+dust_to_gas   = 2.0
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+drag_solver   = local
+
+<problem>
+pgen_name  = streaming_linear
+user_hist  = true
+rho0       = 1.0
+etavk      = 0.05
+eps        = 2.0
+kx         = 30000.0
+kz         = 30000.0
+omega_re   = 0.10492362062982848  # reference only (unused at t = 0)
+# eigenvector, drho_p/rho_p = 1e-6, in code units
+drhog_re   = 8.684871615830304e-14
+drhog_im   = 5.350037142681756e-13
+dugx_re    = -7.993753113121934e-09
+dugx_im    = 3.983454888259487e-10
+dugp_re    = 5.822115884455827e-09
+dugp_im    = 6.118866087619584e-10
+dugz_re    = 7.993753083460543e-09
+dugz_im    = -3.9834560411180504e-10
+drhop_re   = 2e-06
+dvpx_re    = -7.835868333850584e-09
+dvpx_im    = 1.4418331164018565e-10
+dvpp_re    = 5.798911099509231e-09
+dvpp_im    = 8.057262102120806e-10
+dvpz_re    = 7.950475664428487e-09
+dvpz_im    = -1.2424767948398947e-10
+
+<output1>
+file_type  = hst
+dt         = 0.02
+data_format = %.14e
+
+<output2>
+file_type  = phst
+dt         = 0.02
+
+<output3>
+file_type  = vtk          # particle-mesh dust density
+variable   = dust_dpm
+dt         = 0.1
+vtk_dbl    = true
+
+<output4>
+file_type  = vtk          # gas primitives
+variable   = hydro_w
+dt         = 0.1
+vtk_dbl    = true

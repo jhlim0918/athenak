@@ -26,14 +26,17 @@
 # particle mass distribution and of the gas density and radial momentum onto the seeded
 # (k_x, k_z) mode, so the growth rate is a linear regression of ln|amplitude| -- the
 # mesh-independent measure, and the one that rejects the grid-scale sideband.  THE
-# HISTORY IS THE LINEAR DIAGNOSTIC, NOT THE DUMPS: AthenaK writes mesh outputs (bin and
-# vtk alike) as float32, whose relative resolution is 1.2e-7, while the seeded mode
-# starts at drho_p/rho_p = 2e-7 and drho_g/rho_g ~ 6e-12.  Nothing of the mode is
-# recoverable from a dump until it has grown by some three orders of magnitude (at the
-# ~0.0026 rate Athena measures at this resolution, around t = 300-400 P); the .user.hst
-# columns are written in %.14e and are exact throughout.  (This is the same limitation
-# the Athena C runs hit, and why vtk_dbl was added there; AthenaK has no double-precision
-# mesh output.)  The dumps are for the saturated morphology, where amplitudes are O(1).
+# HISTORY IS THE LINEAR DIAGNOSTIC: its columns are written in %.14e and are exact
+# throughout.  The vtk dumps below are float32 as written, whose relative resolution is
+# 1.2e-7, while the seeded mode starts at drho_p/rho_p = 2e-7 and drho_g/rho_g ~ 6e-12:
+# nothing of the mode is recoverable from a float32 dump until it has grown by some three
+# orders of magnitude (at the ~0.0026 rate Athena measures at this resolution, around
+# t = 300-400 P).  For the linear phase, set vtk_dbl = true in the vtk output blocks
+# (float64 data, AthenaK 3d421569; the same option as Athena C's vtk_dbl) --
+# si_modelAs_wenoz.slurm does this in its run-local copy of this file.  The command line
+# cannot add it (only parameters already in the file can be overridden).  bin dumps stay
+# float32.  As written, the dumps are for the saturated morphology, where amplitudes are
+# O(1).
 #
 # WHAT TO EXPECT.  At 256^2 this box gives ~43 cells per wavelength of the seeded mode,
 # which is marginal for a second-order scheme: in Athena the same setup grew at
@@ -43,8 +46,11 @@
 # same file with mesh/nx1 = mesh/nx2 = 512 (and, if the sideband is to stay below the
 # mode, particles/ppc = 4 kept).
 #
-# Vista: scripts/cluster/si_modelAs.slurm (1 node, 64 ranks).  tlim = 1000 P needs
-# several 48 h jobs; the script chains restarts, written every 50 P.
+# Vista: scripts/cluster/si_modelAs.slurm (1 node, 128 ranks; this file as written) and
+# scripts/cluster/si_modelAs_wenoz.slurm (WENO-Z + HLLE + IMEX2+, CFL 0.25, 1 ppc, float64
+# dumps -- the scheme that passed the 2026-09 linear tests; ~6-18 h to 1000 P).  Restarts
+# are written every 50 P; si_modelAs_wenoz.slurm continues from the newest one and
+# resubmits itself, si_modelAs.slurm needs its launch line switched to -r by hand.
 
 <comment>
 problem   = YZ21 Model As (Nsp = 1), seeded (6,6) eigenmode, uniform 256^2
