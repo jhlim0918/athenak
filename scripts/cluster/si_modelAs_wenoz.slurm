@@ -15,7 +15,7 @@
 #
 #     WENO-Z + HLLE + IMEX2+, CFL 0.25, 1 particle per cell, float64 vtk dumps
 #
-# (the tracked input has CFL 0.25 and 1 ppc but ppmx + Roe and float32 dumps).  At
+# (the tracked input has WENO-Z, CFL 0.25 and 1 ppc, but Roe and float32 dumps).  At
 # CFL <= 0.3 WENO-Z grew linB at 100% of the analytic rate with residuals ~1e-5 of the
 # mode, where ppmx + Roe stalled; at CFL 0.4 WENO-Z is unstable with rk2 -- keep 0.25.
 #
@@ -63,8 +63,7 @@ grep -q vtk_dbl $EXE 2>/dev/null || strings $EXE | grep -q vtk_dbl \
 
 # --- first job: derive the input and verify every change -------------------------------
 if ! ls rst/*.rst > /dev/null 2>&1; then
-  sed -e 's/^reconstruct = ppmx .*/reconstruct = wenoz       # WENO-Z (si_modelAs_wenoz.slurm)/' \
-      -e 's/^rsolver     = roe$/rsolver     = hlle/' \
+  sed -e 's/^rsolver     = roe$/rsolver     = hlle/' \
       -e '/^variable   = dust_dpm$/a\
 vtk_dbl    = true' \
       -e '/^variable   = hydro_w$/a\

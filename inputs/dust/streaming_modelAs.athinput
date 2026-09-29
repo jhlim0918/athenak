@@ -60,7 +60,7 @@ problem   = YZ21 Model As (Nsp = 1), seeded (6,6) eigenmode, uniform 256^2
 basename  = si_modelAs
 
 <mesh>
-nghost    = 3             # ppmx needs 3
+nghost    = 3             # wenoz (and ppmx) need 3
 nx1       = 256           # radial
 x1min     = -0.1          # 0.2 H = 4 eta r
 x1max     = 0.1
@@ -93,7 +93,7 @@ ndiag      = 10000
 <hydro>
 eos         = isothermal
 iso_sound_speed = 1.0
-reconstruct = ppmx        # Athena C: --with-order=3p
+reconstruct = wenoz       # WENO-Z: 100% of the linB rate at CFL <= 0.3 (ppmx stalled)
 rsolver     = roe
 
 <hydro_srcterms>
