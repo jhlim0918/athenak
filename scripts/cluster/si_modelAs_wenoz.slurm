@@ -42,10 +42,17 @@
 # SUBMIT FROM THE RUN DIRECTORY in $SCRATCH:
 #     mkdir -p $SCRATCH/si/modelAs_wenoz && cd $SCRATCH/si/modelAs_wenoz
 #     sbatch $HOME/athenak-multigrid/scripts/cluster/si_modelAs_wenoz.slurm
+#
+# OTHER RESOLUTIONS.  NX (cells per side, default 256) and MB (MeshBlock side, default 16)
+# are read from the environment; the first job passes them as mesh/meshblock overrides and
+# records NX in grid.txt, which later jobs check.  512^2 has its own wrapper with the right
+# job size: si_modelAs_wenoz_512.slurm.
 
 ATHENAK=$HOME/athenak-multigrid
 TRACKED=$ATHENAK/inputs/dust/streaming_modelAs.athinput
-SCRIPT=$ATHENAK/scripts/cluster/si_modelAs_wenoz.slurm
+SCRIPT=${SCRIPT:-$ATHENAK/scripts/cluster/si_modelAs_wenoz.slurm}   # what the chain resubmits
+NX=${NX:-256}                            # cells per side (the tracked input is 256)
+MB=${MB:-16}                             # MeshBlock side
 EXE=$ATHENAK/build-cluster/src/athena
 INPUT=input_wenoz.athinput               # run-local derived input (first job writes it)
 MAX_JOBS=4
@@ -56,6 +63,10 @@ cd $SLURM_SUBMIT_DIR
 mkdir -p rst
 
 die() { echo "ERROR: $*" | tee -a run.log; exit 1; }
+
+# grid sanity: whole MeshBlocks, at least one per rank
+[ $((NX % MB)) = 0 ] || die "NX=$NX is not a multiple of MB=$MB"
+[ $(( (NX/MB)*(NX/MB) )) -ge ${SLURM_NTASKS:-1} ] || die "only $(( (NX/MB)*(NX/MB) )) MeshBlocks for $SLURM_NTASKS ranks"
 
 # the binary must support float64 vtk output
 grep -q vtk_dbl $EXE 2>/dev/null || strings $EXE | grep -q vtk_dbl \
@@ -75,11 +86,14 @@ vtk_dbl    = true' \
   done
   [ "$(grep -c '^vtk_dbl    = true' $INPUT)" = 2 ] || die "derived input: vtk_dbl not set on both dumps"
   diff $TRACKED $INPUT > input_wenoz.diff
+  echo $NX > grid.txt
+elif [ "$(cat grid.txt 2>/dev/null)" != "$NX" ]; then
+  die "this directory holds a $(cat grid.txt 2>/dev/null)^2 run but NX=$NX: wrong script for this run directory?"
 fi
 
 {
   echo "# job $SLURM_JOB_ID on $SLURM_JOB_NUM_NODES node(s): $SLURM_JOB_NODELIST, $SLURM_NTASKS ranks"
-  echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD)"
+  echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD); grid ${NX}^2, MeshBlocks ${MB}^2"
 } >> run.log
 
 if ls rst/*.rst > /dev/null 2>&1; then
@@ -88,7 +102,8 @@ if ls rst/*.rst > /dev/null 2>&1; then
   ibrun $EXE -r $RST -d ./ -t 47:45:00 >> run.log 2>&1
 else
   echo "# first job: $INPUT (differences from the tracked input in input_wenoz.diff)" >> run.log
-  ibrun $EXE -i $INPUT -d ./ -t 47:45:00 >> run.log 2>&1
+  ibrun $EXE -i $INPUT -d ./ -t 47:45:00 \
+    mesh/nx1=$NX mesh/nx2=$NX meshblock/nx1=$MB meshblock/nx2=$MB >> run.log 2>&1
 fi
 echo "# job $SLURM_JOB_ID ended $(date)" >> run.log
 
