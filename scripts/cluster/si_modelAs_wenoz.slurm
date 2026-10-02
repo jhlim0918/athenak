@@ -47,14 +47,20 @@
 # are read from the environment; the first job passes them as mesh/meshblock overrides and
 # records NX in grid.txt, which later jobs check.  512^2 has its own wrapper with the right
 # job size: si_modelAs_wenoz_512.slurm.
+#
+# OTHER RECONSTRUCTIONS.  RECON (default wenoz) replaces the tracked input's reconstruct
+# line; everything else is unchanged.  The derived input is input_$RECON.athinput and the
+# choice is recorded in recon.txt, which later jobs check.  ppmx at 512^2 has its own
+# wrapper: si_modelAs_ppmx_512.slurm.
 
 ATHENAK=$HOME/athenak-multigrid
 TRACKED=$ATHENAK/inputs/dust/streaming_modelAs.athinput
 SCRIPT=${SCRIPT:-$ATHENAK/scripts/cluster/si_modelAs_wenoz.slurm}   # what the chain resubmits
 NX=${NX:-256}                            # cells per side (the tracked input is 256)
 MB=${MB:-16}                             # MeshBlock side
+RECON=${RECON:-wenoz}                    # reconstruction (the tracked input is wenoz)
 EXE=$ATHENAK/build-cluster/src/athena
-INPUT=input_wenoz.athinput               # run-local derived input (first job writes it)
+INPUT=input_$RECON.athinput              # run-local derived input (first job writes it)
 MAX_JOBS=4
 
 module load gcc openmpi fftw3
@@ -74,26 +80,31 @@ grep -q vtk_dbl $EXE 2>/dev/null || strings $EXE | grep -q vtk_dbl \
 
 # --- first job: derive the input and verify every change -------------------------------
 if ! ls rst/*.rst > /dev/null 2>&1; then
-  sed -e '/^variable   = dust_dpm$/a\
+  grep -q '^reconstruct = wenoz' $TRACKED || die "tracked input no longer has reconstruct = wenoz"
+  sed -e "s/^reconstruct = wenoz.*/reconstruct = $RECON         # set by si_modelAs_wenoz.slurm (RECON=$RECON)/" \
+      -e '/^variable   = dust_dpm$/a\
 vtk_dbl    = true' \
       -e '/^variable   = hydro_w$/a\
 vtk_dbl    = true' \
       $TRACKED > $INPUT
-  for want in '^reconstruct = wenoz' '^rsolver     = hlle ' '^cfl_number = 0.25 ' \
+  for want in "^reconstruct = $RECON " '^rsolver     = hlle ' '^cfl_number = 0.25 ' \
               '^ppc           = 1.0 ' '^integrator = imex2\+$' '^coupling      = imex$' \
               '^tlim       = 6283.185307179586'; do
     grep -qE "$want" $INPUT || die "derived input lacks '$want' -- has $TRACKED changed?"
   done
   [ "$(grep -c '^vtk_dbl    = true' $INPUT)" = 2 ] || die "derived input: vtk_dbl not set on both dumps"
-  diff $TRACKED $INPUT > input_wenoz.diff
+  diff $TRACKED $INPUT > input_$RECON.diff
   echo $NX > grid.txt
+  echo $RECON > recon.txt
 elif [ "$(cat grid.txt 2>/dev/null)" != "$NX" ]; then
   die "this directory holds a $(cat grid.txt 2>/dev/null)^2 run but NX=$NX: wrong script for this run directory?"
+elif [ "$(cat recon.txt 2>/dev/null || echo wenoz)" != "$RECON" ]; then
+  die "this directory holds a $(cat recon.txt 2>/dev/null || echo wenoz) run but RECON=$RECON: wrong script for this run directory?"
 fi
 
 {
   echo "# job $SLURM_JOB_ID on $SLURM_JOB_NUM_NODES node(s): $SLURM_JOB_NODELIST, $SLURM_NTASKS ranks"
-  echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD); grid ${NX}^2, MeshBlocks ${MB}^2"
+  echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD); grid ${NX}^2, MeshBlocks ${MB}^2, reconstruct $RECON"
 } >> run.log
 
 if ls rst/*.rst > /dev/null 2>&1; then
@@ -101,7 +112,7 @@ if ls rst/*.rst > /dev/null 2>&1; then
   echo "# restarting from $RST" >> run.log
   ibrun $EXE -r $RST -d ./ -t 47:45:00 >> run.log 2>&1
 else
-  echo "# first job: $INPUT (differences from the tracked input in input_wenoz.diff)" >> run.log
+  echo "# first job: $INPUT (differences from the tracked input in input_$RECON.diff)" >> run.log
   ibrun $EXE -i $INPUT -d ./ -t 47:45:00 \
     mesh/nx1=$NX mesh/nx2=$NX meshblock/nx1=$MB meshblock/nx2=$MB >> run.log 2>&1
 fi
