@@ -1,0 +1,130 @@
+#!/bin/bash
+#PBS -S /bin/bash
+#PBS -N si_As_wz
+#PBS -l select=1:ncpus=256:mpiprocs=256:model=tur_ath
+#PBS -l walltime=24:00:00
+#PBS -q long
+#PBS -j oe
+#PBS -W group_list=s3183
+#PBS -m abe
+#PBS -M jay.lim1@unlv.edu
+
+# NAS (Athena Turin nodes) twin of si_modelAs_wenoz.slurm: Yang & Zhu (2021) Model As,
+# single species, uniform 256^2, seeded (6,6) eigenmode, to t = 1000 orbits, with
+#     WENO-Z + HLLE + IMEX2+, CFL 0.25, 1 particle per cell, float64 vtk dumps.
+# Physics, derived input, checks and chaining are those of the Slurm script -- its header
+# explains them; this one differs only in the PBS/mpiexec plumbing:
+#
+#   - ranks and ranks-per-node come from $PBS_NODEFILE, so the select= line alone sets the
+#     launch.  NAS bills whole nodes: a Turin node is 256 cores -> 256 ranks, one 16^2
+#     MeshBlock each at 256^2.  h-3 measured 0.7-0.9 ms/cycle on 128-256 Zen 5 cores, so
+#     1000 P = 3.2e7 cycles is ~6-9 h: almost certainly ONE job.
+#   - walltime 24 h with athena's -t 23:45:00 (WALL below; change both together); the chain
+#     resubmits with qsub at most MAX_JOBS=4 times in total, i.e. 96 h at most.
+#   - NX/MB/RECON/NLIM arrive through qsub -v and the chain passes them on.
+#
+# BUILD (once, on athfe; see "NAS" in README.md -- PrgEnv-intel and -gnu no longer load there,
+# so build-cluster is a Cray clang binary, and FFTW is pointed at explicitly):
+#     module use /opt/cray/pals/modulefiles && module load cray-pals cray-fftw
+#     cd $HOME/athenak-multigrid && cmake -B build-cluster -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON \
+#         -D CMAKE_CXX_COMPILER=CC -D FFTW_ROOT=/opt/cray/pe/fftw/default/x86_64 && cmake --build build-cluster -j 16
+#
+# SUBMIT FROM THE RUN DIRECTORY in /nobackup:
+#     mkdir -p /nobackup/$USER/si/modelAs_wenoz && cd /nobackup/$USER/si/modelAs_wenoz
+#     qsub $HOME/athenak-multigrid/scripts/cluster/si_modelAs_wenoz.pbs
+#
+# OTHER RESOLUTIONS / RECONSTRUCTIONS:   qsub -v NX=512,MB=32 <script>   (512^2: 4x the cells
+# and half the dt -> ~2 days, still one node)  or   qsub -v RECON=ppmx <script>.  As in the
+# Slurm script the first job records grid.txt / recon.txt, which later jobs check.
+#
+# SMOKE TEST:   qsub -v NLIM=2000 <script>   stops after 2000 cycles (time/nlim override): a
+# few minutes of one node, exercising the real grid, the input derivation and the chain logic.
+
+ATHENAK=$HOME/athenak-multigrid
+TRACKED=$ATHENAK/inputs/dust/streaming_modelAs.athinput
+SCRIPT=${SCRIPT:-$ATHENAK/scripts/cluster/si_modelAs_wenoz.pbs}   # what the chain resubmits
+NX=${NX:-256}                            # cells per side (the tracked input is 256)
+MB=${MB:-16}                             # MeshBlock side
+RECON=${RECON:-wenoz}                    # reconstruction (the tracked input is wenoz)
+NLIM=${NLIM:--1}                         # cycle limit for smoke tests; -1 = none
+EXE=$ATHENAK/build-cluster/src/athena
+INPUT=input_$RECON.athinput              # run-local derived input (first job writes it)
+MAX_JOBS=4
+WALL=23:45:00                            # athena stops here and writes a final rst
+
+source /opt/cray/pe/modules/3.2.11.7/init/bash
+module load PrgEnv-cray 2>/dev/null || true   # the binary is rpath'd (ldd needs no modules);
+module use /opt/cray/pals/modulefiles          # only cray-pals, for mpiexec, is load-bearing
+module load cray-pals cray-fftw
+
+# ranks and ranks-per-node straight from the allocation (fills every node)
+NRANKS=$(wc -l < $PBS_NODEFILE)
+NNODES=$(sort -u $PBS_NODEFILE | wc -l)
+PPN=$(( NRANKS / NNODES ))
+
+cd $PBS_O_WORKDIR
+mkdir -p rst
+
+die() { echo "ERROR: $*" | tee -a run.log; exit 1; }
+
+# grid sanity: whole MeshBlocks, at least one per rank
+[ $((NX % MB)) = 0 ] || die "NX=$NX is not a multiple of MB=$MB"
+[ $(( (NX/MB)*(NX/MB) )) -ge $NRANKS ] || die "only $(( (NX/MB)*(NX/MB) )) MeshBlocks for $NRANKS ranks"
+
+# the binary must support float64 vtk output
+grep -q vtk_dbl $EXE 2>/dev/null || strings $EXE | grep -q vtk_dbl \
+  || die "$EXE has no vtk_dbl: git pull and rebuild build-cluster (see header)"
+
+# --- first job: derive the input and verify every change -------------------------------
+if ! ls rst/*.rst > /dev/null 2>&1; then
+  grep -q '^reconstruct = wenoz' $TRACKED || die "tracked input no longer has reconstruct = wenoz"
+  sed -e "s/^reconstruct = wenoz.*/reconstruct = $RECON         # set by si_modelAs_wenoz.pbs (RECON=$RECON)/" \
+      -e '/^variable   = dust_dpm$/a\
+vtk_dbl    = true' \
+      -e '/^variable   = hydro_w$/a\
+vtk_dbl    = true' \
+      $TRACKED > $INPUT
+  for want in "^reconstruct = $RECON " '^rsolver     = hlle ' '^cfl_number = 0.25 ' \
+              '^ppc           = 1.0 ' '^integrator = imex2\+$' '^coupling      = imex$' \
+              '^tlim       = 6283.185307179586'; do
+    grep -qE "$want" $INPUT || die "derived input lacks '$want' -- has $TRACKED changed?"
+  done
+  [ "$(grep -c '^vtk_dbl    = true' $INPUT)" = 2 ] || die "derived input: vtk_dbl not set on both dumps"
+  diff $TRACKED $INPUT > input_$RECON.diff
+  echo $NX > grid.txt
+  echo $RECON > recon.txt
+elif [ "$(cat grid.txt 2>/dev/null)" != "$NX" ]; then
+  die "this directory holds a $(cat grid.txt 2>/dev/null)^2 run but NX=$NX: wrong script for this run directory?"
+elif [ "$(cat recon.txt 2>/dev/null || echo wenoz)" != "$RECON" ]; then
+  die "this directory holds a $(cat recon.txt 2>/dev/null || echo wenoz) run but RECON=$RECON: wrong script for this run directory?"
+fi
+
+{
+  echo "# job $PBS_JOBID on $NNODES node(s): $(sort -u $PBS_NODEFILE | tr '\n' ' '), $NRANKS ranks"
+  echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD); grid ${NX}^2, MeshBlocks ${MB}^2, reconstruct $RECON"
+} >> run.log
+
+if ls rst/*.rst > /dev/null 2>&1; then
+  RST=$(ls rst/*.rst | tail -1)
+  echo "# restarting from $RST" >> run.log
+  mpiexec -np $NRANKS -ppn $PPN $EXE -r $RST -d ./ -t $WALL >> run.log 2>&1
+else
+  echo "# first job: $INPUT (differences from the tracked input in input_$RECON.diff)" >> run.log
+  mpiexec -np $NRANKS -ppn $PPN $EXE -i $INPUT -d ./ -t $WALL \
+    mesh/nx1=$NX mesh/nx2=$NX meshblock/nx1=$MB meshblock/nx2=$MB time/nlim=$NLIM >> run.log 2>&1
+fi
+echo "# job $PBS_JOBID ended $(date)" >> run.log
+
+# --- chain: resubmit only after a wall-clock stop, at most MAX_JOBS jobs in total -------
+echo $PBS_JOBID >> jobs.list
+last=$(grep -E "^Terminating on" run.log | tail -1)
+if [ "$last" = "Terminating on wall clock limit" ]; then
+  if [ $(wc -l < jobs.list) -lt $MAX_JOBS ]; then
+    echo "# wall clock stop: resubmitting" >> run.log
+    qsub -v NX=$NX,MB=$MB,RECON=$RECON,SCRIPT=$SCRIPT $SCRIPT
+  else
+    echo "# wall clock stop but MAX_JOBS=$MAX_JOBS reached: not resubmitting" >> run.log
+  fi
+else
+  echo "# final state: ${last:-no termination message (crash? see the .o${PBS_JOBID%%.*} file)}" >> run.log
+fi

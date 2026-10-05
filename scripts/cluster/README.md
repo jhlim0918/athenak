@@ -23,6 +23,23 @@ kokkos-fft is fetched by CMake at *configure* time — run the configure step on
 node with network access (or pre-clone `github.com/kokkos/kokkos-fft` and point
 `FETCHCONTENT_SOURCE_DIR_KOKKOS-FFT` at it).
 
+**NAS** (`athfe`, Cray PE, Turin nodes `model=tur_ath`): the clone is
+`$HOME/athenak-multigrid`, as on Vista.  Since 2026-10 `PrgEnv-intel` and `PrgEnv-gnu`
+fail to load on the front ends (their `intel` / `gcc` modulefiles are gone or conflict),
+so the build uses the default `PrgEnv-cray` (Cray clang 20) and names FFTW explicitly,
+because kokkos-fft's `FindFFTW` does not always see the `cray-fftw` module:
+
+```bash
+module use /opt/cray/pals/modulefiles && module load cray-pals cray-fftw
+cmake -B build-cluster -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON \
+      -D CMAKE_CXX_COMPILER=CC -D FFTW_ROOT=/opt/cray/pe/fftw/default/x86_64
+cmake --build build-cluster -j 16           # ~4 min on athfe01
+```
+
+The PBS twins (`gt_sc14_full.pbs`, `si_modelAs_wenoz.pbs`) load `PrgEnv-cray`,
+`cray-pals` and `cray-fftw` to match.  Run directories live in `/nobackup/$USER`
+(not backed up: `backup_run.sh` them to Lou when done).
+
 ## 1. The standard beta = 10 run
 
 `gt_sc14_full.pbs` — PBS template (bash; Cray PE + cray-pals + cray-fftw).
