@@ -390,8 +390,13 @@ class ParticleVTKOutput : public BaseTypeOutput {
  protected:
   int npout_thisrank;
   int npout_total;
+  bool vtk_dbl;   // <outputN>/vtk_dbl: write float64 instead of the default float32
   HostArray2D<Real> outpart_rdata;
   HostArray2D<int>  outpart_idata;
+  // write ncomp values per particle of this rank at offset into the shared file
+  void WriteParticleBlock(IOWrapper &partfile, const std::vector<double> &vals, int ncomp,
+                          std::size_t &offset, Mesh *pm, const std::vector<int> &rank_offset,
+                          int npout_min);
 };
 
 //----------------------------------------------------------------------------------------

@@ -5,7 +5,8 @@
 //========================================================================================
 //! \file vtk_prtcl.cpp
 //! \brief writes particle data in (legacy) vtk format.
-//! Data is written in UNSTRUCTURED_GRID geometry, in BINARY format, and in FLOAT type
+//! Data is written in UNSTRUCTURED_GRID geometry, in BINARY format, and in FLOAT type,
+//! or in DOUBLE type with <outputN>/vtk_dbl = true.
 //! Data over multiple MeehBlocks and MPI ranks is written to a single file using MPI-IO.
 
 #include <sys/stat.h>  // mkdir
@@ -32,8 +33,66 @@
 
 ParticleVTKOutput::ParticleVTKOutput(ParameterInput *pin, Mesh *pm, OutputParameters op) :
   BaseTypeOutput(pin, pm, op) {
+  vtk_dbl = pin->GetOrAddBoolean(op.block_name, "vtk_dbl", false);
   // create new directory for this output. Comments in binary.cpp constructor explain why
   mkdir("pvtk",0775);
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void ParticleVTKOutput::WriteParticleBlock()
+//! \brief Converts ncomp values per particle of this rank to big-endian float32 (or
+//! float64 with vtk_dbl) and writes them at their rank offset: collective writes for the
+//! minimum particle count across ranks, individual writes for the rest.  Advances offset
+//! past the whole block (all ranks).
+
+void ParticleVTKOutput::WriteParticleBlock(IOWrapper &partfile,
+                                           const std::vector<double> &vals, int ncomp,
+                                           std::size_t &offset, Mesh *pm,
+                                           const std::vector<int> &rank_offset,
+                                           int npout_min) {
+  int big_end = IsBigEndian();
+  const std::size_t n = static_cast<std::size_t>(ncomp)*npout_thisrank;
+  std::vector<float> fdata(vtk_dbl ? 0 : n);
+  std::vector<double> ddata(vtk_dbl ? n : 0);
+  void *data;
+  std::size_t datasize;
+  const char *type;
+  if (vtk_dbl) {
+    for (std::size_t i=0; i<n; ++i) {
+      ddata[i] = vals[i];
+      if (!big_end) Swap8Bytes(&ddata[i]);
+    }
+    data = ddata.data(); datasize = sizeof(double); type = "double";
+  } else {
+    for (std::size_t i=0; i<n; ++i) {
+      fdata[i] = static_cast<float>(vals[i]);
+      if (!big_end) Swap4Bytes(&fdata[i]);
+    }
+    data = fdata.data(); datasize = sizeof(float); type = "float";
+  }
+  char *bytes = static_cast<char *>(data);
+  std::size_t myoffset = offset + ncomp*rank_offset[global_variable::my_rank]*datasize;
+  // collective writes for minimum number of particles across ranks
+  if (partfile.Write_any_type_at_all(bytes, ncomp*npout_min, myoffset, type)
+        != static_cast<size_t>(ncomp*npout_min)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+        << std::endl << "particle data not written correctly to vtk particle file, "
+        << "vtk file is broken." << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  // individual writes for remaining particles on each rank
+  myoffset += datasize*ncomp*npout_min;
+  int nremain = pm->nprtcl_thisrank - npout_min;
+  if (nremain > 0) {
+    if (partfile.Write_any_type_at(bytes + datasize*ncomp*npout_min, ncomp*nremain,
+                                   myoffset, type) != static_cast<size_t>(ncomp*nremain)) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+          << std::endl << "particle data not written correctly to vtk particle file, "
+          << "vtk file is broken." << std::endl;
+      exit(EXIT_FAILURE);
+    }
+  }
+  offset += ncomp*pm->nprtcl_total*datasize;
 }
 
 //----------------------------------------------------------------------------------------
@@ -85,8 +144,6 @@ void ParticleVTKOutput::LoadOutputData(Mesh *pm) {
 //!  7. Arbitrary number of VECTORS data at each point (BINARY format)
 
 void ParticleVTKOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
-  int big_end = IsBigEndian(); // =1 on big endian machine
-
   // create filename: "vtk/file_basename"."file_id"."XXXXX".part.vtk
   // where XXXXX = 5-digit file_number
   std::string fname;
@@ -108,10 +165,12 @@ void ParticleVTKOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
   IOWrapper partfile;
   std::size_t header_offset=0;
   partfile.Open(fname.c_str(), IOWrapper::FileMode::write);
+  const char *vtk_type = vtk_dbl ? " double" : " float";
 
   //  Write parts 1-4: Create string with header text.
   {
     std::stringstream msg;
+    if (vtk_dbl) msg << std::setprecision(17);   // full-precision time with float64 data
     msg << "# vtk DataFile Version 2.0" << std::endl
         << "# AthenaK particle data at time= " << pm->time
         << "  nranks= " << global_variable::nranks
@@ -126,35 +185,6 @@ void ParticleVTKOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     header_offset += msg.str().size();
   }
 
-  // Write Part 5: Write (x,y,z) positions of points
-  {
-    std::stringstream msg;
-    msg << std::endl << "POINTS " << npout_total << " float" << std::endl;
-    if (global_variable::my_rank == 0) {
-      partfile.Write_any_type(msg.str().c_str(),msg.str().size(),"byte");
-    }
-    header_offset += msg.str().size();
-  }
-  // allocate 1D vector of floats used to convert and output particle data
-  float *data = new float[3*npout_thisrank];
-  // Loop over particles, load positions into data[]
-  for (int p=0; p<npout_thisrank; ++p) {
-    data[3*p] = static_cast<float>(outpart_rdata(IPX,p));
-    if (pm->multi_d) {
-      data[(3*p)+1] = static_cast<float>(outpart_rdata(IPY,p));
-    } else {
-      data[(3*p)+1] = static_cast<float>(pm->mesh_size.x2min);
-    }
-    if (pm->three_d) {
-      data[(3*p)+2] = static_cast<float>(outpart_rdata(IPZ,p));
-    } else {
-      data[(3*p)+2] = static_cast<float>(pm->mesh_size.x3min);
-    }
-  }
-  // swap data for this variable into big endian order
-  if (!big_end) {
-    for (int i=0; i<(3*npout_thisrank); ++i) { Swap4Bytes(&data[i]); }
-  }
   // calculate local data offset
   std::vector<int> rank_offset(global_variable::nranks, 0);
   int npout_min = pm->nprtcl_eachrank[0];
@@ -162,33 +192,23 @@ void ParticleVTKOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     rank_offset[n] = rank_offset[n-1] + pm->nprtcl_eachrank[n-1];
     npout_min = std::min(npout_min, pm->nprtcl_eachrank[n]);
   }
+  std::vector<double> vals(3*static_cast<std::size_t>(npout_thisrank));
 
-  // Write particle positions
+  // Write Part 5: Write (x,y,z) positions of points
   {
-    std::size_t datasize = sizeof(float);
-    std::size_t myoffset=header_offset + 3*rank_offset[global_variable::my_rank]*datasize;
-    // collective writes for minimum number of particles across ranks
-    if (partfile.Write_any_type_at_all(&(data[0]),3*npout_min,myoffset,"float")
-          != static_cast<size_t>(3*npout_min)) {
-      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-          << std::endl << "particle data not written correctly to vtk particle file, "
-          << "vtk file is broken." << std::endl;
-      exit(EXIT_FAILURE);
+    std::stringstream msg;
+    msg << std::endl << "POINTS " << npout_total << vtk_type << std::endl;
+    if (global_variable::my_rank == 0) {
+      partfile.Write_any_type(msg.str().c_str(),msg.str().size(),"byte");
     }
-    // individual writes for remaining particles on each rank
-    myoffset += datasize*3*npout_min;
-    int nremain = pm->nprtcl_thisrank - npout_min;
-    if (nremain > 0) {
-      if (partfile.Write_any_type_at(&(data[3*npout_min]),3*nremain,myoffset,"float")
-            != static_cast<size_t>(3*nremain)) {
-        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-            << std::endl << "particle data not written correctly to vtk particle file, "
-            << "vtk file is broken." << std::endl;
-        exit(EXIT_FAILURE);
-      }
-    }
-    header_offset += 3*pm->nprtcl_total*datasize;
+    header_offset += msg.str().size();
   }
+  for (int p=0; p<npout_thisrank; ++p) {
+    vals[3*p] = outpart_rdata(IPX,p);
+    vals[(3*p)+1] = pm->multi_d ? outpart_rdata(IPY,p) : pm->mesh_size.x2min;
+    vals[(3*p)+2] = pm->three_d ? outpart_rdata(IPZ,p) : pm->mesh_size.x3min;
+  }
+  WriteParticleBlock(partfile, vals, 3, header_offset, pm, rank_offset, npout_min);
 
   // Write Part 6: scalar particle data
   bool have_written_pointdata_header = false;
@@ -203,13 +223,13 @@ void ParticleVTKOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     }
 
     if (n == static_cast<int>(PGID)) {
-      msg << std::endl << "SCALARS gid float" << std::endl
+      msg << std::endl << "SCALARS gid" << vtk_type << std::endl
           << "LOOKUP_TABLE default" << std::endl;
     } else if (n == static_cast<int>(PTAG)) {
-      msg << std::endl << "SCALARS ptag float" << std::endl
+      msg << std::endl << "SCALARS ptag" << vtk_type << std::endl
           << "LOOKUP_TABLE default" << std::endl;
     } else if (n == static_cast<int>(PSP)) {
-      msg << std::endl << "SCALARS pspecies float" << std::endl
+      msg << std::endl << "SCALARS pspecies" << vtk_type << std::endl
           << "LOOKUP_TABLE default" << std::endl;
     }
 
@@ -219,92 +239,32 @@ void ParticleVTKOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
 
     header_offset += msg.str().size();
 
-    // Loop over particles, load gid into data[]
     for (int p=0; p<npout_thisrank; ++p) {
-      data[p] = static_cast<float>(outpart_idata(n,p));
+      vals[p] = static_cast<double>(outpart_idata(n,p));
     }
-    // swap data for this variable into big endian order
-    if (!big_end) {
-      for (int i=0; i<npout_thisrank; ++i) { Swap4Bytes(&data[i]); }
-    }
-
-    // calculate local data offset and write gid
-    std::size_t datasize = sizeof(float);
-    std::size_t myoffset=header_offset + rank_offset[global_variable::my_rank]*datasize;
-    // collective writes for minimum number of particles across ranks
-    if (partfile.Write_any_type_at_all(&(data[0]),npout_min,myoffset,"float")
-          != static_cast<size_t>(npout_min)) {
-      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-          << std::endl << "particle data not written correctly to vtk particle file, "
-          << "vtk file is broken." << std::endl;
-      exit(EXIT_FAILURE);
-    }
-    // individual writes for remaining particles on each rank
-    myoffset += datasize*npout_min;
-    int nremain = pm->nprtcl_thisrank - npout_min;
-    if (nremain > 0) {
-      if (partfile.Write_any_type_at(&(data[npout_min]),nremain,myoffset,"float")
-            != static_cast<size_t>(nremain)) {
-        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-            << std::endl << "particle data not written correctly to vtk particle file, "
-            << "vtk file is broken." << std::endl;
-        exit(EXIT_FAILURE);
-      }
-    }
-    header_offset += pm->nprtcl_total*datasize;
+    WriteParticleBlock(partfile, vals, 1, header_offset, pm, rank_offset, npout_min);
   }
 
   // Write Part 7 for dust only. Preserve the historical particle-VTK schema and I/O
   // volume for every pre-existing particle type.
   if (pm->pmb_pack->ppart->particle_type == ParticleType::dust) {
     std::stringstream msg;
-    msg << std::endl << "VECTORS pvel float" << std::endl;
+    msg << std::endl << "VECTORS pvel" << vtk_type << std::endl;
     if (global_variable::my_rank == 0) {
       partfile.Write_any_type_at(msg.str().c_str(),msg.str().size(),header_offset,"byte");
     }
     header_offset += msg.str().size();
 
-    // Loop over particles, load velocities into data[]
     for (int p=0; p<npout_thisrank; ++p) {
-      data[3*p] = static_cast<float>(outpart_rdata(IPVX,p));
-      data[(3*p)+1] = pm->multi_d ? static_cast<float>(outpart_rdata(IPVY,p)) : 0.0f;
-      data[(3*p)+2] = (pm->three_d ||
-        pm->pmb_pack->ppart->particle_type == ParticleType::dust) ?
-        static_cast<float>(outpart_rdata(IPVZ,p)) : 0.0f;
+      vals[3*p] = outpart_rdata(IPVX,p);
+      vals[(3*p)+1] = pm->multi_d ? outpart_rdata(IPVY,p) : 0.0;
+      vals[(3*p)+2] = outpart_rdata(IPVZ,p);
     }
-    // swap data for this variable into big endian order
-    if (!big_end) {
-      for (int i=0; i<(3*npout_thisrank); ++i) { Swap4Bytes(&data[i]); }
-    }
-
-    std::size_t datasize = sizeof(float);
-    std::size_t myoffset=header_offset + 3*rank_offset[global_variable::my_rank]*datasize;
-    // collective writes for minimum number of particles across ranks
-    if (partfile.Write_any_type_at_all(&(data[0]),3*npout_min,myoffset,"float")
-          != static_cast<size_t>(3*npout_min)) {
-      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-          << std::endl << "particle data not written correctly to vtk particle file, "
-          << "vtk file is broken." << std::endl;
-      exit(EXIT_FAILURE);
-    }
-    // individual writes for remaining particles on each rank
-    myoffset += datasize*3*npout_min;
-    int nremain = pm->nprtcl_thisrank - npout_min;
-    if (nremain > 0) {
-      if (partfile.Write_any_type_at(&(data[3*npout_min]),3*nremain,myoffset,"float")
-            != static_cast<size_t>(3*nremain)) {
-        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-            << std::endl << "particle data not written correctly to vtk particle file, "
-            << "vtk file is broken." << std::endl;
-        exit(EXIT_FAILURE);
-      }
-    }
-    header_offset += 3*pm->nprtcl_total*datasize;
+    WriteParticleBlock(partfile, vals, 3, header_offset, pm, rank_offset, npout_min);
   }
 
   // close the output file and clean up
   partfile.Close();
-  delete[] data;
 
   // increment counters
   out_params.file_number++;
