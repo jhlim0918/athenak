@@ -1,8 +1,11 @@
 #!/bin/bash
 # Archive one AthenaK run directory to Lou (NAS mass storage).
 #
-# Usage:  scripts/cluster/backup_run.sh <rundir> [lou_dir]
+# Usage:  scripts/cluster/backup_run.sh [rundir] [lou_dir]
+#         rundir defaults to the current directory, so from inside a run:
+#           bash backup_run.sh                 (or: bash backup_run.sh . <lou_dir>)
 #         lou_dir defaults to athenak_backups (i.e. lou:~/athenak_backups)
+#         The archive names come from the run directory's own name.
 #
 # Two archives per run, made with shiftc (NAS's transfer tool: streams the tar
 # straight to Lou -- no local copy -- with checksums and automatic retries):
@@ -16,7 +19,8 @@
 
 set -eu
 
-RUNDIR=$(cd "${1:?usage: backup_run.sh <rundir> [lou_dir]}" && pwd)
+# absolute path, so NAME is the run's name even when called as "." or "./"
+RUNDIR=$(cd "${1:-.}" && pwd)
 LOUDIR=${2:-athenak_backups}
 NAME=$(basename "$RUNDIR")
 
@@ -24,6 +28,12 @@ command -v shiftc >/dev/null || {
   echo "shiftc not found -- on NAS load it with: module load shift" >&2; exit 1; }
 
 cd "$RUNDIR"
+
+# guard against archiving the wrong directory now that rundir is optional
+if [ ! -d bin ] && [ ! -d rst ] && ! ls ./*.hst >/dev/null 2>&1; then
+  echo "$RUNDIR has no bin/, rst/ or *.hst -- not a run directory?" >&2
+  echo "usage: backup_run.sh [rundir] [lou_dir]" >&2; exit 1
+fi
 
 # the bulk: bin/ and rst/ (whichever exist)
 DATA=""
