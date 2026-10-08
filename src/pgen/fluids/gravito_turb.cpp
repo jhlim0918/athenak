@@ -51,6 +51,24 @@
 //! parameters: amr_njeans (16), amr_njeans_deref (2.5, must exceed 2), amr_rho_min
 //! (Roche density 9 Omega^2/(4 pi G)), amr_cs_min (0), amr_tstart (0: no flags are
 //! raised before this time, so one input serves a cold start and a saturated start).
+//!
+//! Mass renormalization (<problem> mass_renorm = true; Booth & Clarke 2019, MNRAS 483,
+//! 3718, sec. 2): the outflow z boundaries drain the box (the SC14 runs here lose 24% of
+//! their mass by t = 300 at 4 cells/H, 40-48% by t ~ 180 at 8), so over long runs Sigma
+//! falls and Q rises.  Once per step, after the LAST RK stage's update (as a user
+//! source term), the conserved variables of every active cell are multiplied by one
+//! global factor f = M_target/M, which restores the total mass while keeping the
+//! per-unit-mass quantities (velocity, specific energy, so the temperature) unchanged.
+//! A correction at an earlier stage is partly averaged away by the later stages'
+//! weighting with the start-of-step state (at stage 1 of rk2 it has to be twice the
+//! loss), so only the last stage gives corrections that sum to the net mass the box
+//! lost or gained.  M_target is
+//! <problem>/mass_renorm_target; if it is absent it is the mass at the start of the run
+//! (t = 0 or the restart time) and is written back into the parameters, so the restart
+//! files carry it.  An extra history column dm_renorm holds the mass injected since the
+//! previous history row (the boundary loss, plus whatever the density floor adds).
+//! Particles are not rescaled: with dust the dust-to-gas ratio drifts down as gas is
+//! added.
 
 #include <algorithm>
 #include <cfloat>
@@ -81,6 +99,8 @@
 void GravitoTurbHistory(HistoryData *pdata, Mesh *pm);
 // User-defined refinement criterion (Jeans number with a density gate)
 void GravitoTurbRefinement(MeshBlockPack *pmbp);
+// User source term: rescale the gas to a fixed total mass (mass_renorm)
+void GravitoTurbRenormalizeMass(Mesh *pm, const Real bdt);
 
 namespace {
 struct GravitoTurbVariables {
@@ -88,6 +108,12 @@ struct GravitoTurbVariables {
   Real lx, ly;
   bool orbital_advection;
   Real amr_njeans, amr_njeans_deref, amr_rho_min, amr_cs_min, amr_tstart;
+  bool mass_renorm;
+  Real mass_target;   // total gas mass the renormalization restores
+  Real dm_renorm;     // mass injected since the last history row (same on every rank)
+  int renorm_cycle;   // cycle of the current renormalization count
+  int renorm_calls;   // source-term calls so far in that cycle (one per stage)
+  int nstages;        // explicit stages of <time>/integrator (as in driver.cpp)
 };
 GravitoTurbVariables gt_var;
 
@@ -105,6 +131,30 @@ Real HashNoise(int64_t gk, int64_t gj, int64_t gi, int64_t c, int64_t seed) {
   x ^= x >> 27; x *= 0x94d049bb133111ebULL;
   x ^= x >> 31;
   return 2.0*(static_cast<Real>(x >> 11)/9007199254740992.0) - 1.0;  // 53-bit mantissa
+}
+
+// total gas mass in the active cells of all MeshBlocks on all ranks
+Real TotalGasMass(MeshBlockPack *pmbp) {
+  auto &indcs = pmbp->pmesh->mb_indcs;
+  int is = indcs.is, js = indcs.js, ks = indcs.ks;
+  int ni = indcs.nx1, nj = indcs.nx2, nk = indcs.nx3;
+  int nmkji = pmbp->nmb_thispack*nk*nj*ni;
+  auto &size = pmbp->pmb->mb_size;
+  auto &u0 = pmbp->phydro->u0;
+  Real mgas = 0.0;
+  Kokkos::parallel_reduce("gt_mgas", Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+  KOKKOS_LAMBDA(int idx, Real &lsum) {
+    int i = is + (idx % ni);
+    int j = js + ((idx/ni) % nj);
+    int k = ks + ((idx/(ni*nj)) % nk);
+    int m = idx/(ni*nj*nk);
+    Real vol = size.d_view(m).dx1*size.d_view(m).dx2*size.d_view(m).dx3;
+    lsum += u0(m,IDN,k,j,i)*vol;
+  }, Kokkos::Sum<Real>(mgas));
+#if MPI_PARALLEL_ENABLED
+  MPI_Allreduce(MPI_IN_PLACE, &mgas, 1, MPI_ATHENA_REAL, MPI_SUM, MPI_COMM_WORLD);
+#endif
+  return mgas;
 }
 } // namespace
 
@@ -169,10 +219,50 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   }
   user_ref_func = GravitoTurbRefinement;
 
+  // mass renormalization (see the file header); the target is set below, once u0 holds
+  // the initial condition or the restart data
+  gt_var.mass_renorm = pin->GetOrAddBoolean("problem", "mass_renorm", false);
+  gt_var.dm_renorm = 0.0;
+  gt_var.renorm_cycle = -1;
+  gt_var.renorm_calls = 0;
+  if (gt_var.mass_renorm) {
+    user_srcs = true;
+    user_srcs_func = GravitoTurbRenormalizeMass;
+    // the source term is called once per stage; act on the last one
+    std::string integ = pin->GetString("time", "integrator");
+    if (integ == "rk1") {
+      gt_var.nstages = 1;
+    } else if (integ == "rk2" || integ == "imex2") {
+      gt_var.nstages = 2;
+    } else if (integ == "rk3" || integ == "imex2+" || integ == "imex3") {
+      gt_var.nstages = 3;
+    } else if (integ == "rk4") {
+      gt_var.nstages = 4;
+    } else {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "mass_renorm: unknown number of stages for <time>/"
+                << "integrator = " << integ << std::endl;
+      exit(EXIT_FAILURE);
+    }
+  }
+  auto set_mass_target = [&]() {
+    if (!gt_var.mass_renorm) return;
+    Real target = pin->GetOrAddReal("problem", "mass_renorm_target", 0.0);
+    if (target <= 0.0) {
+      target = TotalGasMass(pmbp);
+      pin->SetReal("problem", "mass_renorm_target", target);
+    }
+    gt_var.mass_target = target;
+    if (global_variable::my_rank == 0) {
+      std::cout << "gravito_turb: mass renormalization to M = " << target << std::endl;
+    }
+  };
+
   // two-stage dust runs (Baehr, Zhu & Yang 2022 style): a gas-only run to saturation,
   // then a restart with <particles>/<dust> blocks and restart_insert = true, which
   // inserts the particles into the saturated state here
   if (restart) {
+    set_mass_target();
     if (pmbp->ppart != nullptr &&
         pin->GetOrAddBoolean("particles", "restart_insert", false)) {
       GravitoTurbInsertDust(pin, true);
@@ -312,6 +402,7 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
     u0(m,IM3,k,j,i) = den*vz;
     u0(m,IEN,k,j,i) = prs/gm1 + 0.5*den*(SQR(vx) + SQR(vy) + SQR(vz));
   });
+  set_mass_target();
 
   // pilot runs: the particles go into the laminar state just built (see above)
   if (pmbp->ppart != nullptr &&
@@ -565,6 +656,11 @@ void GravitoTurbHistory(HistoryData *pdata, Mesh *pm) {
     pdata->label[15] = "d_wrey";
     pdata->label[16] = "d_escaped";
   }
+  const int ndm = pdata->nhist;     // dm_renorm column, after the dust columns
+  if (gv.mass_renorm) {
+    pdata->label[ndm] = "dm_renorm";
+    pdata->nhist += 1;
+  }
 
   auto &indcs = pm->pmb_pack->pmesh->mb_indcs;
   int is = indcs.is, nx1 = indcs.nx1;
@@ -664,6 +760,45 @@ void GravitoTurbHistory(HistoryData *pdata, Mesh *pm) {
     pdata->hdata[15] = dwr;
     pdata->hdata[16] = pdust->escaped_mass;
   }
+  if (gv.mass_renorm) {
+    // the history output sums hdata over ranks; dm_renorm is already global
+    pdata->hdata[ndm] = (global_variable::my_rank == 0) ? gt_var.dm_renorm : 0.0;
+    gt_var.dm_renorm = 0.0;
+  }
+  return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void GravitoTurbRenormalizeMass()
+//! \brief Multiplies every conserved variable in the active cells by M_target/M (see the
+//! file header).  Called as a user source term after each RK stage's update, but acts
+//! only at the last stage of each cycle; ghost and coarse cells are refreshed by the
+//! boundary exchange and restriction that follow in the task list.
+
+void GravitoTurbRenormalizeMass(Mesh *pm, const Real bdt) {
+  if (pm->ncycle != gt_var.renorm_cycle) {
+    gt_var.renorm_cycle = pm->ncycle;
+    gt_var.renorm_calls = 0;
+  }
+  gt_var.renorm_calls += 1;
+  if (gt_var.renorm_calls != gt_var.nstages) return;
+  MeshBlockPack *pmbp = pm->pmb_pack;
+  Real mgas = TotalGasMass(pmbp);
+  if (mgas <= 0.0) return;
+  Real fac = gt_var.mass_target/mgas;
+  gt_var.dm_renorm += gt_var.mass_target - mgas;
+
+  auto &indcs = pm->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nvar = pmbp->phydro->nhydro + pmbp->phydro->nscalars;
+  auto &u0 = pmbp->phydro->u0;
+  par_for("gt_renorm", DevExeSpace(), 0, (pmbp->nmb_thispack-1), 0, nvar-1,
+          ks, ke, js, je, is, ie,
+  KOKKOS_LAMBDA(int m, int n, int k, int j, int i) {
+    u0(m,n,k,j,i) *= fac;
+  });
   return;
 }
 
