@@ -38,7 +38,11 @@ namespace {
 
 // Dimensionless constants for BE sphere
 constexpr Real rc_default = 6.45;
-constexpr Real rcsq_fac   = 1.0 / 3.0;   // rcsq = rc^2 / 3
+// Tomida (2011) approximation rho = (1 + r^2/rcsq)^(-3/2) to the critical BE sphere: with
+// rcsq = 26/3 the centre-to-edge contrast at rc = 6.45 is 13.97 (exact 14.04) and the
+// mass is bemass = 197.561 (exact 197.3).  (rcsq = rc^2/3, used here before, gives a
+// contrast of 8 and a mass of 292.6, i.e. 1.48 Msun instead of 1 for mass = 1.)
+constexpr Real rcsq_be    = 26.0 / 3.0;
 constexpr Real bemass      = 197.561;
 
 // Physical constants (cgs)
@@ -59,7 +63,7 @@ bool is_ideal_global;  // true if adiabatic EOS
 
 // AMR parameter (set from input in pgen, read in refinement function)
 Real njeans_threshold;
-Real cs_global;  // effective sound speed for Jeans criterion
+Real cs_global;  // isothermal sound speed (isothermal EOS only)
 
 // Approximated Bonnor-Ebert density profile (Tomida 2011)
 KOKKOS_INLINE_FUNCTION
@@ -72,6 +76,7 @@ Real BEProfile(Real r, Real rcsq) {
 // Forward declarations
 void JeansRefinement(MeshBlockPack *pmbp);
 void BarotropicCooling(Mesh *pm, const Real bdt);
+void BECollapseHistory(HistoryData *pdata, Mesh *pm);
 
 //----------------------------------------------------------------------------------------
 //! \fn void ProblemGenerator::BECollapse()
@@ -107,6 +112,7 @@ void ProblemGenerator::BECollapse(ParameterInput *pin, const bool restart) {
   }
 
   user_ref_func = JeansRefinement;
+  user_hist_func = BECollapseHistory;
 
   // --- barotropic cooling source term (adiabatic EOS only) ---
   Real rc = pin->GetOrAddReal("problem", "cloud_radius", rc_default);
@@ -158,7 +164,7 @@ void ProblemGenerator::BECollapse(ParameterInput *pin, const bool restart) {
   Real x_center = pin->GetOrAddReal("problem", "x_center", 0.0);
   Real y_center = pin->GetOrAddReal("problem", "y_center", 0.0);
   Real z_center = pin->GetOrAddReal("problem", "z_center", 0.0);
-  Real rcsq = SQR(rc) * rcsq_fac;
+  Real rcsq = rcsq_be;
 
   // Solid-body rotation: omega = omegatff / tff, where tff = pi*sqrt(3/(8f))
   Real tff = std::sqrt(3.0 / (8.0 * f)) * M_PI;
@@ -212,11 +218,11 @@ void ProblemGenerator::BECollapse(ParameterInput *pin, const bool restart) {
                            + SQR(z - z_center));
       Real r_clamped = Kokkos::fmin(r, rc);
 
-      Real rho = f * BEProfile(r_clamped, rcsq);
-      if (amp > 0.0 && r < rc) {
-        rho *= (1.0 + amp * SQR(r) / SQR(rc)
-                * Kokkos::cos(2.0 * Kokkos::atan2(y, x)));
-      }
+      // m = 2 perturbation everywhere, frozen at its r = rc value outside the cloud
+      // (the pressure-confining ambient gas carries it too, as in Athena++ collapse.cpp)
+      Real rho = f * BEProfile(r_clamped, rcsq)
+               * (1.0 + amp * SQR(r_clamped) / SQR(rc)
+                  * Kokkos::cos(2.0 * Kokkos::atan2(y - y_center, x - x_center)));
 
       u0(m, IDN, k, j, i) = rho;
       Real mx = 0.0, my = 0.0;
@@ -254,11 +260,11 @@ void ProblemGenerator::BECollapse(ParameterInput *pin, const bool restart) {
                            + SQR(z - z_center));
       Real r_clamped = Kokkos::fmin(r, rc);
 
-      Real rho = f * BEProfile(r_clamped, rcsq);
-      if (amp > 0.0 && r < rc) {
-        rho *= (1.0 + amp * SQR(r) / SQR(rc)
-                * Kokkos::cos(2.0 * Kokkos::atan2(y, x)));
-      }
+      // m = 2 perturbation everywhere, frozen at its r = rc value outside the cloud
+      // (the pressure-confining ambient gas carries it too, as in Athena++ collapse.cpp)
+      Real rho = f * BEProfile(r_clamped, rcsq)
+               * (1.0 + amp * SQR(r_clamped) / SQR(rc)
+                  * Kokkos::cos(2.0 * Kokkos::atan2(y - y_center, x - x_center)));
 
       u0(m, IDN, k, j, i) = rho;
       Real mx = 0.0, my = 0.0;
@@ -441,11 +447,16 @@ void BarotropicCooling(Mesh *pm, const Real bdt) {
 
 //----------------------------------------------------------------------------------------
 //! \fn void JeansRefinement()
-//! \brief Jeans-length AMR criterion for self-gravitating gas.
+//! \brief Jeans-length AMR criterion for self-gravitating gas (as Athena++ collapse.cpp).
 //!
-//! For each meshblock, computes the minimum Jeans number:
-//!   nJ = cs / sqrt(rho_max) * (2*pi / dx)
-//! For MHD, includes Alfven speed: cs_eff = cs + v_A.
+//! Per cell (active and ghost), with the local signal speed
+//!   v = sqrt(gamma P/rho)  (ideal EOS)  or  cs  (isothermal EOS),  plus v_A for MHD,
+//! the Jeans number is nJ = v/sqrt(rho) * 2 pi/dx (with 4 pi G = 1,
+//! lambda_J = 2 pi v/sqrt(rho));
+//! the block refines when min nJ < njeans and derefines when min nJ > 2.5 njeans.  Each
+//! cell's Alfven speed goes with its own density: pairing the block's largest v_A (a
+//! low-density cell) with its largest density, as this function did before, overestimates
+//! nJ in the dense cell and can leave it unrefined.
 
 void JeansRefinement(MeshBlockPack *pmbp) {
   auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
@@ -460,55 +471,44 @@ void JeansRefinement(MeshBlockPack *pmbp) {
   const int ni   = (nx1 + 2 * ng);
   int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
 
-  DvceArray5D<Real> u0;
+  DvceArray5D<Real> w0;
   bool has_bfield = false;
   DvceArray5D<Real> bcc0;
   if (pmbp->pmhd != nullptr) {
-    u0 = pmbp->pmhd->u0;
+    w0 = pmbp->pmhd->w0;
     bcc0 = pmbp->pmhd->bcc0;
     has_bfield = true;
   } else {
-    u0 = pmbp->phydro->u0;
+    w0 = pmbp->phydro->w0;
   }
   auto &size = pmbp->pmb->mb_size;
-  Real cs = cs_global;
+  Real cs_iso = cs_global;
+  Real ggm1 = gamma_global*(gamma_global - 1.0);
   Real njeans = njeans_threshold;
   bool ideal = is_ideal_global;
 
   par_for_outer("JeansAMR", DevExeSpace(), 0, 0, 0, (nmb - 1),
   KOKKOS_LAMBDA(TeamMember_t tmember, const int m) {
-    Real team_rhomax;
+    Real team_min;   // min over cells of v/sqrt(rho)
     Kokkos::parallel_reduce(
       Kokkos::TeamThreadRange(tmember, nkji),
-      [&](const int idx, Real &rhomax) {
+      [&](const int idx, Real &lmin) {
         int k = idx / nji;
         int j = (idx - k * nji) / ni;
         int i = (idx - k * nji - j * ni);
-        rhomax = Kokkos::fmax(u0(m, IDN, k, j, i), rhomax);
+        Real rho = w0(m, IDN, k, j, i);
+        if (rho > 0.0) {
+          Real v = ideal ? Kokkos::sqrt(ggm1 * w0(m, IEN, k, j, i) / rho) : cs_iso;
+          if (has_bfield) {
+            v += Kokkos::sqrt((SQR(bcc0(m,IBX,k,j,i)) + SQR(bcc0(m,IBY,k,j,i))
+                             + SQR(bcc0(m,IBZ,k,j,i))) / rho);
+          }
+          lmin = Kokkos::fmin(lmin, v / Kokkos::sqrt(rho));
+        }
       },
-      Kokkos::Max<Real>(team_rhomax));
+      Kokkos::Min<Real>(team_min));
 
-    Real dx = size.d_view(m).dx1;
-    Real v_eff = cs;
-
-    // For MHD with isothermal EOS, add Alfven speed contribution
-    if (has_bfield && !ideal) {
-      Real bsq_max = 0.0;
-      Kokkos::parallel_reduce(
-        Kokkos::TeamThreadRange(tmember, nkji),
-        [&](const int idx, Real &bmax) {
-          int k = idx / nji;
-          int j = (idx - k * nji) / ni;
-          int i = (idx - k * nji - j * ni);
-          Real bsq = SQR(bcc0(m,IBX,k,j,i)) + SQR(bcc0(m,IBY,k,j,i))
-                   + SQR(bcc0(m,IBZ,k,j,i));
-          bmax = Kokkos::fmax(bsq / u0(m, IDN, k, j, i), bmax);
-        },
-        Kokkos::Max<Real>(bsq_max));
-      v_eff = cs + Kokkos::sqrt(bsq_max);
-    }
-
-    Real nj_min = v_eff / Kokkos::sqrt(team_rhomax) * (2.0 * M_PI / dx);
+    Real nj_min = team_min * (2.0 * M_PI / size.d_view(m).dx1);
 
     if (nj_min < njeans) {
       refine_flag.d_view(m + mbs) = 1;
@@ -521,4 +521,42 @@ void JeansRefinement(MeshBlockPack *pmbp) {
 
   refine_flag.modify_device();
   refine_flag.sync_host();
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void BECollapseHistory()
+//! \brief History: rho_max (the run's progress: the paper stops at rho_c = 1e-8 g/cc,
+//! 8.8e9 code units for the fiducial cloud) and the total mass.
+
+void BECollapseHistory(HistoryData *pdata, Mesh *pm) {
+  MeshBlockPack *pmbp = pm->pmb_pack;
+  pdata->nhist = 2;
+  pdata->label[0] = "rho_max";
+  pdata->label[1] = "mass";
+  auto &u0 = (pmbp->pmhd != nullptr) ? pmbp->pmhd->u0 : pmbp->phydro->u0;
+  auto &size = pmbp->pmb->mb_size;
+  auto &indcs = pm->mb_indcs;
+  int is = indcs.is, nx1 = indcs.nx1;
+  int js = indcs.js, nx2 = indcs.nx2;
+  int ks = indcs.ks, nx3 = indcs.nx3;
+  const int nkji = nx3*nx2*nx1, nji = nx2*nx1;
+  const int nmkji = pmbp->nmb_thispack*nkji;
+  Real rmax = 0.0, mass = 0.0;
+  Kokkos::parallel_reduce("BEHist", Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+  KOKKOS_LAMBDA(const int &idx, Real &lmax, Real &lsum) {
+    int m = idx/nkji;
+    int k = (idx - m*nkji)/nji;
+    int j = (idx - m*nkji - k*nji)/nx1;
+    int i = (idx - m*nkji - k*nji - j*nx1) + is;
+    Real d = u0(m, IDN, k+ks, j+js, i);
+    lmax = Kokkos::fmax(lmax, d);
+    lsum += d*size.d_view(m).dx1*size.d_view(m).dx2*size.d_view(m).dx3;
+  }, Kokkos::Max<Real>(rmax), Kokkos::Sum<Real>(mass));
+#if MPI_PARALLEL_ENABLED
+  MPI_Allreduce(MPI_IN_PLACE, &rmax, 1, MPI_ATHENA_REAL, MPI_MAX, MPI_COMM_WORLD);
+#endif
+  // the history output sums over ranks: the global maximum goes in on rank 0 only
+  pdata->hdata[0] = (global_variable::my_rank == 0) ? rmax : 0.0;
+  pdata->hdata[1] = mass;
+  for (int n=pdata->nhist; n<NHISTORY_VARIABLES; ++n) pdata->hdata[n] = 0.0;
 }

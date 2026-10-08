@@ -12,6 +12,7 @@
 #include "athena.hpp"
 #include "mesh/mesh.hpp"
 #include "hydro/hydro.hpp"
+#include "mhd/mhd.hpp"
 #include "eos/eos.hpp"
 #include "shearing_box/shearing_box.hpp"
 
@@ -262,15 +263,29 @@ void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Rea
   // in the ghost the edge cell stays balanced.  Without a stratified shearing box
   // (Omega = 0) this reduces to diode.  Disc self-gravity is not included in the
   // extrapolation.  Not implemented for x1/x2 (falls to default there).
+  // This helper also serves MHD's u0, where phydro is null: take the EOS and shearing box
+  // from whichever fluid exists.  hse_outflow itself is hydro-only (the ghost energy is
+  // rebuilt without the magnetic term).
+  if (ppack->pmhd != nullptr &&
+      (pm->mesh_bcs[BoundaryFace::inner_x3] == BoundaryFlag::hse_outflow ||
+       pm->mesh_bcs[BoundaryFace::outer_x3] == BoundaryFlag::hse_outflow)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+              << "hse_outflow is not implemented for MHD (the ghost energy has no "
+              << "magnetic term)" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
   auto &size = ppack->pmb->mb_size;
-  auto &eos = ppack->phydro->peos->eos_data;
+  auto &eos = (ppack->phydro != nullptr) ? ppack->phydro->peos->eos_data
+                                         : ppack->pmhd->peos->eos_data;
+  auto *psbox = (ppack->phydro != nullptr) ? ppack->phydro->psbox_u
+                                           : ppack->pmhd->psbox_u;
   const bool ideal = eos.is_ideal;
   const Real gm1 = eos.gamma - 1.0;
   const Real ciso2 = SQR(eos.iso_cs);
   const Real dfloor = eos.dfloor;
   Real om2 = 0.0;
-  if (ppack->phydro->psbox_u != nullptr && ppack->phydro->psbox_u->is_stratified) {
-    om2 = SQR(ppack->phydro->psbox_u->omega0);
+  if (psbox != nullptr && psbox->is_stratified) {
+    om2 = SQR(psbox->omega0);
   }
   const int nk = ke - ks + 1;
 
