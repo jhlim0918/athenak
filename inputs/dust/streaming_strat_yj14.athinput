@@ -1,0 +1,134 @@
+# AthenaK input file: nonlinear streaming instability in a vertically stratified 3D
+# shearing box, the (Lx, Ly, Lz) = (0.4H, 0.4H, 0.2H) box of Yang & Johansen (2014,
+# ApJ 792, 86) at 80 cells per H (their Fig. 1, second column, red line).
+#
+# Units Omega = c_s = rho0 = 1, so H = 1 and P = 2 pi.  Pi = Delta v/c_s = 0.05: the gas
+# feels a_x = 2 Omega Pi c_s = 0.1 (<hydro_srcterms>/const_accel, gas only), gas and
+# particles feel -Omega^2 z (<shearing_box>/stratified = true).  Z = Sigma_p/Sigma_g =
+# 0.02 with Sigma_g = sqrt(2 pi) H rho0 (YJ14 sec. 2.2), i.e. a dust/gas mass ratio of
+# 0.251 inside this short box.  YJ14 use tau_s = pi/10 = 0.314; this run uses 0.3.
+#
+# Initial condition (YJ14 sec. 2.2): gas in hydrostatic equilibrium at rest in the
+# shearing frame, N_p = Nx Ny Nz particles (ppc = 1) uniformly random over the whole box,
+# at rest.  Periodic x3 for gas and particles (YJ14), shear-periodic x1.
+#
+# Expected (YJ14 Fig. 1, 80/H, 0.4H box): the particles settle within ~2 P, the layer is
+# puffed back up by the SI to sqrt(<z_p^2>) ~ 0.01 H, and max rho_p/rho0 rises to
+# ~30-100 by t ~ 20 P and stays there to t = 100 P.
+#
+# Riemann solver: Roe.  With HLLE this run stays laminar to 100 P (the layer settles into a
+# sub-cell sheet, max rho_p ~ 3): HLLE diffuses the azimuthal-velocity shear across the
+# sheet at the sound speed.  With Roe the onset matches an Athena-C twin to ~10% and the
+# layer is stirred by ~5 P (max rho_p ~ 20 over 20-100 P); see
+# active_projects/si_strat3d_tests/si_strat3d_tests.pdf (2026-10-09).
+#
+# Run:   mpirun -np 8 build-si3d/src/athena -i inputs/dust/streaming_strat_yj14.athinput
+
+<comment>
+problem   = YJ14 stratified SI, (0.4H)^2 x 0.2H, 80/H, tau_s = 0.3, Z = 0.02, Pi = 0.05
+
+<job>
+basename  = yj14
+
+<mesh>
+nghost    = 3                # wenoz needs 3
+nx1       = 32               # radial: 0.4 H at 80/H
+x1min     = -0.2
+x1max     = 0.2
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+nx2       = 32               # azimuthal: 0.4 H
+x2min     = -0.2
+x2max     = 0.2
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 16               # vertical: 0.2 H
+x3min     = -0.1
+x3max     = 0.1
+ix3_bc    = periodic         # YJ14: periodic for gas and particles
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16               # 2 x 2 x 2 = 8 MeshBlocks
+nx2       = 16
+nx3       = 8
+
+<time>
+evolution  = dynamic
+integrator = imex2+          # required by the dust module's IMEX drag
+cfl_number = 0.3             # 3D shearing-box hydro rule (checkerboard above ~0.35)
+nlim       = -1
+tlim       = 628.3185307179586    # 100 P
+ndiag      = 10000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = wenoz
+rsolver     = roe              # not hlle: it suppresses the SI here (see header)
+
+<hydro_srcterms>
+const_accel     = true       # radial pressure-gradient mimic, gas only
+const_accel_val = 0.1        # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+stratified = true            # -Omega^2 z on gas and particles
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 1.0          # N_p = Nx Ny Nz = 16384 (YJ14)
+
+<dust>
+coupling      = imex
+shear_fold    = true         # fold ghost deposits across the shear-periodic x1 faces
+shear_remap   = plm
+nspecies      = 1
+taus_1        = 0.3          # YJ14: pi/10
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+dt_transport  = relative
+dt_block_safety = 0.5
+drag_solver   = local        # required with shear-periodic x1
+
+<problem>
+pgen_name   = streaming_strat
+rho0        = 1.0            # midplane gas density
+etavk       = 0.05           # Pi c_s
+dust_Z      = 0.02           # Sigma_p/Sigma_g, Sigma_g = sqrt(2 pi) H rho0
+dust_hz     = 0.0            # <= 0: uniform in z (YJ14)
+gas_vy0     = 0.0            # YJ14: gas at rest in the shearing frame
+random_seed = 1
+
+<output1>
+file_type  = hst
+dt         = 0.06283185307179586   # 0.01 P
+data_format = %.14e
+
+<output2>
+file_type  = phst                  # max PM dust density, sig_z = particle scale height
+dt         = 0.06283185307179586   # 0.01 P
+
+<output3>
+file_type  = vtk                   # particle-mesh dust density
+variable   = dust_dpm
+dt         = 0.6283185307179586    # 0.1 P
+
+<output4>
+file_type  = vtk                   # gas primitives
+variable   = hydro_w
+dt         = 6.283185307179586     # 1 P
+
+<output5>
+file_type  = pvtk                  # all particles: positions, gid/ptag/species, velocities
+variable   = prtcl_all
+dt         = 6.283185307179586     # 1 P
+
+<output6>
+file_type  = rst
+dt         = 62.83185307179586     # 10 P

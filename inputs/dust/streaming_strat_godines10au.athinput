@@ -1,0 +1,133 @@
+# AthenaK input file: the 10 au polydisperse stratified streaming-instability model of
+# Godines et al. (2026, ApJ 997, 192; Table 1), WITHOUT self-gravity, as the base of a
+# resolution study of the (sub)mm filling factor.  Their box is (0.2H)^3 at 256^3 with
+# 1e6 particles, 100 P; this file is the 64^3 test (320/H) at 1 particle per cell.
+#
+# Units Omega = c_s = rho0 = 1, so H = 1 and P = 2 pi.  Four species (grain radii 12,
+# 3.6, 1.2, 0.36 mm at 10 au) with the protoRT Stokes numbers, equal mass each:
+# Z = Sigma_p/Sigma_g = 0.03 in total with Sigma_g = sqrt(2 pi) H rho0 (full disk column),
+# i.e. Z_s = 0.0075 per species and a dust/gas mass ratio of 0.377 inside the box.
+# Pi = 0.0545: the gas feels a_x = 2 Omega Pi c_s = 0.109 (<hydro_srcterms>/const_accel);
+# gas and particles feel -Omega^2 z (<shearing_box>/stratified = true).
+#
+# Initial condition (Athena-C par_strat3d, ipert = 1 style): particles in a Gaussian layer
+# of width 0.02 H, uniform in (x,y), at rest (Keplerian); gas in hydrostatic equilibrium
+# at the dust-free equilibrium velocity u_y = -Pi c_s (no box-wide epicycle).  Periodic z
+# for gas and particles, shear-periodic x.
+#
+# Numerics: Roe (HLLE suppresses the stratified SI at low resolution -- see
+# active_projects/si_strat3d_tests/si_strat3d_tests.pdf), WENO-Z, imex2+, CFL 0.3, TSC.
+#
+# Run:   mpirun -np 8 build-si3d/src/athena -i inputs/dust/streaming_strat_godines10au.athinput
+
+<comment>
+problem   = Godines+26 10 au model (no self-gravity), (0.2H)^3, 64^3, 4 species, Z = 0.03, Pi = 0.0545
+
+<job>
+basename  = g10au
+
+<mesh>
+nghost    = 3                # wenoz needs 3
+nx1       = 64               # 0.2 H at 320/H
+x1min     = -0.1
+x1max     = 0.1
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+nx2       = 64
+x2min     = -0.1
+x2max     = 0.1
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 64
+x3min     = -0.1
+x3max     = 0.1
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 32               # 2 x 2 x 2 = 8 MeshBlocks
+nx2       = 32
+nx3       = 32
+
+<time>
+evolution  = dynamic
+integrator = imex2+          # required by the dust module's IMEX drag
+cfl_number = 0.3             # 3D shearing-box hydro rule
+nlim       = -1
+tlim       = 628.3185307179586    # 100 P
+ndiag      = 10000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = wenoz
+rsolver     = roe
+
+<hydro_srcterms>
+const_accel     = true       # radial pressure-gradient mimic, gas only
+const_accel_val = 0.109      # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+stratified = true            # -Omega^2 z on gas and particles
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 1.0          # 262144 particles, 65536 per species
+
+<dust>
+coupling      = imex
+shear_fold    = true
+shear_remap   = plm
+nspecies      = 4
+taus_1        = 0.34454218   # 12 mm    (protoRT, Godines+26 Table 1)
+taus_2        = 0.10336265   # 3.6 mm
+taus_3        = 0.03445422   # 1.2 mm
+taus_4        = 0.01033627   # 0.36 mm
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+dt_transport  = relative
+dt_block_safety = 0.5
+drag_solver   = local        # required with shear-periodic x1
+
+<problem>
+pgen_name   = streaming_strat
+rho0        = 1.0            # midplane gas density
+etavk       = 0.0545         # Pi c_s
+dust_Z      = 0.03           # Sigma_p/Sigma_g, split evenly over the 4 species
+dust_hz     = 0.02           # Gaussian initial layer, in H
+gas_vy0     = -0.0545        # dust-free equilibrium (-etavk)
+random_seed = 1
+
+<output1>
+file_type  = hst
+dt         = 0.06283185307179586   # 0.01 P
+data_format = %.14e
+
+<output2>
+file_type  = phst                  # max PM dust density, per-species scale heights
+dt         = 0.06283185307179586   # 0.01 P
+
+<output3>
+file_type  = vtk                   # particle-mesh dust density (all species)
+variable   = dust_dpm
+dt         = 3.141592653589793     # 0.5 P
+
+<output4>
+file_type  = pvtk                  # all particles (positions, species, velocities): per-species maps
+variable   = prtcl_all
+dt         = 6.283185307179586     # 1 P
+
+<output5>
+file_type  = vtk                   # gas primitives
+variable   = hydro_w
+dt         = 31.41592653589793     # 5 P
+
+<output6>
+file_type  = rst
+dt         = 62.83185307179586     # 10 P
