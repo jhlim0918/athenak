@@ -16,9 +16,9 @@
 #           scan), and with "big" 1024^3 on 64 (1.07e9 particles)
 #   proposal, the NHFP run (1.6H)^2 x 0.2H at 2560/H = 4096^2 x 512 shrunk in x and y at the
 #           same resolution and per-GPU load (16.8M cells, 8 blocks of 128^3 per GPU, 4 block
-#           layers in z): (0.4H)^2 on 32 GPUs and (0.8H)^2 on 128; with 512^3 = (0.2H)^2 on 8
-#           from the scan they form a weak-scaling series 8 -> 32 -> 128 GPUs, leaving a 4x
-#           step to the 512 GPUs of the full box.  Check the gh node limit (qlimits) first.
+#           layers in z): (0.4H)^2 on 32 GPUs and 0.8H x 0.4H on 64; with 512^3 = (0.2H)^2 on 8
+#           from the scan they form a weak-scaling series 8 -> 32 -> 64 GPUs.  Vista gh caps a
+#           job at 64 nodes (192 per user, 48 h), so 64 GPUs is the largest point possible.
 # ~45 GPU-hours for the default scan, ~20 more for "big", ~40 for "proposal".
 S=$HOME/athenak-multigrid/scripts/cluster/si_strat_scaling_gpu.slurm
 
@@ -38,8 +38,8 @@ case "${1:-scan}" in
     sub 1024 128 64 -t 00:45:00 ;;
   proposal)
     NXY=1024 NZ=512 MB=128 sbatch -J si3d_prop_g32 -N 32 -n 32 $S
-    # 2048^2 x 512 = 2^31 cells: at 1 particle per cell the count would overflow AthenaK's
-    # 32-bit particle total and tags (max 2^31 - 1), hence 0.99 per cell for this point
-    NXY=2048 NZ=512 MB=128 OVR="particles/ppc=0.99" sbatch -J si3d_prop_g128 -N 128 -n 128 $S ;;
-  *) echo "usage: $0 [check|scan|big|proposal]"; exit 1 ;;
+    NX=2048 NY=1024 NZ=512 MB=128 sbatch -J si3d_prop_g64 -N 64 -n 64 $S ;;
+  proposal64)   # the 64-GPU point alone
+    NX=2048 NY=1024 NZ=512 MB=128 sbatch -J si3d_prop_g64 -N 64 -n 64 $S ;;
+  *) echo "usage: $0 [check|scan|big|proposal|proposal64]"; exit 1 ;;
 esac
