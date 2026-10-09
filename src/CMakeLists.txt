@@ -154,6 +154,7 @@ add_executable(
         pgen/tests/shock_tube.cpp
         pgen/tests/shwave.cpp
         pgen/tests/streaming_linear.cpp
+        pgen/tests/streaming_strat.cpp
         pgen/tests/rad_beam.cpp
         pgen/tests/rad_linear_wave.cpp
         pgen/tests/z4c_boosted_puncture.cpp

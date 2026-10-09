@@ -1056,6 +1056,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     Shwave(pin, is_restart);
   } else if (pgen_fun_name.compare("streaming_linear") == 0) {
     StreamingLinear(pin, is_restart);
+  } else if (pgen_fun_name.compare("streaming_strat") == 0) {
+    StreamingStrat(pin, is_restart);
   } else if (pgen_fun_name.compare("z4c_boosted_puncture") == 0) {
     Z4cBoostedPuncture(pin, is_restart);
   } else if (pgen_fun_name.compare("z4c_linear_wave") == 0) {
