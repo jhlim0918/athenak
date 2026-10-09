@@ -37,6 +37,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -174,6 +175,12 @@ void ProblemGenerator::StreamingStrat(ParameterInput *pin, const bool restart) {
 #if MPI_PARALLEL_ENABLED
   MPI_Allreduce(MPI_IN_PLACE, &ntot, 1, MPI_INT64_T, MPI_SUM, MPI_COMM_WORLD);
 #endif
+  // the Mesh particle counts and the particle tags are 32-bit ints
+  if (ntot > static_cast<int64_t>(std::numeric_limits<int>::max())) {
+    Fatal(__FILE__, __LINE__, "streaming_strat: " + std::to_string(ntot) + " particles "
+          "exceed the 32-bit particle count and tags of AthenaK (2^31 - 1); lower "
+          "<particles>/ppc");
+  }
   // species s: ntot/nsp particles sharing the mass Z_s Sigma_g Lx Ly
   Real sigma_g = std::sqrt(2.0*M_PI)*hgas*rho0;
   DualArray1D<Real> mps("strat_mp", nsp);
