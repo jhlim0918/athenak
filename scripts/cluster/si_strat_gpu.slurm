@@ -19,7 +19,10 @@
 # writes rst/), or to run past tlim:   CONT=1 [TLIM=<code time>] sbatch ... (same directory).
 # Other inputs/resolutions: INPUT=<athinput> and/or XOVR="mesh/nx1=... meshblock/nx3=...".
 # NB a restart takes every parameter from the .rst; changes made to the input after the
-# start must be repeated in XOVR.  $SCRATCH is purged after 10 days without access: copy
+# start must be repeated in XOVR.  A particle restart needs the SAME number of ranks
+# (-N/-n) as the job that wrote it: the file stores one particle count per writing rank
+# and the reader assumes its own rank count (a mismatch dies with a misleading "particle
+# array widths ... differ" message).  $SCRATCH is purged after 10 days without access: copy
 # finished runs to $WORK or Ranch (scripts/cluster/archive_runs.slurm).
 #
 # Cost (pre-measurement): dt = 8.9e-4 at 320/H, so 100 P = 7.1e5 cycles; at 1e8
