@@ -661,11 +661,20 @@ TaskStatus ParticlesBoundaryValues::RecvAndUnpackPrtcls() {
     Kokkos::deep_copy(d_prefix, h_prefix);
   }
 
-  // increase size of particle arrays if needed
+  // grow the particle arrays only when the arrivals exceed their capacity, with 10%
+  // headroom and without initializing the new columns; they are never shrunk here, so
+  // extent(1) is a capacity and nprtcl_thispack the valid prefix (as for sendlist).
+  // Resizing to the exact count on every exchange reallocated, zeroed and freed the
+  // whole arrays each stage, which under the unified-memory GPU build (Vista) cost a
+  // page-faulting allocation of nrdata*npart Reals per exchange (2026-10-12 profile:
+  // 25x the GPU page faults and memsets at 1/14 of HBM bandwidth on 2 GPUs).
   int new_npart = pmy_part->nprtcl_thispack + (nprtcl_recv - nprtcl_send);
-  if (nprtcl_recv > nprtcl_send) {
-    Kokkos::resize(pmy_part->prtcl_idata, pmy_part->nidata, new_npart);
-    Kokkos::resize(pmy_part->prtcl_rdata, pmy_part->nrdata, new_npart);
+  if (new_npart > static_cast<int>(pmy_part->prtcl_rdata.extent(1))) {
+    int capacity = new_npart + new_npart/10 + 64;
+    Kokkos::resize(Kokkos::WithoutInitializing, pmy_part->prtcl_idata,
+                   pmy_part->nidata, capacity);
+    Kokkos::resize(Kokkos::WithoutInitializing, pmy_part->prtcl_rdata,
+                   pmy_part->nrdata, capacity);
   }
 
   // check that particle communications have all completed
@@ -726,30 +735,47 @@ TaskStatus ParticlesBoundaryValues::RecvAndUnpackPrtcls() {
   // remaining holes
   int nremain = nprtcl_send - nprtcl_recv;
   if (nremain > 0) {
-    int &npart = pmy_part->nprtcl_thispack;
+    int npart = pmy_part->nprtcl_thispack;
+    // pair each remaining hole with a live particle from the end of the arrays (the same
+    // walk as before: tail particles in descending order into holes in ascending
+    // order), on the host, then move them all in one kernel -- not one deep_copy each
+    if (static_cast<int>(fill_dst.extent(0)) < nremain) {
+      Kokkos::realloc(fill_dst, nremain);
+      Kokkos::realloc(fill_src, nremain);
+    }
+    int npair = 0;
     int i_last_hole = nprtcl_send-1;
     int i_next_hole = nprtcl_recv;
     for (int n=1; n<=nremain; ++n) {
       int nend = npart-n;
       if (nend > sendlist.h_view(i_last_hole).prtcl_indx) {
-        // copy particle from end into hole
-        int next_hole = sendlist.h_view(i_next_hole).prtcl_indx;
-        auto rdest = Kokkos::subview(pmy_part->prtcl_rdata, Kokkos::ALL, next_hole);
-        auto rsrc  = Kokkos::subview(pmy_part->prtcl_rdata, Kokkos::ALL, nend);
-        Kokkos::deep_copy(rdest, rsrc);
-        auto idest = Kokkos::subview(pmy_part->prtcl_idata, Kokkos::ALL, next_hole);
-        auto isrc  = Kokkos::subview(pmy_part->prtcl_idata, Kokkos::ALL, nend);
-        Kokkos::deep_copy(idest, isrc);
+        fill_dst.h_view(npair) = sendlist.h_view(i_next_hole).prtcl_indx;
+        fill_src.h_view(npair) = nend;
+        ++npair;
         i_next_hole += 1;
       } else {
         // this index contains a hole, so do nothing except find new index of last hole
         i_last_hole -= 1;
       }
     }
-
-    // shrink size of particle data arrays
-    Kokkos::resize(pmy_part->prtcl_idata, pmy_part->nidata, new_npart);
-    Kokkos::resize(pmy_part->prtcl_rdata, pmy_part->nrdata, new_npart);
+    if (npair > 0) {
+      auto pre = std::make_pair(0, npair);
+      Kokkos::deep_copy(Kokkos::subview(fill_dst.d_view, pre),
+                        Kokkos::subview(fill_dst.h_view, pre));
+      Kokkos::deep_copy(Kokkos::subview(fill_src.d_view, pre),
+                        Kokkos::subview(fill_src.h_view, pre));
+      int nrdata = pmy_part->nrdata;
+      int nidata = pmy_part->nidata;
+      auto &pr = pmy_part->prtcl_rdata;
+      auto &pi = pmy_part->prtcl_idata;
+      auto dst = fill_dst.d_view;
+      auto src = fill_src.d_view;
+      par_for("pfill",DevExeSpace(),0,(npair-1), KOKKOS_LAMBDA(const int n) {
+        int d = dst(n), s = src(n);
+        for (int i=0; i<nidata; ++i) {pi(i,d) = pi(i,s);}
+        for (int i=0; i<nrdata; ++i) {pr(i,d) = pr(i,s);}
+      });
+    }
   }
 
   // Update nparticles_thisrank.  Update cost array (use npart_thismb[nmb]?)
@@ -768,8 +794,10 @@ TaskStatus ParticlesBoundaryValues::RecvAndUnpackPrtcls() {
 TaskStatus ParticlesBoundaryValues::ClearPrtclSend() {
 #if MPI_PARALLEL_ENABLED
   bool no_errors=true;
-  // wait for all non-blocking sends for vars to finish before continuing
-  for (int n=0; n<nsends; ++n) {
+  // wait for all non-blocking sends for vars to finish before continuing.  The loop
+  // runs over the requests actually posted (the vectors are empty when no migration
+  // has happened this stage), never over a stale count.
+  for (std::size_t n=0; n<rsend_req.size() && n<isend_req.size(); ++n) {
     int ierr = MPI_Wait(&(rsend_req[n]), MPI_STATUS_IGNORE);
     if (ierr != MPI_SUCCESS) {no_errors=false;}
     ierr = MPI_Wait(&(isend_req[n]), MPI_STATUS_IGNORE);
@@ -795,8 +823,9 @@ TaskStatus ParticlesBoundaryValues::ClearPrtclSend() {
 TaskStatus ParticlesBoundaryValues::ClearPrtclRecv() {
 #if MPI_PARALLEL_ENABLED
   bool no_errors=true;
-  // wait for all non-blocking receives to finish before continuing
-  for (int n=0; n<nrecvs; ++n) {
+  // wait for all non-blocking receives to finish before continuing (over the requests
+  // actually posted, see ClearPrtclSend)
+  for (std::size_t n=0; n<rrecv_req.size() && n<irecv_req.size(); ++n) {
     int ierr = MPI_Wait(&(rrecv_req[n]), MPI_STATUS_IGNORE);
     if (ierr != MPI_SUCCESS) {no_errors=false;}
     ierr = MPI_Wait(&(irecv_req[n]), MPI_STATUS_IGNORE);

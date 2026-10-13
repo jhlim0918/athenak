@@ -268,8 +268,8 @@ void DustNSHRefine(MeshBlockPack *pmbp) {
       }
     }
   }
-  refine_flag.template modify<HostMemSpace>();
-  refine_flag.template sync<DevExeSpace>();
+  refine_flag.modify_host();
+  refine_flag.sync_device();
 }
 } // namespace
 
@@ -466,8 +466,8 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
     int rd = r*r*(three_d ? r : 1);
     lat_off.h_view(m+1) = lat_off.h_view(m) + ppc_int*ncells*rd;
   }
-  lat_r.template modify<HostMemSpace>();  lat_r.template sync<DevExeSpace>();
-  lat_off.template modify<HostMemSpace>(); lat_off.template sync<DevExeSpace>();
+  lat_r.modify_host();  lat_r.sync_device();
+  lat_off.modify_host(); lat_off.sync_device();
   if (lattice_finest) {
     npart = lat_off.h_view(nmb);
     Kokkos::realloc(ppar->prtcl_rdata, ppar->nrdata, std::max(npart, 1));
@@ -515,8 +515,8 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
     spdat.h_view(s,1) = vp[s];
     spdat.h_view(s,2) = eps[s]*rho0*static_cast<Real>(nspec)/ppc;
   }
-  spdat.template modify<HostMemSpace>();
-  spdat.template sync<DevExeSpace>();
+  spdat.modify_host();
+  spdat.sync_device();
 
   auto lat_r_ = lat_r.d_view;
   auto lat_off_ = lat_off.d_view;

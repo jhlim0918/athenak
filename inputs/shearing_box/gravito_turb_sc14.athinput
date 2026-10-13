@@ -109,6 +109,10 @@ dfloor_ic = 1.0e-4    # initial-condition halo floor
 pert_amp  = 0.1       # velocity perturbations up to pert_amp*cs0 ...
 pert_zmax = 2.0       # ... for |z| < pert_zmax
 pert_seed = 1
+mass_renorm = false   # true: rescale the gas to a fixed total mass once per step
+                      # (Booth & Clarke 2019; replaces what the outflow faces drain).
+                      # The target is mass_renorm_target (add it to pin a value), else
+                      # the mass at the start of the run; history column dm_renorm.
 
 <output1>
 file_type = hst

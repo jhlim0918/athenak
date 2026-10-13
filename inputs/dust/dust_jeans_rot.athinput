@@ -1,0 +1,138 @@
+# AthenaK input file: the ROTATING dusty Jeans instability -- the axisymmetric (ky = 0)
+# gas + superparticle-dust + Poisson mode in an unstratified shearing box (dust track,
+# the rotating-frame validation of multigrid + particles).  Uniform isothermal gas (cs =
+# rho0 = 1) and a dust lattice, Omega = 1, q = 3/2 (kappa = Omega), perturbed along x
+# with the eigenmode of the (3N+3) linear system (Coriolis + shear + drag + self-gravity;
+# scripts/analysis/dust_jeans.py, --omega branch).  It contains Chandrasekhar's rotating
+# Jeans problem (gas only, s^2 = 4 pi G rho0 - kappa^2 - cs^2 k^2) and, when the gas is
+# stable (4 pi G rho0 < kappa^2), the SECULAR gravitational instability of the dust (Ward
+# 2000; Youdin 2005, 2011): s = 4 pi G rho_d ts/(1 + kappa^2 ts^2) against a frozen gas,
+# k-independent in 3D.  four_pi_G is given explicitly (no Jeans-length normalization).
+# ALL mode parameters come from
+#     scripts/analysis/dust_jeans.py eig --omega 1 --fpg 2 --k 0.6 --eps 1 --ts 1 [--nx1 --ny]
+# appended to the command line (or --input this --out run.athinput); the values below are
+# a placeholder.  Measure with `dust_jeans.py fit <user.hst>` (sigma and Im s).
+# For a ky = 0 mode the shear-periodic potential reduces to the periodic one, so this
+# exercises the rotating-frame source terms of gas and particles together with drag and
+# gravity, and the particles' crossings of the shear-periodic faces -- not the sheared
+# potential itself (that is the swing problem).  Multigrid needs cubic cells and two
+# MeshBlocks across every direction.  gravity/solver=fft is the cross-check.
+
+<comment>
+problem   = rotating dusty Jeans instability (shearing box), superparticle dust
+
+<job>
+basename  = jeansrot
+
+<mesh>
+nghost    = 2
+nx1       = 128
+x1min     = -5.235987755982988   # Lx = 2 pi / k, k = 0.6 (edge shear 1.5 Omega Lx/2 = 7.85 cs)
+x1max     = 5.235987755982988
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+nx2       = 32
+x2min     = -2.617993877991494   # Lx/4 = 32 cells of Lx/128: cubic
+x2max     = 2.617993877991494
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 32
+x3min     = -2.617993877991494
+x3max     = 2.617993877991494
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic
+integrator = imex2+   # coupling = imex; rk2 with coupling = pc2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 7.5
+ndiag      = 100
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = plm
+rsolver     = hlle
+
+<gravity>
+solver    = multigrid     # fft | multigrid (periodic: the mean is subtracted = Jeans swindle)
+four_pi_G = 2.0       # dynamical: 4 pi G rho0 (1+eps0) > kappa^2 + cs^2 k^2; 0.5 for the secular regime
+threshold = -1.0
+niteration = 12
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<shearing_box>
+qshear    = 1.5           # Keplerian: kappa^2 = 2(2-q) Omega^2 = Omega^2
+omega0    = 1.0           # the unit of time
+
+<hydro_srcterms>
+self_gravity = true
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 1         # = nspecies
+
+<dust>
+coupling      = imex
+nspecies      = 1
+taus_1        = 1.0
+taus_2        = 1.0
+taus_3        = 1.0
+back_reaction = true
+deposit       = tsc
+gravity       = true
+gravity_source = true
+gravity_force  = true
+dt_cfl        = 0.5
+gamma_switch  = false
+shear_fold    = true      # fold ghost deposits across the shear-periodic x1 faces
+shear_remap   = plm
+dt_transport  = relative  # cell limit on the shear-subtracted velocity
+dt_block_safety = 0.5
+
+<problem>
+pgen_name = dust_jeans
+user_hist = true
+rho0      = 1.0
+kmode     = 1
+rho_amp   = 1.0e-4
+vg_amp    = 0.0
+vg_phase  = 0.0
+vgy_amp   = 0.0           # azimuthal (peculiar) velocity perturbation of the gas
+vgy_phase = 0.0
+eps_1     = 0.01
+rhod_amp_1 = 0.0
+rhod_phase_1 = 0.0
+vd_amp_1  = 0.0
+vd_phase_1 = 0.0
+vdy_amp_1 = 0.0
+vdy_phase_1 = 0.0
+eps_2     = 0.01
+rhod_amp_2 = 0.0
+rhod_phase_2 = 0.0
+vd_amp_2  = 0.0
+vd_phase_2 = 0.0
+vdy_amp_2 = 0.0
+vdy_phase_2 = 0.0
+eps_3     = 0.01
+rhod_amp_3 = 0.0
+rhod_phase_3 = 0.0
+vd_amp_3  = 0.0
+vd_phase_3 = 0.0
+vdy_amp_3 = 0.0
+vdy_phase_3 = 0.0
+
+<output1>
+file_type  = hst
+dt         = 0.05
+data_format = %.14e

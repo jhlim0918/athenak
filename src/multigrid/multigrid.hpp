@@ -468,7 +468,6 @@ class MultigridDriver {
   Multigrid* FindMultigrid(int tgid);
   // shear-periodic x1 support (Phase 1: uniform grid; Phase 2b: boundary annuli)
   Real ComputeShearQomt(Real time) const;
-  void RootShearBoundaryX1();
   void FillShearOctetGhosts(int lev, bool folddata);
   // driver-independent task-list runner (MG tasks never use their Driver* argument,
   // so this also supports static solves from pgens where no Driver exists yet)
@@ -523,17 +522,40 @@ class MultigridDriver {
   DvceArray3D<Real> *slab_planes_ = nullptr;   // [p](2, ny_p+2*ngh, nx_p+2*ngh)
   DvceArray2D<int> slab_lloc_;           // per-block root-level (lx1,lx2); -1 if unused
   DvceArray2D<int> slab_goffs_;          // per-block (gox,goy,goz,lev) for the gather
-  DvceArray2D<Real> slab_dens_;          // (ny,nx) padded root plane of 4piG*rho
-  DvceArray2D<Kokkos::complex<Real>> slab_zin_, slab_zout_;  // (ny,nx) FFT slice bufs
+  // the batch -> block lists of ComputeSlabPlanes, rebuilt only when the mesh changes
+  // (no per-solve allocation: frees of registered memory are what stale InfiniBand
+  // registration caches trip on)
+  std::vector<int> slab_batches_, slab_batch_off_;
+  DvceArray1D<int> slab_batch_blk_;
+  int slab_batch_nmb_ = -1;
+  int slab_batch_seq_ = -1;
+  // Every transform runs along the LAST axis of its buffer, so kokkos-fft never has to
+  // transpose -- a transpose makes it allocate two work arrays the size of the whole
+  // stack inside each execute() call, which on a CPU node (every rank holds the whole
+  // horizontal plane, ~100 ranks to a node) exhausts the node's memory outright.  The
+  // y-transform therefore uses the x-major buffers below and the kernel between the two
+  // transforms, which rewrites the stack anyway to apply the shear phase, swaps i and j.
+  DvceArray2D<Kokkos::complex<Real>> slab_zin_, slab_zout_;    // (ny,nx) FFT slice bufs
+  DvceArray2D<Kokkos::complex<Real>> slab_zint_, slab_zoutt_;  // (nx,ny), for the y FFT
+  int slab_batch_ = 1;                   // planes per batched forward transform
+  DvceArray3D<Real> slab_dens3_;         // (batch,nx,ny) gathered planes of a batch
+  DvceArray3D<Kokkos::complex<Real>> slab_zin3_, slab_zout3_;    // (batch,ny,nx) bufs
+  DvceArray3D<Kokkos::complex<Real>> slab_zin3t_, slab_zout3t_;  // (batch,nx,ny) bufs
   DvceArray3D<Kokkos::complex<Real>> slab_zplanes_;  // (2,ny,nx) face spectra accum
   DvceArray2D<Real> slab_mu_, slab_wt_;  // (ny,nx) per-mode decay factor and weight
   struct MGSlabFFTPlans;                 // KokkosFFT plans; defined in multigrid_slab.cpp
   MGSlabFFTPlans *slab_plans_ = nullptr;
   void AllocateSlabPlanes();             // pyramid + offset tables; PrepareForAMR-safe
   void CheckSlabBlockLevels();           // fatal unless x3-boundary blocks at root level
+  void FreeSlabPlanes();                 // release plans + pyramid (dtor)
+
+ public:
+  // Kernel-enclosing members must be public: nvcc rejects an extended device lambda
+  // whose enclosing member function has private or protected access.
+  void RootShearBoundaryX1();
   void ComputeSlabPlanes(const DvceArray5D<Real> &u0, const int ivar, Real four_pi_G,
                          Real qomt);
-  void FreeSlabPlanes();                 // release plans + pyramid (dtor)
+ protected:
 
   // Source masking (zero source outside mask_radius_)
   Real mask_radius_;

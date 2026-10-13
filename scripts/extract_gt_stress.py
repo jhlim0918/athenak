@@ -63,6 +63,16 @@ def _init_worker(repo):
     _READ = _load_reader(repo)
 
 
+def _header_time(path):
+    """Simulation time from a .bin file's small text header, without reading data."""
+    with open(path, "rb") as fp:
+        head = fp.read(4096).decode("latin-1")
+    for line in head.splitlines():
+        if line.strip().startswith("time"):
+            return float(line.split("=")[1])
+    raise RuntimeError(f"no time= line in the header of {path}")
+
+
 def header_get(header, block, key):
     cur = "<none>"
     for line in header:
@@ -191,13 +201,19 @@ def main():
     root = args.run_dir.rstrip("/")
     bindir = root if os.path.basename(root) == "bin" else os.path.join(root, "bin")
     hyd = sorted(glob(os.path.join(bindir, "*.hydro_w.*.bin")))[::args.stride]
+    # pair by TIME, not by index: the two outputs may run at different cadences
+    # (e.g. hydro_w every 0.25/Omega for a movie, grav_phi every 2/Omega), in which
+    # case equal file numbers are different instants.  Times come from the header.
+    phi_by_time = {}
+    for pth in glob(os.path.join(bindir, "*.grav_phi.*.bin")):
+        phi_by_time[round(_header_time(pth), 6)] = pth
     pairs = []
     for f in hyd:
-        p = f.replace(".hydro_w.", ".grav_phi.")
-        if os.path.isfile(p):
-            pairs.append((f, p))
+        key = round(_header_time(f), 6)
+        if key in phi_by_time:
+            pairs.append((f, phi_by_time[key]))
         else:
-            print(f"  skipping {os.path.basename(f)}: no grav_phi sibling")
+            print(f"  skipping {os.path.basename(f)} (t={key}): no grav_phi at that time")
     if not pairs:
         raise SystemExit(f"no hydro_w/grav_phi pairs in {bindir}")
     out = args.out or os.path.join(os.path.dirname(bindir) or ".", "gt_stress.npz")

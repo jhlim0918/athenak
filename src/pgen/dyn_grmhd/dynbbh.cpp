@@ -1044,8 +1044,8 @@ void RefineAlphaMin(MeshBlockPack *pmbp) {
   });
 
   // sync host and device
-  refine_flag.template modify<DevExeSpace>();
-  refine_flag.template sync<HostMemSpace>();
+  refine_flag.modify_device();
+  refine_flag.sync_host();
 }
 
 void RefineTracker(MeshBlockPack *pmbp) {
@@ -1115,8 +1115,8 @@ void RefineTracker(MeshBlockPack *pmbp) {
   }
 
   // sync host and device
-  refine_flag.template modify<HostMemSpace>();
-  refine_flag.template sync<DevExeSpace>();
+  refine_flag.modify_host();
+  refine_flag.sync_device();
 }
 
 } // namespace

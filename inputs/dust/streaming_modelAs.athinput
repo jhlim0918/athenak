@@ -1,12 +1,13 @@
 # AthenaK input file: Yang & Zhu (2021, MNRAS 508, 5538) Model As, SINGLE SPECIES, on a
-# UNIFORM grid, seeded with a linear streaming-instability eigenmode.  This is the exact
-# twin of the Athena (C) run tst/particle/athinput.streaming2d_modelAs, so the two codes
-# can be compared from identical initial conditions.
+# UNIFORM grid, seeded with a linear streaming-instability eigenmode.  Twin of the Athena
+# (C) run tst/particle/athinput.streaming2d_modelAs -- the same seeded mode, box and
+# resolution, so the two codes start from identical initial conditions -- except that
+# this file uses 1 particle per cell and CFL 0.25 where the Athena run used 4 and 0.4.
 #
 # Model As is the slow-growth case: tau_s in [1e-3, 0.1] with eps = 0.2.  The
 # single-species representative is the LINEAR centre of that bin (Zhu & Yang 2021 Table 1,
 # Nsp = 1, q = -3.5): tau_s = (0.001 + 0.1)/2 = 0.0505.  Box 0.2 H = 4 eta r square at
-# 256^2, 4 particles per cell -- Model As's own resolution.
+# 256^2 -- Model As's own resolution; 1 particle per cell (Model As and the Athena run: 4).
 #
 # Units Omega = c_s = rho0 = 1, eta v_K = 0.05 c_s (so eta r = 0.05 H); the radial
 # pressure gradient acts on the gas alone as a_x = 2*Omega*eta v_K = 0.1.  2D r-z: x1 =
@@ -26,25 +27,31 @@
 # particle mass distribution and of the gas density and radial momentum onto the seeded
 # (k_x, k_z) mode, so the growth rate is a linear regression of ln|amplitude| -- the
 # mesh-independent measure, and the one that rejects the grid-scale sideband.  THE
-# HISTORY IS THE LINEAR DIAGNOSTIC, NOT THE DUMPS: AthenaK writes mesh outputs (bin and
-# vtk alike) as float32, whose relative resolution is 1.2e-7, while the seeded mode
-# starts at drho_p/rho_p = 2e-7 and drho_g/rho_g ~ 6e-12.  Nothing of the mode is
-# recoverable from a dump until it has grown by some three orders of magnitude (at the
-# ~0.0026 rate Athena measures at this resolution, around t = 300-400 P); the .user.hst
-# columns are written in %.14e and are exact throughout.  (This is the same limitation
-# the Athena C runs hit, and why vtk_dbl was added there; AthenaK has no double-precision
-# mesh output.)  The dumps are for the saturated morphology, where amplitudes are O(1).
+# HISTORY IS THE LINEAR DIAGNOSTIC: its columns are written in %.14e and are exact
+# throughout.  The vtk dumps below are float32 as written, whose relative resolution is
+# 1.2e-7, while the seeded mode starts at drho_p/rho_p = 2e-7 and drho_g/rho_g ~ 6e-12:
+# nothing of the mode is recoverable from a float32 dump until it has grown by some three
+# orders of magnitude (at the ~0.0026 rate Athena measures at this resolution, around
+# t = 300-400 P).  For the linear phase, set vtk_dbl = true in the vtk output blocks
+# (float64 data, AthenaK 3d421569; the same option as Athena C's vtk_dbl) --
+# si_modelAs_wenoz.slurm does this in its run-local copy of this file.  The command line
+# cannot add it (only parameters already in the file can be overridden).  bin dumps stay
+# float32.  As written, the dumps are for the saturated morphology, where amplitudes are
+# O(1).
 #
 # WHAT TO EXPECT.  At 256^2 this box gives ~43 cells per wavelength of the seeded mode,
 # which is marginal for a second-order scheme: in Athena the same setup grew at
 # s = 0.0026-0.0029, i.e. 36-40% of the analytic 0.0071294, reaching saturation only at
 # t ~ 1000 P, while 512^2 recovered 95%.  A slow measured rate here is therefore the
 # expected code-to-code agreement, not a defect; for a converged growth rate run the
-# same file with mesh/nx1 = mesh/nx2 = 512 (and, if the sideband is to stay below the
-# mode, particles/ppc = 4 kept).
+# same file with mesh/nx1 = mesh/nx2 = 512 (and, if the grid-scale sideband is to stay
+# below the mode, particles/ppc = 4: 1 ppc lets it grow ~1.5x faster).
 #
-# Vista: scripts/cluster/si_modelAs.slurm (1 node, 64 ranks).  tlim = 1000 P needs
-# several 48 h jobs; the script chains restarts, written every 50 P.
+# Vista: scripts/cluster/si_modelAs.slurm (1 node, 128 ranks; this file as written) and
+# scripts/cluster/si_modelAs_wenoz.slurm (WENO-Z + HLLE + IMEX2+, CFL 0.25, 1 ppc, float64
+# dumps -- the scheme that passed the 2026-09 linear tests; ~6-18 h to 1000 P).  Restarts
+# are written every 50 P; si_modelAs_wenoz.slurm continues from the newest one and
+# resubmits itself, si_modelAs.slurm needs its launch line switched to -r by hand.
 
 <comment>
 problem   = YZ21 Model As (Nsp = 1), seeded (6,6) eigenmode, uniform 256^2
@@ -53,7 +60,7 @@ problem   = YZ21 Model As (Nsp = 1), seeded (6,6) eigenmode, uniform 256^2
 basename  = si_modelAs
 
 <mesh>
-nghost    = 3             # ppmx needs 3
+nghost    = 3             # wenoz (and ppmx) need 3
 nx1       = 256           # radial
 x1min     = -0.1          # 0.2 H = 4 eta r
 x1max     = 0.1
@@ -78,7 +85,7 @@ nx3       = 1
 <time>
 evolution  = dynamic
 integrator = imex2+
-cfl_number = 0.3
+cfl_number = 0.25         # WENO-Z + rk2 is unstable at 0.4 (linB); 0.25-0.3 is safe
 nlim       = -1
 tlim       = 6283.185307179586   # 1000 P  (P = 2 pi / Omega)
 ndiag      = 10000
@@ -86,8 +93,8 @@ ndiag      = 10000
 <hydro>
 eos         = isothermal
 iso_sound_speed = 1.0
-reconstruct = ppmx        # Athena C: --with-order=3p
-rsolver     = roe
+reconstruct = wenoz       # WENO-Z: 100% of the linB rate at CFL <= 0.3 (ppmx stalled)
+rsolver     = hlle        # roe let a grid-scale gas sideband stall the slow linB/ZY21 modes
 
 <hydro_srcterms>
 const_accel     = true
@@ -101,7 +108,7 @@ omega0    = 1.0
 <particles>
 particle_type = dust
 pusher        = imex_dust
-ppc           = 4.0       # 2x2 quiet-start sublattice per cell -> 262144 particles
+ppc           = 1.0       # 1 particle per cell -> 65536 particles (4 for a quieter sideband)
 
 <dust>
 coupling      = imex

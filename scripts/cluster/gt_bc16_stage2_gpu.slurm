@@ -1,0 +1,72 @@
+#!/bin/bash
+#SBATCH -J gt16_dust
+#SBATCH -p gh
+#SBATCH -N 16                    # one rank per GH200.  8 nodes is killed (job 1012936,
+#SBATCH -n 16                    #   exit 137: the host OOM killer -- under the unified-
+                                 #   memory build, pages that do not fit in HBM spill to
+                                 #   the Grace LPDDR, and the job dies when both are full).
+                                 #   Measured footprint with dust: ~850 B per ghost-padded
+                                 #   cell (gtb_bench_gh4, 2026-09-27: 36 GB per GH200 for
+                                 #   4.4e7 padded cells, +1 GB in the first step), ~540 B
+                                 #   gas-only -- NOT the 16 dust components alone, which are
+                                 #   128 B of it.  The 16H box has 25600 x 38^3 = 1.4e9
+                                 #   padded cells: ~150 GB per rank at 8, ~75 GB at 16,
+                                 #   ~38 GB at 32 (all divide 25600 evenly).  Particles are
+                                 #   a small part: 1e8 is a few GB in total.
+#SBATCH -t 24:00:00
+#SBATCH -A AST25015
+#SBATCH -o slurm.%j.out
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=jay.lim1@unlv.edu
+
+# STAGE 2 of the 16H box: restart from a stage-1 dump and insert the St = 0.3 layer with
+# the radial pressure gradient on (inputs/shearing_box/gravito_turb_bc16_dust.athinput).
+# tlim in the add-on is ABSOLUTE: pass the target time.  Submit from the run directory:
+#     mkdir -p $SCRATCH/gt16/dust && cd $SCRATCH/gt16/dust && \
+#       RST=$SCRATCH/gt16/stage1/rst/gt16.00005.rst TLIM=100 sbatch $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage2_gpu.slurm
+# RST defaults to the stage-1 directory's last dump; pick the dump after the first burst
+# from the stage-1 history (Q at the bottom of a cooling phase).  Extra overrides in OVR.
+# To continue this run from its own dump: RST=<own dump> and OVR="particles/restart_insert=false"
+# (and ADDON= empty).  UNTESTED on GPUs as of 2026-09-15 (see gt_bc16_stage1_gpu.slurm).
+
+ATHENAK=$HOME/athenak-multigrid
+STAGE1=${STAGE1:-$SCRATCH/gt16/stage1}
+RST=${RST:-$(ls $STAGE1/rst/*.rst | tail -1)}
+ADDON=${ADDON-$ATHENAK/inputs/shearing_box/gravito_turb_bc16_dust.athinput}
+TLIM=${TLIM:-100}
+OVR=${OVR:-}
+BIN=${BIN:-$ATHENAK/build-gpu/src/athena}
+if [ -n "$ADDON" ]; then ADD=(-i "$ADDON"); else ADD=(); fi
+
+module load nvidia/24.7 openmpi/5.0.5_nvc249
+
+# see gt_bc16_stage1_gpu.slurm: this MPI is not CUDA-aware, so the binary must be the
+# unified-memory build; UCX must not cache the memory type of a managed pointer
+export UCX_MEMTYPE_CACHE=n
+
+
+cd $SLURM_SUBMIT_DIR
+{
+  echo "# job $SLURM_JOB_ID on $SLURM_JOB_NUM_NODES node(s): $SLURM_JOB_NODELIST, $SLURM_NTASKS ranks (GPU)"
+  echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD); restart $RST; addon $ADDON; tlim $TLIM $OVR"
+} >> run.log
+
+# Stop the binary ~15 min before SLURM kills the job, at whatever -t the job actually got.
+# This used to be hardcoded at 23:45:00, so `sbatch -t 48:00:00` still stopped at 23:45 and
+# the run died mid-flight without its own restart dump.
+tleft() {
+  local end="${SLURM_JOB_END_TIME:-}"
+  if [ -z "$end" ] && [ -n "${SLURM_JOB_ID:-}" ]; then
+    end=$(scontrol show job "$SLURM_JOB_ID" 2>/dev/null \
+          | tr ' ' '\n' | sed -n 's/^EndTime=//p' | head -1)
+    [ -n "$end" ] && end=$(date -d "$end" +%s 2>/dev/null)
+  fi
+  [ -z "$end" ] && return 1
+  local left=$(( end - $(date +%s) - 900 ))
+  [ "$left" -le 0 ] && return 1
+  printf '%d:%02d:%02d' $((left/3600)) $(((left%3600)/60)) $((left%60))
+}
+ATIME=$(tleft) || ATIME=23:45:00
+echo "# athena wall-clock limit: $ATIME" >> run.log
+
+ibrun $BIN -r $RST "${ADD[@]}" -d ./ -t $ATIME time/tlim=$TLIM $OVR >> run.log 2>&1

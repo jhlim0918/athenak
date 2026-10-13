@@ -1,0 +1,118 @@
+# AthenaK input file: the dusty Jeans instability (Krapp et al. 2024, ApJS 271, 7,
+# sec. 3.5) with superparticle dust -- the linear validation of multigrid + particles
+# (dust track).  Uniform isothermal gas (cs = rho0 = 1) and a dust lattice in a periodic
+# box, perturbed along x with the fastest-growing eigenmode; four_pi_G is set so that the
+# dusty Jeans wavenumber kJ = 1 and k is k/kJ.  ALL mode parameters (four_pi_G, the mesh
+# and box, the amplitudes and phases, species, tlim) come from
+#     scripts/analysis/dust_jeans.py eig --k 0.6 --eps 0.01 --ts 1 [--nx1 128 --ny 32]
+# whose output line is appended to the command line (nx1 cells per wavelength, ny = nz
+# transverse cells, cubic cells); the values below are a k = 0.6, eps = 0.01, taus = 1
+# placeholder.  For many species (Krapp's fig. 6: --nspec 128) let the script write a
+# complete input instead (--input this --out run.athinput), since the command line cannot
+# add keys absent from the file.  Measure sigma with `dust_jeans.py fit <user.hst>`.
+# Multigrid needs cubic cells and two MeshBlocks across every direction (16 cells per
+# wavelength: --ny 16 with meshblock/nx1=nx2=nx3=8).  gravity/solver=fft is the
+# cross-check; dust/back_reaction=false must give the gas-only rate.
+
+<comment>
+problem   = dusty Jeans instability, superparticle dust
+
+<job>
+basename  = jeans
+
+<mesh>
+nghost    = 2
+nx1       = 128
+x1min     = -5.235987755982988   # Lx = 2 pi / k, k = 0.6
+x1max     = 5.235987755982988
+ix1_bc    = periodic
+ox1_bc    = periodic
+nx2       = 32
+x2min     = -2.617993877991494   # Lx/4 = 32 cells of Lx/128: cubic
+x2max     = 2.617993877991494
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 32
+x3min     = -2.617993877991494
+x3max     = 2.617993877991494
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic
+integrator = imex2+   # coupling = imex; rk2 with coupling = pc2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 7.5
+ndiag      = 100
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = plm
+rsolver     = hlle
+
+<gravity>
+solver    = multigrid     # fft | multigrid (periodic: the mean is subtracted = Jeans swindle)
+four_pi_G = 0.9900990099009901   # 1/(1 + eps0): kJ = 1
+threshold = -1.0
+niteration = 12
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 1         # = nspecies
+
+<dust>
+coupling      = imex
+nspecies      = 1
+taus_1        = 1.0
+taus_2        = 1.0
+taus_3        = 1.0
+back_reaction = true
+deposit       = tsc
+gravity       = true
+gravity_source = true
+gravity_force  = true
+dt_cfl        = 0.5
+gamma_switch  = false
+
+<problem>
+pgen_name = dust_jeans
+user_hist = true
+rho0      = 1.0
+kmode     = 1
+rho_amp   = 1.0e-4
+vg_amp    = 0.0
+vg_phase  = 0.0
+eps_1     = 0.01
+rhod_amp_1 = 0.0
+rhod_phase_1 = 0.0
+vd_amp_1  = 0.0
+vd_phase_1 = 0.0
+eps_2     = 0.01
+rhod_amp_2 = 0.0
+rhod_phase_2 = 0.0
+vd_amp_2  = 0.0
+vd_phase_2 = 0.0
+eps_3     = 0.01
+rhod_amp_3 = 0.0
+rhod_phase_3 = 0.0
+vd_amp_3  = 0.0
+vd_phase_3 = 0.0
+
+<output1>
+file_type  = hst
+dt         = 0.05
+data_format = %.14e

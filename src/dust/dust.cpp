@@ -371,8 +371,8 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
     taus_max = std::max(taus_max, ts);
     taus_min = std::min(taus_min, ts);
   }
-  taus.template modify<HostMemSpace>();
-  taus.template sync<DevExeSpace>();
+  taus.modify_host();
+  taus.sync_device();
 
   // deposit scheme
   {
@@ -567,8 +567,8 @@ void DustGasDrag::SetRefinementFactors() {
     rfac.h_view(m) = multilevel ? (1 << (pmy_pack->pmesh->max_level - lev)) : 1;
     if (rfac.h_view(m) > 1) {any_coarse = true;}
   }
-  rfac.template modify<HostMemSpace>();
-  rfac.template sync<DevExeSpace>();
+  rfac.modify_host();
+  rfac.sync_device();
   // the additive exchanges restrict the image to each finer neighbour's level
   if (pbval_qp != nullptr) {pbval_qp->SetImageFactors(rfac);}
   if (pbval_dm != nullptr) {pbval_dm->SetImageFactors(rfac);}

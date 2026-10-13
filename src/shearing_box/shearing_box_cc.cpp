@@ -189,7 +189,8 @@ TaskStatus ShearingBoxCC::PackAndSendCC(DvceArray5D<Real> &a, ReconstructionMeth
             using Kokkos::ALL;
             auto send_ptr = subview(sendbuf[n].vars,m,jsrc[l],ALL,ALL,ALL);
             // create tag using GID of *receiving* MeshBlock
-            int tag = CreateBvals_MPI_Tag(tgid, ((n<<2) | l));
+            int tag = CreateBvals_MPI_Tag(tgid - pmy_pack->pmesh->gids_eachrank[trank],
+                                          ((n<<2) | l));
             int data_size = send_ptr.size();
             int ierr = MPI_Isend(send_ptr.data(), data_size, MPI_ATHENA_REAL, trank, tag,
                                  comm_sbox, &(sendbuf[n].vars_req[3*m + l]));
@@ -228,7 +229,8 @@ TaskStatus ShearingBoxCC::PackAndSendCC(DvceArray5D<Real> &a, ReconstructionMeth
             using Kokkos::ALL;
             auto send_ptr = subview(sendbuf[n].vars,m,jsrc[l],ALL,ALL,ALL);
             // create tag using GID of *receiving* MeshBlock
-            int tag = CreateBvals_MPI_Tag(tgid, ((n<<2) | l));
+            int tag = CreateBvals_MPI_Tag(tgid - pmy_pack->pmesh->gids_eachrank[trank],
+                                          ((n<<2) | l));
             int data_size = send_ptr.size();
             int ierr = MPI_Isend(send_ptr.data(), data_size, MPI_ATHENA_REAL, trank, tag,
                                  comm_sbox, &(sendbuf[n].vars_req[3*m + l]));
@@ -271,7 +273,8 @@ TaskStatus ShearingBoxCC::PackAndSendCC(DvceArray5D<Real> &a, ReconstructionMeth
             using Kokkos::ALL;
             auto send_ptr = subview(sendbuf[n].vars,m,jsrc[l],ALL,ALL,ALL);
             // create tag using GID of *receiving* MeshBlock
-            int tag = CreateBvals_MPI_Tag(tgid, ((n<<2) | l));
+            int tag = CreateBvals_MPI_Tag(tgid - pmy_pack->pmesh->gids_eachrank[trank],
+                                          ((n<<2) | l));
             int data_size = send_ptr.size();
             int ierr = MPI_Isend(send_ptr.data(), data_size, MPI_ATHENA_REAL, trank, tag,
                                  comm_sbox, &(sendbuf[n].vars_req[3*m + l]));

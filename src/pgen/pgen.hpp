@@ -65,7 +65,8 @@ class ProblemGenerator {
   void DustDamping(ParameterInput *pin, const bool restart);
   void DustNSH(ParameterInput *pin, const bool restart);
   void DustGravOrbit(ParameterInput *pin, const bool restart);
-  void GravitoTurbInsertDust(ParameterInput *pin);   // gravito_turb, restart_insert
+  void DustJeans(ParameterInput *pin, const bool restart);
+  void GravitoTurbInsertDust(ParameterInput *pin, bool from_restart);  // gravito_turb
   void DustyWave(ParameterInput *pin, const bool restart);
   void DustDepositShear(ParameterInput *pin, const bool restart);
   void DustSettle(ParameterInput *pin, const bool restart);
@@ -77,6 +78,7 @@ class ProblemGenerator {
   void ShockTube(ParameterInput *pin, const bool restart);
   void Shwave(ParameterInput *pin, const bool restart);
   void StreamingLinear(ParameterInput *pin, const bool restart);
+  void StreamingStrat(ParameterInput *pin, const bool restart);
   void RadiationLinearWave(ParameterInput *pin, const bool restart);
   void RadiationBeam(ParameterInput *pin, const bool restart);
   void Z4cBoostedPuncture(ParameterInput *pin, const bool restart);

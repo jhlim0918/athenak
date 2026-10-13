@@ -6,13 +6,39 @@ directory and a cluster build with **FFT enabled** (the slab boundary needs
 kokkos-fft):
 
 ```bash
+module load gcc openmpi fftw3          # on Vista; the modules of the CPU job scripts
 cmake -B build-cluster -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON
-cmake --build build-cluster -j
+cmake --build build-cluster -j 16
 ```
+
+Load the modules **before** `cmake -B`: the configure step is what records the MPI
+compiler and library paths in the cache, so a configure run in a shell without
+`openmpi` loaded bakes the wrong MPI in and the mistake surfaces much later, as a link
+failure or a wrong `MPI_CXX_LIB_NAMES`. The job scripts then load the same modules, so
+that they match what the binary was built against. Rebuilding after a module change,
+or after the cache has been carried across several of them, is best done by deleting
+`build-cluster` and configuring afresh rather than incrementally.
 
 kokkos-fft is fetched by CMake at *configure* time — run the configure step on a
 node with network access (or pre-clone `github.com/kokkos/kokkos-fft` and point
 `FETCHCONTENT_SOURCE_DIR_KOKKOS-FFT` at it).
+
+**NAS** (`athfe`, Cray PE, Turin nodes `model=tur_ath`): the clone is
+`$HOME/athenak-multigrid`, as on Vista.  Since 2026-10 `PrgEnv-intel` and `PrgEnv-gnu`
+fail to load on the front ends (their `intel` / `gcc` modulefiles are gone or conflict),
+so the build uses the default `PrgEnv-cray` (Cray clang 20) and names FFTW explicitly,
+because kokkos-fft's `FindFFTW` does not always see the `cray-fftw` module:
+
+```bash
+module use /opt/cray/pals/modulefiles && module load cray-pals cray-fftw
+cmake -B build-cluster -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON \
+      -D CMAKE_CXX_COMPILER=CC -D FFTW_ROOT=/opt/cray/pe/fftw/default/x86_64
+cmake --build build-cluster -j 16           # ~4 min on athfe01
+```
+
+The PBS twins (`gt_sc14_full.pbs`, `si_modelAs_wenoz.pbs`) load `PrgEnv-cray`,
+`cray-pals` and `cray-fftw` to match.  Run directories live in `/nobackup/$USER`
+(not backed up: `backup_run.sh` them to Lou when done).
 
 ## 1. The standard beta = 10 run
 
@@ -33,6 +59,23 @@ cd <rundir> && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_sc14_full.slurm
 
 Set `#SBATCH -A` to your allocation first.  256 ranks = 2 nodes x 128 of 144
 cores (3 MeshBlocks per rank, as on NAS); the hi-res twin is `-N 6 -n 768`.
+
+Keep the SC14 (gas-only) and dust branches in **separate worktrees**, each with its
+own `build-cluster/`.  One tree switched between branches leaves a binary that
+silently belongs to whichever branch was compiled last; a gas-only stage built from
+the dust branch writes an empty `<particles>` block into every restart it produces,
+and the next restart dies with "Parameter name 'particle_type' not found in block
+'particles'".  `scripts/fix_rst_particles.py` repairs restart files already affected.
+
+```bash
+git worktree add $HOME/athenak-sc14 multigrid
+cd $HOME/athenak-sc14 && git submodule update --init   # kokkos is NOT carried over
+cmake -B build-cluster -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON \
+      -D Kokkos_ARCH_ARMV9_GRACE=ON && cmake --build build-cluster -j 16
+```
+
+`gt_sc14_full.slurm` defaults to `ATHENAK=$HOME/athenak-sc14`; override per job with
+`sbatch --export=ALL,ATHENAK=<tree> ...`.
 
 `ATHENAK` and `INPUT` are variables at the top.  Ranks and ranks-per-node come
 from `$PBS_NODEFILE`, so changing only the `select=` line changes the launch --
@@ -153,7 +196,8 @@ Time-average the trailing 100-200/Omega of each stage; SC14's fits are
 alpha' = 4/(9*gamma*(gamma-1))/(Omega t_cool) (eq. 21, Fig. 4).
 ## Backing up to Lou
 
-`backup_run.sh <rundir>` archives a finished run to NAS mass storage as two
+`backup_run.sh [rundir]` (default: the current directory, so plain
+`bash backup_run.sh` from inside a run works) archives a finished run to NAS mass storage as two
 tars via `shiftc` (streamed -- no local copy -- checksummed, auto-retried):
 `<name>_data.tar` (bin/ + rst/) and `<name>_meta.tar` (histories, logs, PBS
 files, provenance -- small, so the history is retrievable without touching the
@@ -185,7 +229,21 @@ cd $SCRATCH/gtb/stage1 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_baeh
 # stage 2: restart from the t = 50 dump, insert the particles, run to t = 100
 cd $SCRATCH/gtb/BR_L_10   && BR=true  sbatch $HOME/athenak-multigrid/scripts/cluster/gt_baehr_stage2.slurm
 cd $SCRATCH/gtb/noBR_L_10 && BR=false sbatch $HOME/athenak-multigrid/scripts/cluster/gt_baehr_stage2.slurm
+# three species (St = 0.01, 0.1, 1; Z = 0.01/3 each): the dust3 add-on, same dump
+cd $SCRATCH/gtb/noBR_3sp && BR=false ADDON=$HOME/athenak-multigrid/inputs/shearing_box/gravito_turb_baehr_dust3.athinput \
+    sbatch $HOME/athenak-multigrid/scripts/cluster/gt_baehr_stage2.slurm
+# ... with the radial pressure gradient (dust drift) on: OVR="hydro_srcterms/const_accel=true"
 ```
+
+Multi-species layers: `<dust>/nspecies` and `taus_s` in the add-on, `problem/dust_Z_s`
+per species (default `dust_Z/nspecies`); the species are interleaved in every cell so
+each has the same count and distribution.  With back-reaction off the species are
+independent, so one run is several single-species experiments.  A cheaper proof of
+concept: rerun stage 1 with `mesh/nx1=256 mesh/nx2=256 mesh/nx3=128 meshblock/nx1=32
+meshblock/nx2=32 meshblock/nx3=32` (0.1 H_g cells, 256 blocks = 2 nodes at 128 ranks
+each, ~16x cheaper) and restart the dust stages from its dump with the same add-ons
+and `particles/ppc` scaled to the new cell count (ppc is per cell: 0.02235 x 8 keeps
+1.5e6 particles per species).
 
 Stage 2 reads the add-on input `inputs/shearing_box/gravito_turb_baehr_dust.athinput`
 on top of the dump's own input (`-r dump -i addon`: blocks merge, the add-on wins):
@@ -212,3 +270,154 @@ dt ~ 3e-3 (the SC14 box: 4e-3), so ~17,000 cycles per 50/Omega; expect well unde
 first `elapsed=` lines of run.log and scale down the node count if it is faster than
 needed.  The earlier "memory-bandwidth-bound, 11.8 s*node/cycle" numbers of sec. 2 were
 dominated by the old slab gather and no longer apply.
+
+## 4. The 16H proof-of-concept box at 80 cells per H_g (GPU queue)
+
+For the fellowship proposal: Booth & Clarke (2019) geometry, Lx = Ly = 16 H_g,
+Lz = 6.4 H_g, 1280 x 1280 x 512 cubic cells (80 per H_g; 40 x 40 x 16 MeshBlocks of
+32^3), the Baehr+22 physics otherwise (beta = 10, Q0 = 1.02, irradiation floor), and
+`hse_outflow` z faces (section 5).  BC19 find boxes below 32 H bursty -- the dominant
+spiral's azimuthal wavelength is the box -- which a proof of concept can live with; two
+arms fit at 16 H.  Inputs: `inputs/shearing_box/gravito_turb_bc16.athinput` (stage 1,
+gas to t = 50; with the floor our disk starts cooling late, so check Q(t) in the history
+and continue with `CONT=1 TLIM=...` if the first burst has not happened) and
+`gravito_turb_bc16_dust.athinput` (stage 2: one species at St = 0.3, Z = 0.01, 1.6e7
+particles, hybrid coupling, back-reaction on, radial pressure gradient on at
+Pi = eta v_K / cs = 0.1 so that eta r = 8 cells).
+
+Cost, measured 2026-09-16 on one GH200 with the full resolution on a 4H x 4H x 6.4H
+domain (5.2e7 cells; `test*` under $SCRATCH/gt16).  The first measurement gave 1.00 s
+per cycle (4.9e7 cell-updates/s) with the multigrid at ~80% of it, almost all of that
+in a fixed cost per solve: ComputeSlabPlanes handled the 512 root k-planes one at a
+time (~3600 kernel launches per solve, latency-bound on a GPU).  After batching the
+planes (bf1a4446) and taking 3 V-cycles per solve instead of 6 (3 reproduce the
+converged Jeans growth rate to 3e-6), the phase timer (`gravity/show_defect = 1`
+prints `mg_phase_times` per solve) reads slab 0.015 s, V-cycles 0.096 s, the rest
+< 2 ms; the cycle is 0.57 s, i.e. 9.2e7 cell-updates/s per GPU, with the same defect
+norms to every digit.  The FFT solver would give 2.1e8 but is single-rank only.
+With dt ~ 1.2e-3 (the halo's free fall in the 6.4H box), t = 50 is ~4e4 cycles:
+stage 1 ~3.3e13 cell-updates = ~100 GPU-hours, stage 2 (50/Omega with dust) about the
+same plus a few percent for the particles -- ~200-220 GPU-hours for both at
+single-GPU efficiency, ~260-300 with the MPI losses of 8 ranks.  Eight nodes hold the
+box (1e8 cells per GPU, ~40 GB) and finish a stage in ~13 h; the first `elapsed=`
+lines of the production run are the check on the parallel efficiency.
+
+GPU build (UNTESTED as of 2026-09-15: the CUDA path of multigrid + kokkos-fft +
+particles has never been compiled here -- do the one-node test before committing to
+the allocation).  On a Vista login node:
+
+```bash
+module load nvidia/24.7 openmpi/5.0.5_nvc249     # the SDK's CUDA-aware OpenMPI (AthenaK hands
+export NVCC_WRAPPER_DEFAULT_COMPILER=/usr/bin/g++  # device buffers to MPI) and its CUDA; g++
+cd $HOME/athenak-multigrid                          # as nvcc's host compiler, like the CPU build
+cmake -B build-gpu -D Athena_ENABLE_MPI=ON -D Athena_ENABLE_FFT=ON \
+      -D Kokkos_ENABLE_CUDA=ON -D Kokkos_ARCH_HOPPER90=ON -D Kokkos_ARCH_ARMV9_GRACE=ON \
+      -D Kokkos_ENABLE_IMPL_CUDA_UNIFIED_MEMORY=ON \
+      -D CMAKE_CXX_COMPILER=$HOME/athenak-multigrid/kokkos/bin/nvcc_wrapper
+cmake --build build-gpu -j 16
+```
+
+**`Kokkos_ENABLE_IMPL_CUDA_UNIFIED_MEMORY=ON` is not optional on Vista, and it is what
+multi-rank GPU runs stand or fall on.** Vista's `openmpi/5.0.5_nvc249` is built *without*
+CUDA support -- `ompi_info --parsable --all | grep opal_built_with_cuda_support` reports
+`false`, `status:read-only`, and the only `accelerator` component is `null` -- so it
+treats every pointer as host memory. AthenaK posts its MPI sends straight from Kokkos
+device views (`rank_sendbuf_vars_` in `src/bvals/bvals_cc.cpp`, and the multigrid's
+`MPI_Allreduce` over `zplanes`), so MPI memcpys GPU memory on the CPU and every rank dies
+of SIGSEGV, *invalid permissions for mapped object*, inside `libmpi` at the first
+exchange. A one-rank job never posts an inter-rank message, so the one-node timing test
+cannot see this -- it first appeared on the 8-node stage 1 (2026-09-17) and reproduces on
+two ranks in two minutes. No environment variable reaches a read-only build option.
+
+The flag is the Grace-Hopper path and it fits what is installed: Kokkos allocates with
+`cudaMallocManaged` and `cudaMemAdvise`s the pages to live in device HBM, so the GPU
+keeps HBM bandwidth while the host can reach the same pages over NVLink-C2C. That makes
+MPI's host memcpy legal, and *managed* memory is a type this UCX does support --
+`ucx_info -d` lists `cuda-managed` among its memory types, while plain device memory is
+absent. It needs CUDA >= 12.2 (the 24.7 SDK has 12.5) and a device with
+`cudaDevAttrConcurrentManagedAccess`, which GH200 has; Kokkos checks both and aborts with
+a clear message otherwise. The cost against a true CUDA-aware MPI has not been measured
+-- compare the `elapsed=` lines with the 9.2e7 cell-updates/s of the one-node test.
+
+To check whether TACC has since installed a CUDA-aware MPI (which would be better than
+managed memory), `module spider openmpi` and look for a CUDA-enabled build.
+
+(`nvidia` and `gcc` are the same Lmod family, so gcc's OpenMPI cannot be loaded beside
+the SDK; if `nvcc` is not on the path after loading the SDK, add `module load cuda`.)
+kokkos-fft picks cuFFT for the CUDA backend.  Then, from run directories in
+`$SCRATCH`:
+
+```bash
+# one-node timing test first: the full resolution on a 4H x 4H x 6.4H domain (5.2e7
+# cells, 320 x 320 x 512, ~1000 cycles to t = 0.5); its elapsed= lines are the
+# cell-updates/s per GPU that fix the cost table
+mkdir -p $SCRATCH/gt16/test && cd $SCRATCH/gt16/test && TLIM=0.5 XOVR="mesh/nx1=320 mesh/nx2=320 mesh/x1min=-4.33756 mesh/x1max=4.33756 mesh/x2min=-4.33756 mesh/x2max=4.33756" sbatch -N 1 -n 1 -t 01:00:00 $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage1_gpu.slurm
+# stage 1, then stage 2 from the dump after the first burst
+mkdir -p $SCRATCH/gt16/stage1 && cd $SCRATCH/gt16/stage1 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage1_gpu.slurm
+mkdir -p $SCRATCH/gt16/dust && cd $SCRATCH/gt16/dust && RST=$SCRATCH/gt16/stage1/rst/gt16.00005.rst TLIM=100 sbatch $HOME/athenak-multigrid/scripts/cluster/gt_bc16_stage2_gpu.slurm
+```
+
+The one-node test's `elapsed=` lines are the cell-updates per second per GPU quoted
+above; rerun it after any change to the multigrid.
+
+## 5. The z boundary: `hse_outflow`
+
+`diode` (ghost = copy of the edge cell, normal momentum clamped outward) leaks mass
+INTO the box once the halo lifts off the density floor (HANDOFF_ZBC.md: every high-beta
+SC14 run died of it; the Baehr stage 1 gained 8% by t = 150).  The ghost is a flat
+reservoir at the edge density with dP/dz = 0 across the face, so gravity accelerates
+the edge cell inward and the Riemann solver draws mass in.  `hse_outflow` (Booth &
+Clarke 2019) fills the ghosts with the hydrostatic isothermal extrapolation of the edge
+cell under -Omega^2 z, the same temperature, copied velocities with the normal one
+zeroed if inward, and a consistent energy.  Set `ix3_bc = ox3_bc = hse_outflow` in the
+mesh block; the particle removal at physical faces is unchanged.
+
+## 6. The SC14 box on an adaptive mesh (the fragmentation boundary)
+
+From the same cold start the beta = 10 box does not fragment at 4 cells/H and keeps one
+fragment of the first collapse at 8 cells/H.  These runs refine the standard-resolution
+box on the Jeans number (`GravitoTurbRefinement` in the gravito_turb pgen,
+`<amr_criterion0> method = user`, parameters `<problem>/amr_*`).
+
+| script | mesh | start |
+|---|---|---|
+| `gt_sc14_b10_amr_restart.slurm` | 16^3 blocks, ONE level (8 cells/H in \|z\| < 2H) | the archived run's t = 0 dump + `gravito_turb_sc14_amr_overlay.athinput` |
+| `gt_sc14_b10_jeans_amr.slurm` | 8^3 blocks, `LEVELS` levels (3: 16 cells/H, 4: 32 cells/H) | cold, `gravito_turb_sc14_jeans_amr.athinput` |
+
+The number of levels is set by the block layout, not by the request: the slab-open x3
+policy keeps the z-face blocks at root level and grades the levels away from them, which
+with three root blocks in z (16^3) leaves room for one level and with six (8^3) for any
+number inside |z| < 2H.  A restart cannot change the block size.
+
+```bash
+# 1. the archived run from its t = 0 dump, refinement on (256 ranks, 2 nodes)
+mkdir -p $SCRATCH/gt_sc14_amr/b10_restart_L2 && cd $SCRATCH/gt_sc14_amr/b10_restart_L2 && sbatch $HOME/athenak-multigrid/scripts/cluster/gt_sc14_b10_amr_restart.slurm
+# 2. cold start, four levels (512 ranks, 4 nodes)
+mkdir -p $SCRATCH/gt_sc14_amr/b10_L4 && cd $SCRATCH/gt_sc14_amr/b10_L4 && sbatch --export=ALL,LEVELS=4,CAP=160 $HOME/athenak-multigrid/scripts/cluster/gt_sc14_b10_jeans_amr.slurm
+# 3. the same with an irradiation floor on the cooling (cs^2 units; 4.52094 = cs0^2)
+mkdir -p $SCRATCH/gt_sc14_amr/b10_L4_floor && cd $SCRATCH/gt_sc14_amr/b10_L4_floor && sbatch --export=ALL,LEVELS=4,CAP=32,FLOOR=4.52094 $HOME/athenak-multigrid/scripts/cluster/gt_sc14_b10_jeans_amr.slurm
+```
+
+Each job continues itself from the newest `rst/*.rst` of its run directory; resubmit the
+same line.  Rules measured on a 16H x 16H x 12H box (laptop, 2026-09-28):
+
+- **`max_nmb_per_rank` (CAP) is paid on every cycle.**  It sizes every array and
+  `Hydro::CopyCons` copies the allocated array, used or not: on the unrefined mesh 20
+  cycles take 2.2 s at a cap of 128 per rank, 3.2 s at 512 and ~16 s at 4096, against
+  2.1 s uniform.  The job script stores the cap in the file `cap` of the run directory
+  and reuses it; raise it when a run stops on "exceeds max_nmb_per_rank", lower it once
+  a collapse has passed.
+- **Use a tolerance on the multigrid defect, not a fixed count.**  The first solve after
+  every remesh and restart starts cold; 6 V-cycles leave it at 2e-2 to 0.2 against 2e-5
+  warm.  `threshold = 2e-5` takes 6-7 V-cycles warm and 11-12 cold, and held with four
+  levels present (140 solves, largest defect 1.6e-5).
+- **8^3 blocks cost 1.6x the 16^3 uniform run per cycle** at nghost = 4, unrefined, and
+  every level halves dt for the whole mesh (no sub-cycling).
+- **The density gate is needed.**  Halo cells on the pressure floor have cs ~ 1e-3 and a
+  Jeans length below one cell at rho ~ 1e-4.
+- **An irradiation floor does not give a gentle onset at 4 cells/H.**  Uniform mesh,
+  floor = f cs0^2: f = 0 bursts at t = 20 (peak alpha 0.97); f = 0.5 at t = 54 (0.30);
+  f = 0.6 at t = 93 (0.69); f = 0.7, 0.8 and 1.0 stay laminar (alpha = 0, rms dv = 0.05)
+  to t = 160, 80 and 60.  The floor delays the burst or removes the turbulence; check
+  the history of a floored run for alpha > 0 before letting the chain run on.  The 80
+  cells/H boxes of sections 3 and 4 do become turbulent at f = 1.

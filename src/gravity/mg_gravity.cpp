@@ -15,6 +15,7 @@
 #include <sstream>    // sstream
 #include <stdexcept>  // runtime_error
 #include <string>     // c_str()
+#include <chrono>
 #include <iomanip>
 #include <vector>
 
@@ -348,9 +349,18 @@ void MGGravityDriver::Solve(Driver *pdriver, int stage, Real dt) {
 
   // Slab-open x3: recompute the Dirichlet face planes from the current density,
   // rolled by the same frozen shear phase as the x1 ghost fills (mg_qomt_)
+  // per-phase wall clock (show_defect >= 1): where a solve spends its time
+  using clk = std::chrono::high_resolution_clock;
+  auto tick = [&](auto &t0) {
+    Kokkos::fence(); auto t1 = clk::now();
+    double d = std::chrono::duration<double>(t1 - t0).count(); t0 = t1; return d;
+  };
+  auto t_ph = clk::now();
+  double t_slab = 0.0, t_load = 0.0, t_setup = 0.0, t_post = 0.0;
   if (mg_slab_enabled_) {
     ComputeSlabPlanes(u0, isrc, four_pi_G_, mg_qomt_);
   }
+  if (fshowdef_ >= 1) t_slab = tick(t_ph);
 
   mglevels_->LoadSource(u0, isrc, indcs_.ng, -four_pi_G_);
 
@@ -363,7 +373,9 @@ void MGGravityDriver::Solve(Driver *pdriver, int stage, Real dt) {
   }
 
   // Finalize setup (SubtractAverage, level counts) after data is loaded
+  if (fshowdef_ >= 1) t_load = tick(t_ph);
   SetupMultigrid(dt, false);
+  if (fshowdef_ >= 1) t_setup = tick(t_ph);
 
   // Compute multipole coefficients for isolated boundaries
   if (mporder_ > 0) {
@@ -381,21 +393,28 @@ void MGGravityDriver::Solve(Driver *pdriver, int stage, Real dt) {
 
   Kokkos::fence();
 
+  double mg_elapsed = 0.0;
+  Real def = 0.0;
   if (fshowdef_ >= 1) {
     auto t_end = std::chrono::high_resolution_clock::now();
-    double mg_elapsed = std::chrono::duration<double>(t_end - t_start).count();
-    Real def = 0.0;
+    mg_elapsed = std::chrono::duration<double>(t_end - t_start).count();
     for (int v = 0; v < nvar_; ++v) {
       def += CalculateDefectNorm(MGNormType::l2, v);
     }
+    t_ph = clk::now();
+  }
+  mglevels_->RetrieveResult(pmy_pack_->pgrav->phi, 0, indcs_.ng);
+  if (fshowdef_ >= 1) {
+    t_post = tick(t_ph);
     if (global_variable::my_rank == 0) {
       std::cout << "mg_solve_time = " << std::scientific << std::setprecision(6)
                 << mg_elapsed << std::endl;
       std::cout << "MGGravityDriver::Solve: Final defect norm = " << def << std::endl;
+      std::cout << "mg_phase_times: slab=" << t_slab << " load=" << t_load
+                << " setup=" << t_setup << " cycles=" << mg_elapsed
+                << " retrieve=" << t_post << std::endl;
     }
   }
-
-  mglevels_->RetrieveResult(pmy_pack_->pgrav->phi, 0, indcs_.ng);
 
   return;
 }

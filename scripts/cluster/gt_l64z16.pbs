@@ -1,0 +1,124 @@
+#PBS -S /bin/bash
+#PBS -N gt_l64z16
+#PBS -l select=2:ncpus=256:mpiprocs=256:model=tur_ath
+#PBS -l walltime=24:00:00
+#PBS -q long
+#PBS -j oe
+#PBS -W group_list=s3183
+#PBS -m abe
+#PBS -M jay.lim1@unlv.edu
+
+# NAS (Athena Turin nodes) runner for SC14 gravito-turbulence in the box proposed for the
+# stochastic-fragmentation study: inputs/shearing_box/gravito_turb_l64z16.athinput
+# (64H x 64H x 16H, 4 cells/H, 8^3 MeshBlocks, hse_outflow, WENO-Z + FOFC, beta = 10).
+#
+#   - 2 Turin nodes = 512 ranks, 16 MeshBlocks each (8192 blocks).  Smoke test (job 244224,
+#     2026-10-09): 0.67 s/cycle after a 15 s setup; the SC14 runs take ~72k cycles to
+#     t = 300, so ~13-14 h per run.
+#   - walltime 24 h with athena's -t 23:45:00 (WALL below; change both together); the chain
+#     resubmits after a wall-clock stop, at most MAX_JOBS=2 jobs in total.
+#   - RENORM=1 (qsub -v) switches on <problem>/mass_renorm (Booth & Clarke 2019) in the
+#     first job; it travels in the restart files.  renorm.txt records it and later jobs check.
+#   - NaN watchdog: athena has no NaN check.  A background loop greps the history rows this
+#     job appends every 120 s and kills mpiexec at the first nan ("# WATCHDOG" in run.log).
+#
+# The input: a copy named input.athinput in the run directory is used if present (so a run
+# can start before the input is committed); otherwise the tracked input is copied there.
+#
+# SUBMIT FROM THE RUN DIRECTORY in /nobackup:
+#     mkdir -p /nobackup/$USER/gt_l64z16/b10 && cd /nobackup/$USER/gt_l64z16/b10
+#     qsub -N gt_l64_b10 <this script>
+#     mkdir -p /nobackup/$USER/gt_l64z16/b10_renorm && cd /nobackup/$USER/gt_l64z16/b10_renorm
+#     qsub -N gt_l64_b10rn -v RENORM=1 <this script>
+# SMOKE TEST:   qsub -q devel -l walltime=0:30:00 -v NLIM=50 <this script>
+
+ATHENAK=$HOME/athenak-multigrid
+TRACKED=$ATHENAK/inputs/shearing_box/gravito_turb_l64z16.athinput
+SCRIPT=${SCRIPT:-$PBS_O_WORKDIR/../gt_l64z16.pbs}   # what the chain resubmits
+RENORM=${RENORM:-0}
+NLIM=${NLIM:--1}
+EXE=$ATHENAK/build-cluster/src/athena
+MAX_JOBS=2
+WALL=23:45:00                            # athena stops here and writes a final rst
+
+source /opt/cray/pe/modules/3.2.11.7/init/bash
+module load PrgEnv-cray 2>/dev/null || true   # the binary is rpath'd (ldd needs no modules);
+module use /opt/cray/pals/modulefiles          # only cray-pals, for mpiexec, is load-bearing
+module load cray-pals cray-fftw
+
+NRANKS=$(wc -l < $PBS_NODEFILE)
+NNODES=$(sort -u $PBS_NODEFILE | wc -l)
+PPN=$(( NRANKS / NNODES ))
+
+cd $PBS_O_WORKDIR
+mkdir -p rst
+die() { echo "ERROR: $*" | tee -a run.log; exit 1; }
+
+# the binary must have the mass renormalization and the FOFC allocation fix (2c1b0f5c)
+strings $EXE | grep -q "mass renormalization to M" \
+  || die "$EXE predates the mass renormalization: git pull and rebuild build-cluster"
+
+if ! ls rst/*.rst > /dev/null 2>&1; then
+  [ -f input.athinput ] || cp $TRACKED input.athinput || die "no input"
+  echo $RENORM > renorm.txt
+elif [ "$(cat renorm.txt 2>/dev/null)" != "$RENORM" ]; then
+  die "this directory holds a RENORM=$(cat renorm.txt 2>/dev/null) run but RENORM=$RENORM"
+fi
+
+{
+  echo "# job $PBS_JOBID on $NNODES node(s): $(sort -u $PBS_NODEFILE | tr '\n' ' '), $NRANKS ranks"
+  echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD); RENORM=$RENORM"
+} >> run.log
+
+nrows0() { [ -f "$1" ] && wc -l < "$1" || echo 0; }
+U0=$(nrows0 GravitoTurb.user.hst); H0=$(nrows0 GravitoTurb.hydro.hst)
+
+if ls rst/*.rst > /dev/null 2>&1; then
+  RST=$(ls rst/*.rst | tail -1)
+  echo "# restarting from $RST" >> run.log
+  mpiexec -np $NRANKS -ppn $PPN $EXE -r $RST -d ./ -t $WALL >> run.log 2>&1 &
+else
+  OVR=(time/nlim=$NLIM)
+  [ "$RENORM" = "1" ] && OVR+=(problem/mass_renorm=true)
+  echo "# first job: input.athinput, overrides ${OVR[*]}" >> run.log
+  mpiexec -np $NRANKS -ppn $PPN $EXE -i input.athinput -d ./ -t $WALL "${OVR[@]}" \
+    >> run.log 2>&1 &
+fi
+MPI_PID=$!
+
+(
+  while kill -0 $MPI_PID 2>/dev/null; do
+    sleep 120
+    for hn in "GravitoTurb.user.hst $U0" "GravitoTurb.hydro.hst $H0"; do
+      set -- $hn
+      [ -f "$1" ] || continue
+      if tail -n +$(( $2 + 1 )) "$1" | grep -qi nan; then
+        echo "# WATCHDOG $(date): nan in $1 -- killing the run" >> run.log
+        touch WATCHDOG_NAN
+        kill -TERM $MPI_PID 2>/dev/null; sleep 30; kill -KILL $MPI_PID 2>/dev/null
+        exit 0
+      fi
+    done
+  done
+) &
+WD_PID=$!
+
+wait $MPI_PID; RC=$?
+{ kill $WD_PID; wait $WD_PID; } 2>/dev/null
+echo "# job $PBS_JOBID ended $(date), exit $RC" >> run.log
+
+# chain: resubmit only after a wall-clock stop, at most MAX_JOBS jobs in total
+echo $PBS_JOBID >> jobs.list
+last=$(grep -E "^Terminating on" run.log | tail -1)
+if [ -f WATCHDOG_NAN ]; then
+  echo "# final state: NaN (watchdog)" >> run.log
+elif [ "$last" = "Terminating on wall clock limit" ]; then
+  if [ $(wc -l < jobs.list) -lt $MAX_JOBS ]; then
+    echo "# wall clock stop: resubmitting" >> run.log
+    qsub -N $PBS_JOBNAME -v RENORM=$RENORM,SCRIPT=$SCRIPT $SCRIPT
+  else
+    echo "# wall clock stop but MAX_JOBS=$MAX_JOBS reached: not resubmitting" >> run.log
+  fi
+else
+  echo "# final state: ${last:-no termination message (crash? see the .o file)}" >> run.log
+fi

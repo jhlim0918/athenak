@@ -17,7 +17,12 @@
 //! The complex amplitudes f~ (in code units), the wavenumbers, and the complex
 //! frequency are supplied through <problem> parameters (computed by an external
 //! eigensolver; see the phase-2 validation notebook). The particle density wave is
-//! imprinted by radial lattice displacements proportional to cos(kz z) (YJ07 App. C).
+//! imprinted by displacing a quiet-start lattice, chosen by <problem>/cold_start:
+//!   radial (default): radial displacements only, xi_x = -(A/kx) sin(kx x) cos(kz z);
+//!   yj07: the "cold start" of Youdin & Johansen (2007, App. C) -- the standing wave as two
+//!         plane waves k+- = (kx, +-kz) of amplitude A/2, each shifted ALONG k+- (their
+//!         eq. C2) plus the second-order shift that removes the 2k+- harmonic (eq. C6).
+//! Both seed the same density to first order (they differ by a solenoidal shift).
 //!
 //! With <problem>/user_hist = true, the history records the complex Fourier projection
 //! of the particle mass distribution and of the gas density/radial-velocity fields onto
@@ -112,7 +117,9 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
   kx_ = pin->GetReal("problem","kx");
   kz_ = pin->GetReal("problem","kz");
   rho0_ = pin->GetOrAddReal("problem","rho0",1.0);
-  if (restart) return;
+  // everything up to the NSH solve below only reads parameters and checks the setup, so it
+  // runs on restart too: the history function's peak-amplitude columns subtract the NSH
+  // background (ugx_, ugp_, vnx_, vnp_, rhop0_), which must be set before returning
 
   MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
   if (pmbp->phydro == nullptr || pmbp->ppart == nullptr || pmbp->pdust == nullptr ||
@@ -168,6 +175,7 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
   Real ugx, ugp, vnx, vnp;
   SolveNSH2(omega0, qshear, ax, eps, taus, ugx, ugp, vnx, vnp);
   ugx_ = ugx; ugp_ = ugp; vnx_ = vnx; vnp_ = vnp; rhop0_ = eps*rho0;
+  if (restart) return;
 
   // initialize gas: NSH background + eigenmode at t=0
   auto &indcs = pmy_mesh_->mb_indcs;
@@ -228,8 +236,8 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
     lat_r.h_view(m) = r;
     lat_off.h_view(m+1) = lat_off.h_view(m) + ppc_int*ncells*r*r;
   }
-  lat_r.template modify<HostMemSpace>();  lat_r.template sync<DevExeSpace>();
-  lat_off.template modify<HostMemSpace>(); lat_off.template sync<DevExeSpace>();
+  lat_r.modify_host();  lat_r.sync_device();
+  lat_off.modify_host(); lat_off.sync_device();
   if (lattice_finest) {
     npart = lat_off.h_view(nmb);
     Kokkos::realloc(ppar->prtcl_rdata, ppar->nrdata, std::max(npart, 1));
@@ -258,6 +266,14 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
   auto lat_r_ = lat_r.d_view;
   auto lat_off_ = lat_off.d_view;
   Real ppc = pin->GetOrAddReal("particles","ppc",1.0);
+  std::string cold_start = pin->GetOrAddString("problem","cold_start","radial");
+  if (cold_start != "radial" && cold_start != "yj07") {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+              << "<problem>/cold_start must be 'radial' or 'yj07', not '" << cold_start
+              << "'" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  const bool yj07 = (cold_start == "yj07");
   Real rhop0 = eps*rho0;
   Real taus0 = taus;
   int lnx1 = indcs.nx1, lnx2 = indcs.nx2;
@@ -282,9 +298,21 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
               + (static_cast<Real>(jp) + 0.5)/static_cast<Real>(npar1d))*dx2;
     Real ce = cos(kx*x0), se = sin(kx*x0);
     Real cz = cos(kz*z0), sz = sin(kz*z0);
-    // radial displacement imprinting drho_p = Apr*cos(kx x)*cos(kz z)
-    pr(IPX,p) = x0 - (Apr/(kx*rhop0))*se*cz;
-    pr(IPY,p) = z0;
+    if (yj07) {
+      // YJ07 App. C: cos(kx x) cos(kz z) = [cos(k+.x) + cos(k-.x)]/2, k+- = (kx, +-kz);
+      // each plane wave of relative amplitude a = A/2 is seeded by
+      //   xi = -(k/k^2) a sin(k.x0) + (k/(2 k^2)) a^2 sin(2 k.x0)       (eqs. C2, C6)
+      Real a = 0.5*Apr/rhop0, k2 = kx*kx + kz*kz;
+      Real php = kx*x0 + kz*z0, phm = kx*x0 - kz*z0;
+      Real s1p = sin(php), s1m = sin(phm), s2p = sin(2.0*php), s2m = sin(2.0*phm);
+      Real c1 = a/k2, c2 = 0.5*a*a/k2;
+      pr(IPX,p) = x0 + kx*(-c1*(s1p + s1m) + c2*(s2p + s2m));
+      pr(IPY,p) = z0 + kz*(-c1*(s1p - s1m) + c2*(s2p - s2m));
+    } else {
+      // radial displacement imprinting drho_p = Apr*cos(kx x)*cos(kz z)
+      pr(IPX,p) = x0 - (Apr/(kx*rhop0))*se*cz;
+      pr(IPY,p) = z0;
+    }
     pr(IPZ,p) = 0.0;
     pi(PSP,p) = 0;
     pr(IPTS,p) = taus0;

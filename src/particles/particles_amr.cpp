@@ -46,14 +46,14 @@ void Particles::RedistributeAfterRemesh(const int *oldtonew, const int *new_rank
     int f = rflag.h_view(gids + m);
     act.h_view(m) = (f > 0) ? 1 : ((f < 0) ? -1 : 0);
   }
-  o2n.template modify<HostMemSpace>();
-  o2n.template sync<DevExeSpace>();
-  act.template modify<HostMemSpace>();
-  act.template sync<DevExeSpace>();
+  o2n.modify_host();
+  o2n.sync_device();
+  act.modify_host();
+  act.sync_device();
   DualArray1D<int> newrank("prtcl_newrank", std::max(new_nmb_total, 1));
   for (int n=0; n<new_nmb_total; ++n) {newrank.h_view(n) = new_rank_eachmb[n];}
-  newrank.template modify<HostMemSpace>();
-  newrank.template sync<DevExeSpace>();
+  newrank.modify_host();
+  newrank.sync_device();
 
   if (split_on_refine) {SplitOnRefine(act, nleaf);}
   pbval_part->RemapAfterRemesh(o2n, act, newrank);

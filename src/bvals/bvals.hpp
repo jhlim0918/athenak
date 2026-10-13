@@ -16,7 +16,8 @@
 enum BoundaryFace {undef=-1, inner_x1, outer_x1, inner_x2, outer_x2, inner_x3, outer_x3};
 
 // identifiers for boundary conditions
-enum class BoundaryFlag {undef=-1,block, reflect, inflow, outflow, diode, user, periodic,
+enum class BoundaryFlag {undef=-1,block, reflect, inflow, outflow, diode, hse_outflow,
+                         user, periodic,
                          shear_periodic, vacuum, mg_zerograd, mg_zerofixed,
                          mg_multipole, mg_slab};
 
@@ -375,7 +376,9 @@ class ParticlesBoundaryValues {
   ParticlesBoundaryValues(particles::Particles *ppart, ParameterInput *pin);
   ~ParticlesBoundaryValues();
 
-  int nprtcl_send, nprtcl_recv;
+  // initialized: the dust task graph can clear before any migration has run (a stage
+  // without one), and an uninitialized nsends made ClearPrtclSend wait on garbage
+  int nprtcl_send = 0, nprtcl_recv = 0;
   // sendlist allocation is persistent: nprtcl_send is the valid-prefix length, while
   // sendlist.extent(0) is capacity.  Never shrink the allocation after a migration.
   DualArray1D<ParticleLocationData> sendlist;
@@ -393,8 +396,8 @@ class ParticlesBoundaryValues {
   DualArray3D<int> srank_map;          // destination rank: (side, lx3, lx2)
 
   // Data needed to count number of messages and particles to send between ranks
-  int nsends; // number of MPI sends to neighboring ranks on this rank
-  int nrecvs; // number of MPI recvs from neighboring ranks on this rank
+  int nsends = 0; // number of MPI sends to neighboring ranks on this rank
+  int nrecvs = 0; // number of MPI recvs from neighboring ranks on this rank
   std::vector<int> nsends_eachrank;                // length nranks
   std::vector<ParticleMessageData> sends_thisrank; // length nsends
   std::vector<ParticleMessageData> recvs_thisrank; // length nrecvs
@@ -403,6 +406,9 @@ class ParticlesBoundaryValues {
 #if MPI_PARALLEL_ENABLED
   DvceArray1D<Real> prtcl_rsendbuf, prtcl_rrecvbuf;
   DvceArray1D<int>  prtcl_isendbuf, prtcl_irecvbuf;
+  // (destination hole, source particle) pairs that close the holes left when more
+  // particles leave than arrive; persistent, grow-only like sendlist
+  DualArray1D<int> fill_dst, fill_src;
   std::vector<MPI_Request> rrecv_req, rsend_req;  // vectors of requests for Reals
   std::vector<MPI_Request> irecv_req, isend_req;  // vectors of requests for ints
   MPI_Comm mpi_comm_part;                       // unique MPI communicators for particles

@@ -218,8 +218,8 @@ void ProblemGenerator::DustyWave(ParameterInput *pin, const bool restart) {
     damp.h_view(s,3) = xi[s].imag();
     damp.h_view(s,4) = eps[s]*rho0*static_cast<Real>(nspec)/ppc;
   }
-  damp.template modify<HostMemSpace>();
-  damp.template sync<DevExeSpace>();
+  damp.modify_host();
+  damp.sync_device();
 
   par_for("dustywave_part", DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m = p/npart_permb;

@@ -50,6 +50,7 @@ Gravity::Gravity(MeshBlockPack *pmbp, ParameterInput *pin):
     four_pi_G = pin->GetOrAddReal("gravity", "four_pi_G",-1.0);
     output_defect = pin->GetOrAddBoolean("gravity", "output_defect", false);
     fill_ghost = pin->GetOrAddBoolean("gravity", "fill_ghost", true);
+    gas_source = pin->GetOrAddBoolean("gravity", "gas_source", true);
 
     if (four_pi_G == 0.0) {
         std::cout << "### FATAL ERROR in Gravity::Gravity" << std::endl
@@ -131,18 +132,27 @@ int Gravity::SourceIndex() const {
 //! \fn Gravity::Solve()
 //! \brief dispatch the Poisson solve to whichever solver was constructed
 void Gravity::Solve(Driver *pdriver, int stage) {
+    if (!gas_source && !has_extra_density) {
+        std::cout << "### FATAL ERROR in Gravity::Solve" << std::endl
+        << "<gravity> gas_source = false leaves no Poisson source: it needs a registered "
+        << "extra density (dust particles with <dust> gravity = true and gravity_source = "
+        << "true; a restart from a run without gravity stores <dust> gravity = false)"
+        << std::endl;
+        exit(EXIT_FAILURE);
+    }
     if (has_extra_density) {
-        // total source = gas + registered density, over every cell (solvers read the
-        // active zone plus one ghost layer)
+        // total source = (gas, unless gas_source = false) + registered density, over every
+        // cell (solvers read the active zone plus one ghost layer)
         auto &u0 = (pmy_pack->pmhd != nullptr) ? pmy_pack->pmhd->u0
                                                : pmy_pack->phydro->u0;
         auto &ext = rho_extra;
         auto &tot = rho_total;
+        const Real wgas = gas_source ? 1.0 : 0.0;
         int nmb1 = pmy_pack->nmb_thispack - 1;
         int n3 = tot.extent_int(2), n2 = tot.extent_int(3), n1 = tot.extent_int(4);
         par_for("grav_rho_total", DevExeSpace(), 0, nmb1, 0, n3-1, 0, n2-1, 0, n1-1,
         KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
-            tot(m,0,k,j,i) = u0(m,IDN,k,j,i) + ext(m,0,k,j,i);
+            tot(m,0,k,j,i) = wgas*u0(m,IDN,k,j,i) + ext(m,0,k,j,i);
         });
     }
     if (pmgd != nullptr) {

@@ -245,8 +245,8 @@ void RefinementCriteria::CheckMinMax(MeshBlockPack* pmbp, RefCritData crit) {
     });
   }
   // sync device array with host
-  refine_flag.template modify<DevExeSpace>();
-  refine_flag.template sync<HostMemSpace>();
+  refine_flag.modify_device();
+  refine_flag.sync_host();
   return;
 }
 
@@ -297,8 +297,8 @@ void RefinementCriteria::CheckSlope(MeshBlockPack* pmbp, RefCritData crit) {
     });
   }
   // sync device array with host
-  refine_flag.template modify<DevExeSpace>();
-  refine_flag.template sync<HostMemSpace>();
+  refine_flag.modify_device();
+  refine_flag.sync_host();
   return;
 }
 
@@ -349,8 +349,8 @@ void RefinementCriteria::CheckSecondDeriv(MeshBlockPack* pmbp, RefCritData crit)
     });
   }
   // sync device array with host
-  refine_flag.template modify<DevExeSpace>();
-  refine_flag.template sync<HostMemSpace>();
+  refine_flag.modify_device();
+  refine_flag.sync_host();
   return;
 }
 
@@ -397,7 +397,7 @@ void RefinementCriteria::CheckLocation(MeshBlockPack* pmbp, RefCritData crit) {
     }
   }
   // sync host array with device
-  refine_flag.template modify<HostMemSpace>();
-  refine_flag.template sync<DevExeSpace>();
+  refine_flag.modify_host();
+  refine_flag.sync_device();
   return;
 }

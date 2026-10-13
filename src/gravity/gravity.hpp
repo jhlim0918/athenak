@@ -44,6 +44,11 @@ class Gravity {
   const DvceArray5D<Real>& SourceArray() const;
   int SourceIndex() const;
   bool has_extra_density = false;
+  // false: the gas density is left out of the Poisson source, so only the registered
+  // extra density (the dust) sources phi -- the usual dust-only self-gravity of
+  // streaming-instability studies; whether the GAS feels phi is set separately by
+  // <hydro_srcterms>/self_gravity
+  bool gas_source = true;
 
   MeshBlockPack* pmy_pack;
   DvceArray5D<Real> phi, coarse_phi;

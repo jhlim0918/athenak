@@ -1,0 +1,136 @@
+# AthenaK input file: SC14 gravito-turbulence in the box proposed for the stochastic-
+# fragmentation study (2026-10-09): 64H x 64H x 16H at 4 cells/H (256 x 256 x 64), 8^3
+# MeshBlocks, hse_outflow z boundaries, WENO-Z + first-order flux correction.
+#
+# Why this layout:
+#  * Lx = Ly = 64H: Booth & Clarke (2019) need L_y >~ 60H for a quasi-steady state;
+#    smaller boxes are bursty and fragment too easily.
+#  * Lz = 16H (8 root blocks of 2H in z): the multigrid root grid 32 x 32 x 8 coarsens to
+#    4 x 4 x 1 (the 12H box's 3 or 6 root blocks in z leave 16 x 16 x 3 = 768 cells on the
+#    coarsest level, smoothed only 16 times per V-cycle), the slab-open graded cap admits
+#    any number of refinement levels inside |z| < 4H, and the boundary density -- hence
+#    the outflow mass loss -- is lower.
+#  * 8^3 MeshBlocks: a restart cannot change the block size, and multi-level refinement
+#    in this box needs 8^3, so these runs can seed the AMR stage (refinement keys below
+#    are present but off; switch with mesh_refinement/refinement=adaptive on a restart).
+#  * wenoz + fofc: extremum-preserving (keeps clump peaks), survived the SC14 cold-start
+#    burst only with FOFC (plain WENO-Z went NaN at t = 15.3); sg_clump tests 2026-10-09.
+#  * <problem>/mass_renorm: Booth & Clarke (2019) mass renormalization (off here; the
+#    renormalized twin sets it true).
+#
+# Cluster runner: scripts/cluster/gt_l64z16.pbs (NAS Turin, 2 nodes, RENORM=1 for the twin).
+
+<comment>
+problem   = SC14 gravito-turbulence (beta = 10), 64H x 64H x 16H, 4 cells/H
+
+<job>
+basename  = GravitoTurb
+
+<mesh>
+nghost    = 4         # wenoz (and refinement later) need 4
+nx1       = 256       # Number of cells in X1-direction
+x1min     = -32.0     # minimum value of X1
+x1max     = 32.0      # maximum value of X1
+ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
+ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
+nx2       = 256       # Number of cells in X2-direction
+x2min     = -32.0     # minimum value of X2
+x2max     = 32.0      # maximum value of X2
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+nx3       = 64        # Number of cells in X3-direction
+x3min     = -8.0      # minimum value of X3
+x3max     = 8.0       # maximum value of X3
+ix3_bc    = hse_outflow  # hydrostatic extrapolation, no inflow
+ox3_bc    = hse_outflow
+
+<meshblock>
+nx1       = 8         # cubic, power of two (multigrid); 8 root blocks in z
+nx2       = 8
+nx3       = 8
+
+<mesh_refinement>
+refinement = none     # adaptive on the AMR-stage restart
+num_levels = 4        # root + 3: 4 -> 8 -> 16 -> 32 cells/H
+max_nmb_per_rank = 64 # only used with refinement; set it for the AMR stage
+ncycle_check = 10
+refinement_interval = 5
+
+<amr_criterion0>
+method    = user      # GravitoTurbRefinement: Jeans number, <problem>/amr_*
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integrator
+cfl_number = 0.3      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = -1       # cycle limit
+tlim       = 300.0    # time limit (300/Omega, SC14 standard duration)
+ndiag      = 100      # cycles between diagnostic output
+
+<hydro>
+eos         = ideal   # EOS type
+gamma       = 1.6666666666666667
+reconstruct = wenoz   # spatial reconstruction method
+rsolver     = hllc    # Riemann-solver to be used
+fofc        = true    # first-order flux correction where the update goes unphysical
+dfloor      = 1.0e-4  # density floor (SC14: 1e-4 rho0)
+pfloor      = 1.0e-10 # pressure floor
+
+<shearing_box>
+qshear    = 1.5       # shear rate parameter q
+omega0    = 1.0       # rotation frequency
+stratified = true     # vertical tidal gravity -Omega^2 z
+orbital_advection = true
+
+<gravity>
+solver    = multigrid # fft | multigrid
+four_pi_G = 4.25231   # = 4*pi*0.3384 (SC14 fiducial G)
+mg_bc     = slab      # slab-open (vacuum) x3 boundaries
+mg_remap  = ppmx      # shear ghost + slab plane remap order
+threshold = 2.0e-5    # tolerance on the defect norm (6-7 V-cycles warm, 11-12 cold)
+niteration = 6        # (used only when threshold = -1)
+full_multigrid = false  # iterative mode: warm-start from the previous potential
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+beta_cooling = true
+bcool_beta   = 10.0   # beta = Omega*t_cool
+bcool_cs2_floor = 0.0 # irradiation floor: cool toward cs^2 = this, never below
+thermal_cooling = false
+tcool_b      = 200.0
+cool_eps     = 0.02   # dt <= cool_eps*t_cool
+
+<problem>
+pgen_name = gravito_turb
+user_hist = true
+rho0      = 1.0
+cs0       = 2.12625   # midplane sound speed (Q0 = 1 fiducial)
+dfloor_ic = 1.0e-4    # initial-condition halo floor
+pert_amp  = 0.1       # velocity perturbations up to pert_amp*cs0 ...
+pert_zmax = 2.0       # ... for |z| < pert_zmax
+pert_seed = 1
+mass_renorm = false   # true: rescale the gas to a fixed total mass once per step
+amr_njeans = 16.0     # Jeans-number refinement criterion (AMR stage only)
+amr_njeans_deref = 2.5
+amr_rho_min = 2.1165  # Roche density 9 Omega^2/(4 pi G)
+amr_cs_min = 1.0
+amr_tstart = 0.0
+
+<output1>
+file_type = hst
+dt        = 0.25
+
+<output2>
+file_type = bin
+variable  = hydro_w
+dt        = 1.0
+
+<output3>
+file_type = bin
+variable  = grav_phi
+dt        = 1.0
+
+<output4>
+file_type = rst
+dt        = 10.0      # restart points every 10/Omega: seeds for the AMR stage

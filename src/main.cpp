@@ -101,6 +101,14 @@ int main(int argc, char *argv[]) {
     return(0);
   }
 #endif  // OPENMP_PARALLEL_ENABLED
+  // ATHENAK_MPI_ERRORS_RETURN=1 in the environment: MPI errors return to the caller
+  // instead of aborting the job, so the per-call checks throughout the code print the
+  // file and line of the failing call before exiting (the default MPI_ERRORS_ARE_FATAL
+  // aborts inside the library, leaving only a raw backtrace).  Communicators created
+  // by MPI_Comm_dup inherit this handler.  Diagnostic use.
+  if (std::getenv("ATHENAK_MPI_ERRORS_RETURN") != nullptr) {
+    MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_RETURN);
+  }
   // Get process id (rank) in MPI_COMM_WORLD
   if (MPI_SUCCESS != MPI_Comm_rank(MPI_COMM_WORLD, &(global_variable::my_rank))) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl

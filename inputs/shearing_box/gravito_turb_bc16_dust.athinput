@@ -1,0 +1,67 @@
+# AthenaK input file: STAGE 2 of the 16H proof-of-concept box -- the ADD-ON read on top
+# of a gravito_turb_bc16 restart:
+#     athena -r <stage1>/rst/gt16.000NN.rst -i inputs/shearing_box/gravito_turb_bc16_dust.athinput
+# One species at St = 0.3 (the size the spirals concentrate and the streaming instability
+# selects), Z = 0.01, ppc = 0.02 (1.6e7 particles over 7.9e8 cells: the settled layer is a
+# few cells thick, so ~3 per cell where the dust is), hybrid coupling, back-reaction on.
+# The radial pressure gradient is ON: a_x = 2 Omega eta v_K with eta v_K = 0.1 cs0
+# (Pi = 0.1, so the SI length eta r = 0.1 H_g = 8 cells); the insertion shifts the gas by
+# -eta v_K (problem/gas_vy_shift = auto) so the switch-on launches no epicycle.  tlim is
+# ABSOLUTE and must exceed the restart time: set it on the command line,
+#     OVR="time/tlim=<t_restart + 50>"
+# To CONTINUE from one of this run's own dumps add particles/restart_insert=false.
+
+<time>
+tlim       = 100.0    # ABSOLUTE: override with OVR="time/tlim=..." (restart time + 50)
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 0.02      # 1.6e7 particles in the 1280^2 x 512 box
+restart_insert = true     # the stage-1 dump has no particles: insert them
+
+<dust>
+coupling      = hybrid    # PC2 under rk2 while the drag is mild, split backward-Euler
+                          # when a cell is stiff (chi = dt*eps/t_s > 0.5): the St = 0.01
+                          # particles in the floor-density halo reach eps/t_s ~ 4e4, which
+                          # plain pc2 cannot take (dt collapses, the halo gas explodes and
+                          # blows the dust out); coupling=imex + time/integrator=imex2+
+                          # is the other stiff-safe choice
+nspecies      = 1
+taus_1        = 0.3       # St = 0.3
+back_reaction = true      # BR_L_10; false for noBR_L_10 (override on the command line)
+deposit       = tsc
+gravity       = true      # dust in the Poisson source and subject to -grad(phi)
+gravity_source = true
+gravity_force  = true
+dt_cfl        = 0.5
+dt_transport  = relative
+dt_block_safety = 0.5
+shear_fold    = true
+shear_remap   = plm
+stopping_time_mode = species_fixed
+
+<hydro_srcterms>
+const_accel     = true    # radial pressure-gradient mimic on the gas: a_x = 2 Omega eta v_K
+const_accel_dir = 1
+const_accel_val = 0.43376 # eta v_K = 0.1 cs0 (Pi = 0.1): eta r = 0.1 H_g = 8 cells
+
+<problem>
+dust_Z    = 0.01          # dust-to-gas mass ratio
+dust_hz   = 2.16878       # Gaussian half-width of the inserted layer = H_g
+dust_seed = 7
+gas_vy_shift = auto       # -a_x/(2 Omega) when const_accel is on (no epicycle); or a number
+
+<output5>
+file_type = bin
+variable  = dust_dpm
+dt        = 5.0
+
+<output6>
+file_type = pvtk
+variable  = prtcl_all
+dt        = 5.0
+
+<output7>
+file_type = phst      # particle history: momenta, KE, escaped mass, max dust density,
+dt        = 0.25      # per-species means and dispersions (sig_z = H_d)

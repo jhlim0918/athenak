@@ -215,7 +215,13 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   // <particles>/restart_insert = true: the restart file carries NO particles (a gas-only
   // stage); the problem generator inserts them (dust track, the two-stage science runs)
   particles::Particles *ppart = pm->pmb_pack->ppart;
-  bool prtcl_insert = pin->GetOrAddBoolean("particles", "restart_insert", false);
+  // NB: short-circuit on ppart first.  GetOrAdd* CREATES the block when it is absent,
+  // so calling this unconditionally gave every gas-only run an empty <particles> block,
+  // which ParameterDump then wrote into each restart it produced; the next restart saw
+  // the block, built the particles module, and died in Particles::Particles with
+  // "Parameter name 'particle_type' not found in block 'particles'".
+  bool prtcl_insert = (ppart != nullptr) &&
+                      pin->GetOrAddBoolean("particles", "restart_insert", false);
   if (ppart != nullptr && prtcl_insert) {
     for (int r=0; r<global_variable::nranks; ++r) {pm->nprtcl_eachrank[r] = 0;}
     pm->nprtcl_thisrank = 0;
@@ -1046,6 +1052,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     DustNSH(pin, is_restart);
   } else if (pgen_fun_name.compare("dust_grav_orbit") == 0) {
     DustGravOrbit(pin, is_restart);
+  } else if (pgen_fun_name.compare("dust_jeans") == 0) {
+    DustJeans(pin, is_restart);
   } else if (pgen_fun_name.compare("dusty_wave") == 0) {
     DustyWave(pin, is_restart);
   } else if (pgen_fun_name.compare("dust_deposit_shear") == 0) {
@@ -1072,6 +1080,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     Shwave(pin, is_restart);
   } else if (pgen_fun_name.compare("streaming_linear") == 0) {
     StreamingLinear(pin, is_restart);
+  } else if (pgen_fun_name.compare("streaming_strat") == 0) {
+    StreamingStrat(pin, is_restart);
   } else if (pgen_fun_name.compare("z4c_boosted_puncture") == 0) {
     Z4cBoostedPuncture(pin, is_restart);
   } else if (pgen_fun_name.compare("z4c_linear_wave") == 0) {

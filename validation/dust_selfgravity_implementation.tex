@@ -41,10 +41,11 @@
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6},
         \code{9a96f9f3}, \code{d39858ac}, \code{a9279dc8},
-        \code{386d5968}; Phase 5, gravity on refined meshes and Phase 6 on \code{dust-smr}:
+        \code{386d5968}, \code{538fb43b}, \code{1506c83f}, \code{f54271ba}; Phase 5,
+        gravity on refined meshes and Phase 6 on \code{dust-smr}:
         \code{04dbd3dd}, \code{af45c756}, \code{c3d7b308}, \code{1c2c0558}, \code{a2252182},
         \code{06994aa6}, \code{70fc3e82}, \code{424cd7e3}}
-\date{September 3--14, 2026}
+\date{September 3--15, 2026}
 
 \begin{document}
 \maketitle
@@ -250,6 +251,12 @@ Commit & Phase & Content \\
               Vista scripts \\
 \code{386d5968} & science & the particle history output (\code{phst}) and
               \file{scripts/analysis/baehr\_table1.py} \\
+\code{538fb43b} & 4c & the dusty Jeans test: \fn{ProblemGenerator::DustJeans},
+              \file{scripts/analysis/dust\_jeans.py}, the input and the figure \\
+\code{1506c83f} & science & the multi-species insertion, the three-species add-on and
+              the pressure-gradient equilibrium \\
+\code{f54271ba} & 4c & the rotating dusty Jeans test: the shearing-box branch of the
+              generator and the script, the input and the figure \\
 \code{04dbd3dd} & 5 & \file{bvals/bvals\_dep.cpp} level index sets and fine-image packing,
               \fn{DestinationSlot} in \file{bvals\_part.cpp}, particle shear maps at the
               face level, \file{dust/dust\_smr.cpp} (\fn{ZeroImage},
@@ -1266,6 +1273,49 @@ $Sc = (\alpha_R+\alpha_G)/\delta_{d,z}$, and, with \code{--roche}, a census of t
 cells above the Roche density $3.5\,\Omega^2/G$ in the \code{dust\_dpm} dumps
 (connected components and their masses).
 
+\subsection{The dusty Jeans test}
+
+\fn{ProblemGenerator::DustJeans} (\file{pgen/tests/dust\_jeans.cpp}) with
+\file{scripts/analysis/dust\_jeans.py}: the generator takes every component of the
+eigenmode as a parameter (gas density and velocity amplitude and phase, per species the
+dust density --- carried by the particle masses --- and velocity), the script solves the
+$(2N+2)$ linear system of Krapp et al.\ (2024, Eqs.\ 50--54) for the fastest-growing
+mode and prints the command-line overrides (including \code{four\_pi\_G} for
+$k_J = 1$, the mesh and box for the requested $k/k_J$ and cells per wavelength ---
+cubic cells, \code{--nx1}, \code{--ny} --- the species and \code{tlim}), and fits
+the growth rate from the generator's history of mode projections. \code{--nspec N}
+builds Krapp's many-fluid mixture ($N$ species sharing $\epsilon_0$, $t_s$ linear ---
+or log-uniform with \code{--ts-log}, which is what their Fig.\ 6 actually shows ---
+between \code{--ts-min} and \code{--ts-max}); since the command line cannot add keys
+absent from the input, \code{--input}/\code{--out} then writes a complete input file
+with the $5N$ species keys in place. Validation \S8.
+
+\paragraph{The rotating problem.} The same generator in an unstratified shearing box
+(\file{inputs/dust/dust\_jeans\_rot.athinput}: shear-periodic $x_1$, a
+\code{<shearing\_box>} block, $\Omega = 1$, $q = 3/2$): the axisymmetric $k_y = 0$
+mode gains an azimuthal peculiar velocity in every component
+(\code{vgy\_amp/phase}, \code{vdy\_amp\_s/phase\_s}), which is all the generator
+adds --- the Coriolis and shear terms, orbital advection and the shear-periodic
+deposit fold are the modules' own. The script's \code{--omega} branch builds the
+$(3N+3)$ system (\fn{matrix\_rot}: velocities peculiar, $2\Omega v_y$ in $x$,
+$-(2-q)\Omega v_x$ in $y$, \code{four\_pi\_G} explicit) and \code{check} pins it to
+its closed forms: the gas-only $s^2 = 4\pi G\rho_0 - \kappa^2 - c_s^2k^2$
+(Chandrasekhar 1961), the frozen-gas cubic $s[(s+1/t_s)^2 + \kappa^2] = 4\pi
+G\rho_d(s + 1/t_s)$ whose strong-drag limit $4\pi G\rho_d t_s/(1 + \kappa^2 t_s^2)$
+is the secular instability of Ward (2000) and Youdin (2005, 2011) and is
+$k$-independent, $\Omega \to 0$ against the Krapp matrix, and $G \to 0$ epicycles ---
+all to $10^{-14}$. Two things the eigenproblem itself settled before any run: the
+selection of the fastest mode must tolerate ties in $\Re s$ (the $G \to 0$
+oscillations carry a $10^{-10}$ drag damping that would otherwise lose to the zero
+mode), and the eigenvector must not be normalized by $\delta\rho_g$ when that component
+is negligible (the neutral mode at the back-reaction threshold is a pure dust pattern).
+\code{fit} now also reports $\Im s$ from the phase of the projection and, with
+\code{--auto}, restricts itself to the linear window (the longest span over which every
+column is a single exponential below a set amplitude): the slow modes of long runs are
+overtaken by other modes of the 3D box, notably the vertical dust Jeans mode, which
+rotation does not stabilize and which grows from round-off at $\sim 0.7\,\Omega$.
+Validation \S8.
+
 \subsection{The science setup: Baehr, Zhu \& Yang (2022) in two stages}
 \label{sec:science}
 
@@ -1295,6 +1345,40 @@ faces with the outflow removal. Back-reaction on or off is one command-line swit
 \code{particles/restart\_insert=false}, since those dumps carry the particles. Job
 scripts: \file{scripts/cluster/gt\_baehr\_stage\{1,2\}.slurm}, README \S3.
 
+\paragraph{Several sizes at once.} The insertion places \code{<dust>/nspecies} species
+interleaved round-robin within every block (species $s$ = particle index mod
+$N$), so each has the same count and the same spatial distribution; species $s$ carries
+\code{<problem>/dust\_Z\_s} of the gas mass (default \code{dust\_Z}$/N$) in equal-mass
+particles, the per-block counts rounded to a multiple of $N$. The add-on
+\file{gravito\_turb\_baehr\_dust3.athinput} is the three-species layer $St = 0.01, 0.1,
+1$ (\code{ppc} $= 3\times0.02235$: $1.5\times10^6$ particles per species, $Z = 0.01/3$
+each) for the question of which sizes lock into the spirals and which are stirred; with
+back-reaction off the species do not interact, so one run is three single-species
+experiments. Two things came out of exercising it (validation \S8). First, the
+coupling: the $St = 0.01$ particles that land in the floor-density halo make
+$\epsilon/t_s \sim 4\times10^4$ there, and the explicit gas-side drag of PC2 cannot take
+it --- $\Delta t$ collapses to $5\times10^{-5}$, the halo gas is blown up and a quarter
+of the dust leaves the box. The add-on therefore uses \code{coupling = hybrid}: PC2
+while a cell's $\chi = \Delta t\,\epsilon/t_s$ is below $0.5$, split backward-Euler
+drag where it is not (the merged module's own switch, \code{DUST\_HYBRID\_SUMMARY});
+\code{coupling = imex} under \code{imex2+} is the other stiff-safe choice. (A third
+thing came out of the first production attempt, commit \code{95c3e955}: stage 2 died at
+cycle 1 on Vista with an invalid MPI request in \fn{ParticlesBoundaryValues::ClearPrtclSend},
+at 128, 512 and 2048 ranks alike and never on the laptop. The particle exchange's
+counters \code{nsends}, \code{nrecvs}, \code{nprtcl\_send}, \code{nprtcl\_recv} had no
+initializer --- harmless under the stock particle task list, where a clear always
+follows a send --- but the dust graph clears the exchange at the end of every active
+stage and the hybrid coupling migrates only at stage 2, so the first clear ran before
+any migration had happened and waited over a garbage count: zero by luck on the laptop,
+not on Vista. The counters are now initialized and the clears loop over the requests
+they hold.) Second, the optional radial pressure gradient: the constant acceleration on the gas of the NSH
+tests, $a_x = 2\Omega\eta v_K$ (\code{hydro\_srcterms/const\_accel}, keys present in
+the add-on, off by default), is balanced by the uniform azimuthal offset $v_y =
+-a_x/(2\Omega) = -\eta v_K$, so the insertion applies that offset to the restarted gas
+(\code{problem/gas\_vy\_shift = auto}; total energy updated); without it the switch-on
+launches the undamped box-wide epicycle of amplitude $\eta v_K$. The stage-2 script
+takes \code{ADDON} and \code{OVR} from the environment.
+
 \paragraph{The slab-plane cost, found on Vista.} The first stage-1 submission ran at
 $\sim25$ s per cycle on 16 nodes --- never finishing. The cause was in the multigrid's
 slab boundary (\fn{MultigridDriver::ComputeSlabPlanes}): it gathered the \emph{whole}
@@ -1311,6 +1395,23 @@ The static slab tests are unchanged to every digit, the sheared gravito-turbulen
 matches its archive until the shear phase builds and differs at $10^{-6}$--$10^{-4}$
 thereafter (the planes are now free of remap error), 4 ranks now reproduce serial
 exactly, and a $64^3$ box went from 25 s to 0.33 s per cycle.
+
+\paragraph{And the same code again, on a GPU.} Batching the slab gather and forward
+transforms over a stack of planes (\code{73204c3a}, \code{bf1a4446}) removed the
+launch-latency floor that dominated the solve on a GPU and took the $16H$ box from
+$4.9\times10^{7}$ to $9.2\times10^{7}$ cell-updates per second. It also, for a week,
+made every stage-2 run above $64$ ranks fail --- of signal 9 at $128$ ranks and of a UCX
+\emph{Transport retry count exceeded} on an \code{RDMA\_READ} at $512$, which read as a
+fault of the interconnect and was not. The stack was sized by a compile-time batch of
+$32$ and the $y$ transform ran on a non-trailing axis, so kokkos-fft allocated and freed
+two arrays the size of the whole stack inside every call: $320$ MiB held and $256$ MiB
+churned per rank at the Baehr root grid, $72$ GiB of slab buffers on a $128$-rank node,
+and the churn is what invalidates the registration cache UCX serves RDMA from.
+Commit \code{cb3b4b8a} puts every transform on a trailing axis (the shear-phase kernel
+carries the index swap) and sizes the batch from a memory budget, $48$ MiB per rank on a
+host build and $2$ GiB on a device build; the box falls to $36$ MiB per rank and the
+slab tests are unchanged to the last digit. The multigrid document has the full
+account, under ``The slab planes on a GPU, and the memory fault they hid''.
 
 %=========================================================================================
 \section{Phase 5: particles on statically refined meshes}
