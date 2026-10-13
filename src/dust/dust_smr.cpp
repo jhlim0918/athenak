@@ -23,11 +23,21 @@ namespace dust {
 
 //----------------------------------------------------------------------------------------
 //! \fn DustGasDrag::ZeroImage
-//! \brief Zero a fine image before a scatter (no-op without coarser blocks).
+//! \brief Zero a fine image before a scatter (no-op without coarser blocks): only the
+//! active blocks and the extent of this pack's largest factor img_r, not the whole
+//! (grow-only) allocation.
 
 void DustGasDrag::ZeroImage(DvceArray5D<Real> &fimg) {
   if (!any_coarse) {return;}
-  Kokkos::deep_copy(DevExeSpace(), fimg, 0.0);
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int ry = (indcs.nx2 > 1) ? img_r : 1, rz = (indcs.nx3 > 1) ? img_r : 1;
+  int n1 = img_r*(indcs.nx1 + 2*indcs.ng);
+  int n2 = ry*((indcs.nx2 > 1) ? (indcs.nx2 + 2*indcs.ng) : 1);
+  int n3 = rz*((indcs.nx3 > 1) ? (indcs.nx3 + 2*indcs.ng) : 1);
+  auto used = Kokkos::subview(fimg, std::make_pair(0, pmy_pack->nmb_thispack), Kokkos::ALL,
+                              std::make_pair(0, n3), std::make_pair(0, n2),
+                              std::make_pair(0, n1));
+  Kokkos::deep_copy(DevExeSpace(), used, 0.0);
 }
 
 //----------------------------------------------------------------------------------------

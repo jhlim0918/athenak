@@ -145,6 +145,12 @@ void Gravity::Solve(Driver *pdriver, int stage) {
         // cell (solvers read the active zone plus one ghost layer)
         auto &u0 = (pmy_pack->pmhd != nullptr) ? pmy_pack->pmhd->u0
                                                : pmy_pack->phydro->u0;
+        // AMR: the pack may hold more MeshBlocks than when the source array was sized
+        // (the multigrid reallocates phi the same way in MGGravityDriver::Solve)
+        if (rho_total.extent_int(0) < pmy_pack->nmb_thispack) {
+            Kokkos::realloc(rho_total, pmy_pack->nmb_thispack, 1, rho_total.extent_int(2),
+                            rho_total.extent_int(3), rho_total.extent_int(4));
+        }
         auto &ext = rho_extra;
         auto &tot = rho_total;
         const Real wgas = gas_source ? 1.0 : 0.0;

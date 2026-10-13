@@ -272,6 +272,7 @@ class DustGasDrag {
   DvceArray5D<Real> fimg_q;     // fine image of qdep (5 vars)
   DvceArray5D<Real> fimg_d;     // fine image of dmom (4 vars)
   DvceArray5D<Real> fimg_r;     // fine image of rho_dust (1 var)
+  int img_r = 1;                // largest rfac of this pack (ZeroImage extent)
   DvceArray5D<Real> solver_r;   // coupled-solver residual
   DvceArray5D<Real> solver_p;   // PCG search direction
   DvceArray5D<Real> solver_ap;  // matrix-free A*x / A*p work field
