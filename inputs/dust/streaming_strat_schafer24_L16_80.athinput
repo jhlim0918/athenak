@@ -1,0 +1,128 @@
+# AthenaK input file: stratified streaming instability in the (1.6H)^2 x 0.2H box of
+# Schafer, Johansen, Haugbolle & Nordlund (2024, A&A 691, A258) run_1.6_320, at 80/H
+# (128 x 128 x 16 cells) -- STAGE 1, no self-gravity, to the Roche/Hill density.
+#
+# Their setup (Sects. 2.1-2.4, Table 1): St = pi/10, Z = Sigma_p/Sigma_g = 0.02, Pi = 0.05,
+# one super-particle per cell at random positions, sheared-periodic x, periodic y and z;
+# self-gravity 4 pi G rho0/Omega^2 = gamma = 0.318 (Q = 4/(sqrt(2 pi) gamma) = 5.01), so the
+# Roche (Hill) density is 9/gamma = 28.3 rho0.  This run stops (si_strat_hill_stop.slurm) at the
+# first 0.5 P restart dump after max rho_p >= 28.3; the self-gravity restarts (uniform, SMR or AMR)
+# start from that dump.  Their run starts gravity at 25 P with a 10 P ramp; ours is earlier.
+#
+# Initial condition as YJ14 (inputs/dust/streaming_strat_yj14.athinput): particles uniformly
+# random in the whole box, gas in hydrostatic equilibrium at rest in the shearing frame.
+#
+# Mesh choices for the restarts: nghost = 4 (mesh refinement needs an even number; WENO-Z
+# needs >= 3) and 16^3 MeshBlocks, 8 x 8 x 1, so the six interior radial columns may refine
+# (the 3D shearing box never refines x1-boundary blocks; with orbital advection a refined
+# region spans full x2 rings).  A particle restart needs the SAME number of MPI ranks as the
+# run that wrote it: 64 on Vista gg (si_strat_hill_stop.slurm).  Branch si-strat-amr.
+
+<comment>
+problem   = Schafer+24 run_1.6_320 box at 80/H, St = pi/10, Z = 0.02, Pi = 0.05, no SG
+
+<job>
+basename  = s24
+
+<mesh>
+nghost    = 4                # even (mesh refinement); wenoz needs >= 3
+nx1       = 128              # radial: 1.6 H at 80/H
+x1min     = -0.8
+x1max     = 0.8
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+nx2       = 128              # azimuthal: 1.6 H
+x2min     = -0.8
+x2max     = 0.8
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 16               # vertical: 0.2 H
+x3min     = -0.1
+x3max     = 0.1
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16               # 8 x 8 x 1 = 64 MeshBlocks, one per rank on 64 ranks
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic
+integrator = imex2+          # required by the dust module's IMEX drag
+cfl_number = 0.3
+nlim       = -1
+tlim       = 314.1592653589793    # 50 P; si_strat_hill_stop.slurm ends it at the Hill density
+ndiag      = 1000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = wenoz
+rsolver     = roe            # not hlle (see si_strat3d_tests.pdf)
+
+<hydro_srcterms>
+const_accel     = true       # radial pressure-gradient mimic, gas only
+const_accel_val = 0.1        # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+stratified = true            # -Omega^2 z on gas and particles
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 1.0          # N_p = 262144, as their N_p = N_cells
+
+<dust>
+coupling      = imex
+shear_fold    = true
+shear_remap   = plm
+nspecies      = 1
+taus_1        = 0.3141592653589793   # St = pi/10
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+dt_transport  = relative
+dt_block_safety = 0.5
+drag_solver   = local        # required with shear-periodic x1
+
+<problem>
+pgen_name   = streaming_strat
+rho0        = 1.0
+etavk       = 0.05           # Pi c_s
+dust_Z      = 0.02
+dust_hz     = 0.0            # uniform in z (YJ14)
+gas_vy0     = 0.0            # gas at rest in the shearing frame (YJ14)
+random_seed = 1
+
+<output1>
+file_type  = hst
+dt         = 0.06283185307179586   # 0.01 P
+data_format = %.14e
+
+<output2>
+file_type  = phst                  # dpm_max = max rho_p: the stopping criterion
+dt         = 0.06283185307179586   # 0.01 P
+
+<output3>
+file_type  = vtk                   # dust density (bin on a refined mesh: vtk is uniform-only)
+variable   = dust_dpm
+dt         = 3.141592653589793     # 0.5 P
+
+<output4>
+file_type  = pvtk
+variable   = prtcl_all
+dt         = 6.283185307179586     # 1 P
+
+<output5>
+file_type  = vtk
+variable   = hydro_w
+dt         = 31.41592653589793     # 5 P
+
+<output6>
+file_type  = rst
+dt         = 3.141592653589793     # 0.5 P: restart points for the self-gravity runs
