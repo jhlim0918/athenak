@@ -5,9 +5,9 @@
 # Their setup (Sects. 2.1-2.4, Table 1): St = pi/10, Z = Sigma_p/Sigma_g = 0.02, Pi = 0.05,
 # one super-particle per cell at random positions, sheared-periodic x, periodic y and z;
 # self-gravity 4 pi G rho0/Omega^2 = gamma = 0.318 (Q = 4/(sqrt(2 pi) gamma) = 5.01), so the
-# Roche (Hill) density is 9/gamma = 28.3 rho0.  This run stops (si_strat_hill_stop.slurm) at the
-# first 0.5 P restart dump after max rho_p >= 28.3; the self-gravity restarts (uniform, SMR or AMR)
-# start from that dump.  Their run starts gravity at 25 P with a 10 P ramp; ours is earlier.
+# Roche (Hill) density is 9/gamma = 28.3 rho0.  This run goes to tlim with a restart dump every
+# 0.5 P; the self-gravity restarts (uniform, SMR or AMR) start from a dump chosen afterwards
+# from max rho_p in the phst.  Their run starts gravity at 25 P with a 10 P ramp; ours is earlier.
 #
 # Initial condition as YJ14 (inputs/dust/streaming_strat_yj14.athinput): particles uniformly
 # random in the whole box, gas in hydrostatic equilibrium at rest in the shearing frame.
@@ -16,7 +16,7 @@
 # needs >= 3) and 16^3 MeshBlocks, 8 x 8 x 1, so the six interior radial columns may refine
 # (the 3D shearing box never refines x1-boundary blocks; with orbital advection a refined
 # region spans full x2 rings).  A particle restart needs the SAME number of MPI ranks as the
-# run that wrote it: 64 on Vista gg (si_strat_hill_stop.slurm).  Branch si-strat-amr.
+# run that wrote it: 64 on Vista gg (si_strat_s24_stage1.slurm).  Branch si-strat-amr.
 
 <comment>
 problem   = Schafer+24 run_1.6_320 box at 80/H, St = pi/10, Z = 0.02, Pi = 0.05, no SG
@@ -52,7 +52,7 @@ evolution  = dynamic
 integrator = imex2+          # required by the dust module's IMEX drag
 cfl_number = 0.3
 nlim       = -1
-tlim       = 314.1592653589793    # 50 P; si_strat_hill_stop.slurm ends it at the Hill density
+tlim       = 314.1592653589793    # 50 P
 ndiag      = 1000
 
 <hydro>
@@ -105,7 +105,7 @@ dt         = 0.06283185307179586   # 0.01 P
 data_format = %.14e
 
 <output2>
-file_type  = phst                  # dpm_max = max rho_p: the stopping criterion
+file_type  = phst                  # column 12 dpm_max = max rho_p (vs the Hill density 28.3)
 dt         = 0.06283185307179586   # 0.01 P
 
 <output3>
