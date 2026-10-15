@@ -1,0 +1,34 @@
+# AthenaK add-on input: STAGE 2 of the NHFP pilot (inputs/dust/streaming_strat_nhfp_L16.athinput,
+# (1.6H)^2 x 0.2H at 320/H, four species, Z = 0.04, Pi = 0.05) -- dust self-gravity switched on
+# at a stage-1 restart, uniform grid, for 5 P (~300 GB of pvtk + 34 GB of dust_dpm at 0.01 P).
+# Read after the .rst (athena -r <rst> -i <this file>), so only the parameters below change.
+# Use scripts/cluster/si_strat_nhfp_sg_gpu.slurm.
+#
+# 4 pi G rho0/Omega^2 = 0.0723: the MMSN at 40 au (Q = 4/(sqrt(2 pi) 0.0723) = 22.1; Hill density
+# 9/0.0723 = 124.5 rho0, the threshold of the clump analysis); 45 au would be 0.0745.  Dust
+# only (gas_source = false), switched on at once.  The box is periodic in z, so the multigrid
+# keeps its periodic default (no mg_bc = slab, unlike streaming_strat_mmsn40_sg.athinput); the
+# FFT solver runs on one MPI rank only.  4 warm-started V-cycles agree with the converged
+# multigrid to 2e-5 on this mesh layout (8 x 8 x 1 root blocks; checked 2026-10-15).
+
+<gravity>
+solver     = multigrid
+four_pi_G  = 0.0723
+gas_source = false       # dust-only self-gravity
+mg_remap   = ppmx        # shear-periodic remap of the potential
+threshold  = -1.0        # fixed number of V-cycles per solve
+niteration = 4           # warm-started from the previous potential
+full_multigrid = false
+show_defect = 0
+
+<dust>
+gravity    = true        # REQUIRED: the stage-1 restart stores gravity = false
+
+<output3>
+dt         = 0.06283185307179586   # dust_dpm vtk (67 MB) every 0.01 P (stage 1: 0.5 P)
+
+<output4>
+dt         = 0.06283185307179586   # particles (pvtk, ~0.6 GB) every 0.01 P: clump masses and spins
+
+<output6>
+dt         = 6.283185307179586     # restart dumps (~4 GB) every 1 P (stage 1: 10 P)
