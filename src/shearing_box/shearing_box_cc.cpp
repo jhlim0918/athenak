@@ -415,7 +415,7 @@ TaskStatus ShearingBoxCC::RecvAndUnpackCC(DvceArray5D<Real> &a) {
   // shear, which jumps by -qshear*omega0*Lx across the box in x1. Data wrapped
   // through the shear-periodic boundaries must therefore be offset in azimuthal
   // momentum (and total energy, for ideal EOS) to represent the local frame.
-  if (!orbital_advection) {
+  if (!orbital_advection && gas_momenta) {
     auto &msize = pmy_pack->pmesh->mesh_size;
     Real qomL = qshear*omega0*(msize.x1max - msize.x1min);
     bool is_ideal = (pmy_pack->phydro != nullptr) ?

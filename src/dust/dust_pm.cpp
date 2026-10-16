@@ -47,6 +47,7 @@ namespace dust {
 
 TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
   if (!ActiveStage(pdrive, stage) || !back_reaction) {return TaskStatus::complete;}
+  GasFrameGuard frame(this);   // shear-relative gas while this task runs (dust_frame.cpp)
 
   if (coupling == DustCoupling::hybrid) {
     // Split-BE deposits Q/P in its fused preparation traversal.  PC2 needs only the
@@ -265,6 +266,7 @@ void DustGasDrag::UpdateHybridMetric(Driver *pdrive, int stage) {
 
 TaskStatus DustGasDrag::GasImplicitSolve(Driver *pdrive, int stage) {
   if (!ActiveStage(pdrive, stage)) {return TaskStatus::complete;}
+  GasFrameGuard frame(this);   // shear-relative gas while this task runs (dust_frame.cpp)
   if (coupling == DustCoupling::hybrid) {
     if (hybrid_mode == HybridMode::pc2 && stage == 1) {
       UpdateHybridMetric(pdrive, stage);
@@ -476,6 +478,7 @@ TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
 
 TaskStatus DustGasDrag::ApplyPMBR(Driver *pdrive, int stage) {
   if (!ActiveStage(pdrive, stage) || !back_reaction) {return TaskStatus::complete;}
+  GasFrameGuard frame(this);   // shear-relative gas while this task runs (dust_frame.cpp)
 
   if (coupling == DustCoupling::hybrid) {
     if (stage != 2) return TaskStatus::complete;
@@ -537,6 +540,7 @@ TaskStatus DustGasDrag::ApplyPMBR(Driver *pdrive, int stage) {
 TaskStatus DustGasDrag::AddDragHistoryGas(Driver *pdrive, int stage) {
   if (coupling != DustCoupling::imex) {return TaskStatus::complete;}
   if (stage != 2 || !back_reaction) {return TaskStatus::complete;}
+  GasFrameGuard frame(this);   // shear-relative gas while this task runs (dust_frame.cpp)
 
   auto &indcs = pmy_pack->pmesh->mb_indcs;
   int is = indcs.is, ie = indcs.ie;

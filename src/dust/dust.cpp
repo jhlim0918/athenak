@@ -396,6 +396,10 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   if (is_shearing_box) {
     qshear = pin->GetReal("shearing_box","qshear");
     omega0 = pin->GetReal("shearing_box","omega0");
+    // without orbital advection the gas momenta include the background shear: the dust
+    // tasks shift the gas into the shear-relative frame while they run (dust_frame.cpp)
+    gas_full_frame = pmy_pack->pmesh->three_d && (pmy_pack->phydro != nullptr) &&
+                     !pin->GetOrAddBoolean("shearing_box", "orbital_advection", true);
     is_stratified = pin->GetOrAddBoolean("shearing_box","stratified",false);
   } else {
     qshear = 0.0;
@@ -525,6 +529,7 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   // shear-periodic remap of the u* radial ghost zones (3D shearing box only)
   if (shear_x1 && pmy_pack->pmesh->three_d) {
     psbox_us = new ShearingBoxCC(pmy_pack, pin, 3);
+    psbox_us->gas_momenta = false;   // u* is shear-relative: no frame offset
   }
   // self-gravity: the dust density (additive exchange + copy exchange of its ghost
   // layer, both with the shear remap) and the force field (copy exchange)
@@ -536,14 +541,20 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   if (pbval_solver_add != nullptr) {pbval_solver_add->SetImageFactors(rfac);}
   pbval_rc = new MeshBoundaryValuesCC(pmy_pack, pin, false);
   pbval_rc->InitializeBuffers(1);
-  if (shear_x1) {psbox_rc = new ShearingBoxCC(pmy_pack, pin, 1);}
+  if (shear_x1) {
+    psbox_rc = new ShearingBoxCC(pmy_pack, pin, 1);
+    psbox_rc->gas_momenta = false;
+  }
   if (gravity && gravity_source) {
     pmy_pack->pgrav->RegisterExtraDensity(rho_dust);
   }
   if (gravity && gravity_force) {
     pbval_g = new MeshBoundaryValuesCC(pmy_pack, pin, false);
     pbval_g->InitializeBuffers(3);
-    if (shear_x1) {psbox_g = new ShearingBoxCC(pmy_pack, pin, 3);}
+    if (shear_x1) {
+      psbox_g = new ShearingBoxCC(pmy_pack, pin, 3);
+      psbox_g->gas_momenta = false;
+    }
   }
 }
 

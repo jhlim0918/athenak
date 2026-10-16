@@ -34,6 +34,7 @@ namespace dust {
 
 TaskStatus DustGasDrag::FirstTwoImpRK(Driver *pdrive, int stage) {
   hydro::Hydro *phyd = pmy_pack->phydro;
+  GasFrameGuard frame(this);   // shear-relative gas while this task runs (dust_frame.cpp)
   if (coupling == DustCoupling::hybrid && stage == 2) {
     // Stage 1 has completed its full boundary tail.  Form the conserved midpoint gas
     // velocity before RKUpdate(2) overwrites u0.  Include ghosts so PC2 needs no second

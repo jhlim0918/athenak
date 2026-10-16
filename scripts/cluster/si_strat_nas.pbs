@@ -1,0 +1,81 @@
+#!/bin/bash
+#PBS -S /bin/bash
+#PBS -N si3d
+#PBS -l select=1:ncpus=256:mpiprocs=256:model=tur_ath
+#PBS -l walltime=08:00:00
+#PBS -q normal
+#PBS -j oe
+#PBS -W group_list=s3183
+#PBS -m abe
+#PBS -M jay.lim1@unlv.edu
+# NAS (Athena Turin nodes) runner for the stratified streaming-instability runs of branch
+# si-strat-amr, driven by a run.conf in the run directory (bash, sourced):
+#
+#   FIRST=(-i input_used.athinput)                 # how the FIRST job starts: an input,
+#   FIRST=(-r start.rst -i addon.athinput)         #   or a restart (+ add-on) not in rst/
+#   OVR=(mesh/nx1=512 time/tlim=...)               # overrides for the first job only
+#   MAX_JOBS=4                                     # chain length (default 4)
+#
+# Every later job restarts from the newest rst/*.rst (its parameters, incl. the add-on and
+# the overrides, are stored in the file).  The first job copies the binary into the run
+# directory (./athena, frozen for the whole chain) and records the commit.  Ranks and
+# ranks-per-node come from $PBS_NODEFILE, so the select= line alone sets the launch: a
+# particle restart needs the SAME rank count as the job that wrote it, so keep select= the
+# same for every job of a chain (qsub -l select=... overrides the default line above).
+# athena stops itself 15 min before the walltime (-t) and writes a restart; the chain then
+# resubmits this script with the same resources, at most MAX_JOBS jobs in total.
+#
+#   cd $HOME/nobackup_link/si/<run> && qsub [-l select=2:ncpus=256:mpiprocs=256:model=tur_ath]
+#        [-q long -l walltime=24:00:00] $HOME/athenak-si-strat-amr/scripts/cluster/si_strat_nas.pbs
+#
+# BUILD (once, on athfe; README "NAS"): Cray clang, FFTW named explicitly:
+#   module use /opt/cray/pals/modulefiles && module load cray-pals cray-fftw
+#   cd $HOME/athenak-si-strat-amr && cmake -B build-cluster -D Athena_ENABLE_MPI=ON \
+#     -D Athena_ENABLE_FFT=ON -D CMAKE_CXX_COMPILER=CC -D FFTW_ROOT=/opt/cray/pe/fftw/default/x86_64 \
+#     && cmake --build build-cluster -j 16
+ATHENAK=${ATHENAK:-$HOME/athenak-si-strat-amr}
+SRC_EXE=$ATHENAK/build-cluster/src/athena
+SCRIPT=${SCRIPT:-$ATHENAK/scripts/cluster/si_strat_nas.pbs}
+source /opt/cray/pe/modules/3.2.11.7/init/bash
+module load PrgEnv-cray 2>/dev/null || true
+module use /opt/cray/pals/modulefiles
+module load cray-pals cray-fftw
+NRANKS=$(wc -l < $PBS_NODEFILE)
+NNODES=$(sort -u $PBS_NODEFILE | wc -l)
+PPN=$(( NRANKS / NNODES ))
+cd $PBS_O_WORKDIR
+die() { echo "ERROR: $*" | tee -a run.log; exit 1; }
+[ -f run.conf ] || die "no run.conf in $PBS_O_WORKDIR"
+MAX_JOBS=4; FIRST=(); OVR=()
+source ./run.conf
+# walltime -> athena's -t, 15 min earlier
+WT=$(qstat -f $PBS_JOBID 2>/dev/null | sed -n 's/.*Resource_List.walltime = //p')
+WS=$(echo ${WT:-08:00:00} | awk -F: '{print $1*3600 + $2*60 + $3 - 900}')
+WALL=$(printf '%d:%02d:%02d' $((WS/3600)) $(((WS%3600)/60)) $((WS%60)))
+{
+  echo "# job $PBS_JOBID on $NNODES node(s): $(sort -u $PBS_NODEFILE | tr '\n' ' '), $NRANKS ranks"
+  echo "# started $(date); athena -t $WALL"
+} >> run.log
+if ls rst/*.rst > /dev/null 2>&1; then
+  [ -f nranks.txt ] && [ "$(cat nranks.txt)" != "$NRANKS" ] && \
+    die "this chain runs on $(cat nranks.txt) ranks, this job has $NRANKS (particle restarts need the same)"
+  RST=$(ls rst/*.rst | tail -1)
+  echo "# restarting from $RST" >> run.log
+  mpiexec -np $NRANKS -ppn $PPN ./athena -r $RST -d ./ -t $WALL >> run.log 2>&1
+else
+  [ ${#FIRST[@]} -gt 0 ] || die "run.conf sets no FIRST=(...)"
+  cp $SRC_EXE ./athena && echo "# binary $SRC_EXE, commit $(git -C $ATHENAK rev-parse --short HEAD)" >> run.log
+  echo $NRANKS > nranks.txt
+  echo "# first job: ${FIRST[*]} ${OVR[*]}" >> run.log
+  mpiexec -np $NRANKS -ppn $PPN ./athena "${FIRST[@]}" -d ./ -t $WALL "${OVR[@]}" >> run.log 2>&1
+fi
+echo "# job $PBS_JOBID ended $(date)" >> run.log
+echo $PBS_JOBID >> jobs.list
+if tail -40 run.log | grep -q "^Terminating on wall clock limit"; then
+  if [ $(wc -l < jobs.list) -lt $MAX_JOBS ]; then
+    NEXT=$(qsub -l select=${NNODES}:ncpus=256:mpiprocs=$PPN:model=tur_ath -l walltime=$WT -q $PBS_QUEUE $SCRIPT)
+    echo "# chained $NEXT" >> run.log
+  else
+    echo "# MAX_JOBS=$MAX_JOBS reached; not resubmitting" >> run.log
+  fi
+fi

@@ -115,6 +115,11 @@ class ShearingBoxCC : public ShearingBox {
  public:
   ShearingBoxCC(MeshBlockPack *ppack, ParameterInput *pin, int nvar);
   int nvar;   // number of CC variables communicated (needed to size buffers)
+  // the remapped array holds the gas conserved variables (IDN, IM2, IEN): without orbital
+  // advection RecvAndUnpackCC then offsets the wrapped azimuthal momentum by the
+  // background-shear jump.  false for other fields (the dust module's shear-relative
+  // u*, rho_dust, gforce), which must be wrapped unchanged in either frame
+  bool gas_momenta = true;
   // functions to communicate CC data with shearing box BCs
   TaskStatus PackAndSendCC(DvceArray5D<Real> &a, ReconstructionMethod rcon);
   TaskStatus RecvAndUnpackCC(DvceArray5D<Real> &a);

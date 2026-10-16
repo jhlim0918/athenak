@@ -1,0 +1,32 @@
+# AthenaK add-on input: STAGE 2 of the Schafer+24 run_1.6_320 box
+# (inputs/dust/streaming_strat_schafer24_L16_80.athinput) -- dust self-gravity switched on at a
+# stage-1 restart, uniform grid.  Read after the .rst (athena -r <rst> -i <this file>), so only
+# the parameters below change; everything else comes from the restart.
+#
+# gamma = 4 pi G rho0/Omega^2 = 0.318 (Q = 4/(sqrt(2 pi) gamma) = 5.01, Roche/Hill density
+# 9/gamma = 28.3 rho0), dust only as in Schafer+24 (gas_source = false).  Gravity is switched on
+# at once; their run ramps it over 10 P from 25 P.  The box is periodic in z, so the multigrid
+# keeps its periodic default (no mg_bc); the FFT solver would be exact here but runs on one MPI
+# rank only.  Checked on the stage-1 state (1 rank, 2026-10-15): 4 warm-started V-cycles agree
+# with the converged multigrid to 2e-5 and with the FFT solver to 4e-8 at a shear-periodic
+# instant; away from one the ppmx shear remap differs from the FFT phase shift only at the grid
+# scale (k_y > 40 of 64).  Use scripts/cluster/si_strat_s24_sg.slurm.
+
+<gravity>
+solver     = multigrid
+four_pi_G  = 0.318
+gas_source = false       # dust-only self-gravity
+mg_remap   = ppmx        # shear-periodic remap of the potential
+threshold  = -1.0        # fixed number of V-cycles per solve
+niteration = 4           # warm-started from the previous potential
+full_multigrid = false
+show_defect = 0
+
+<dust>
+gravity    = true        # REQUIRED: the stage-1 restart stores gravity = false
+
+<output3>
+dt         = 0.6283185307179586    # dust_dpm vtk every 0.1 P (stage 1: 0.5 P)
+
+<output4>
+dt         = 0.6283185307179586    # particles (pvtk) every 0.1 P: clump masses and spins

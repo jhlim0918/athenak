@@ -130,13 +130,19 @@ void ProblemGenerator::StreamingStrat(ParameterInput *pin, const bool restart) {
   int nmb = pmbp->nmb_thispack;
   auto &size = pmbp->pmb->mb_size;
   auto &u0 = pmbp->phydro->u0;
+  // without orbital advection the gas momenta are the full ones: add the background shear
+  // -q Omega x (the dust module works shear-relative either way, see dust_frame.cpp)
+  const Real qo_full = pin->GetOrAddBoolean("shearing_box", "orbital_advection", true) ? 0.0 :
+                       pin->GetReal("shearing_box", "qshear")*omega0;
+  int is = indcs.is, nx1 = indcs.nx1;
   par_for("strat_gas", DevExeSpace(), 0, nmb-1, 0, n3-1, 0, n2-1, 0, n1-1,
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
     Real z = CellCenterX(k-ks, nx3, size.d_view(m).x3min, size.d_view(m).x3max);
+    Real x = CellCenterX(i-is, nx1, size.d_view(m).x1min, size.d_view(m).x1max);
     Real den = rho0*exp(-0.5*SQR(z/hgas));
     u0(m,IDN,k,j,i) = den;
     u0(m,IM1,k,j,i) = 0.0;
-    u0(m,IM2,k,j,i) = den*gas_vy0;
+    u0(m,IM2,k,j,i) = den*(gas_vy0 - qo_full*x);
     u0(m,IM3,k,j,i) = 0.0;
   });
 

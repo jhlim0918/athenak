@@ -418,8 +418,14 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
   // state has no perturbation to grow, whatever the scheme's stability)
   Real gas_vpert = pin->GetOrAddReal("problem","gas_vpert",0.0);
   auto gids_ = pmbp->gids;
+  // 3D without orbital advection: full gas momenta, i.e. plus the background shear -qOmega x
+  const Real qo_full = (three_d && !pin->GetOrAddBoolean("shearing_box","orbital_advection",
+                        true)) ? qshear*omega0 : 0.0;
+  auto &gsize = pmbp->pmb->mb_size;
+  const int gis = indcs.is, gnx1 = indcs.nx1;
   par_for("nsh_gas", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n2-1),0,(n1-1),
   KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    Real vsh = -qo_full*CellCenterX(i-gis, gnx1, gsize.d_view(m).x1min, gsize.d_view(m).x1max);
     Real px = 0.0, py = 0.0, pz = 0.0;
     if (gas_vpert != 0.0) {
       std::uint64_t key = (static_cast<std::uint64_t>(gids_ + m) << 48)
@@ -432,10 +438,10 @@ void ProblemGenerator::DustNSH(ParameterInput *pin, const bool restart) {
     }
     u0(m,IDN,k,j,i) = rho0;
     u0(m,IM1,k,j,i) = rho0*(ugx + px);
-    u0(m,IM2,k,j,i) = three_d ? rho0*(ugp + py) : rho0*pz;
+    u0(m,IM2,k,j,i) = three_d ? rho0*(ugp + py + vsh) : rho0*pz;
     u0(m,IM3,k,j,i) = three_d ? rho0*pz : rho0*(ugp + py);
     if (is_ideal) {
-      u0(m,IEN,k,j,i) = pgas/gm1 + 0.5*rho0*(SQR(ugx) + SQR(ugp));
+      u0(m,IEN,k,j,i) = pgas/gm1 + 0.5*rho0*(SQR(ugx) + SQR(ugp + vsh));
     }
   });
 
@@ -632,6 +638,11 @@ void DustNSHErrors(ParameterInput *pin, Mesh *pm) {
   const int nji = nx2*nx1;
   auto &u0 = pmbp->phydro->u0;
   int iazim = three_d ? IM2 : IM3;
+  // without orbital advection the azimuthal gas momentum includes the background shear:
+  // measure the shear-relative one, as with orbital advection
+  const Real qo_full = (three_d && !pin->GetOrAddBoolean("shearing_box","orbital_advection",
+                        true)) ? qshear*omega0 : 0.0;
+  auto &gsize = pmbp->pmb->mb_size;
   Real gmx = 0.0, gmp = 0.0, gm = 0.0;
   Kokkos::parallel_reduce("nsh_gsum",Kokkos::RangePolicy<>(DevExeSpace(),0,nmkji),
   KOKKOS_LAMBDA(const int &idx, Real &mx, Real &mp, Real &mass) {
@@ -641,8 +652,9 @@ void DustNSHErrors(ParameterInput *pin, Mesh *pm) {
     int i = (idx - m*nkji - k*nji - j*nx1) + is;
     k += ks;
     j += js;
+    Real x = CellCenterX(i-is, nx1, gsize.d_view(m).x1min, gsize.d_view(m).x1max);
     mx += u0(m,IM1,k,j,i);
-    mp += u0(m,iazim,k,j,i);
+    mp += u0(m,iazim,k,j,i) + qo_full*x*u0(m,IDN,k,j,i);
     mass += u0(m,IDN,k,j,i);
   }, Kokkos::Sum<Real>(gmx), Kokkos::Sum<Real>(gmp), Kokkos::Sum<Real>(gm));
 

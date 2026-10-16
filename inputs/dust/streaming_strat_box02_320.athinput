@@ -1,0 +1,125 @@
+# AthenaK input file: stratified streaming instability in a (0.2H)^3 box at 320/H (64^3 cells)
+# -- STAGE 1, no self-gravity, uniform grid -- for a later restart with dust self-gravity
+# (Gtilde = 4 pi G rho0/Omega^2 = 0.1, Hill density 9/Gtilde = 90 rho0) and AMR that follows
+# the collapse of one clump (NHFP 2027 preliminary result).
+#
+# St = 0.1, Z = Sigma_p/Sigma_g = 0.02 (Sigma_g = sqrt(2 pi) H rho0), Pi = 0.05; one species,
+# one particle per cell.  Initial condition as the NHFP pilot (streaming_strat_nhfp_L16):
+# particles in a Gaussian layer of width 0.02 H, at rest; gas in hydrostatic equilibrium at the
+# dust-free equilibrium u_y = -Pi c_s.  Periodic z, shear-periodic x.  Roe, WENO-Z, imex2+, TSC.
+#
+# Mesh choices for the AMR restart: nghost = 4 (mesh refinement needs an even number, WENO-Z
+# >= 3) and 8^3 MeshBlocks (the deposit exchange on a refined mesh needs >= 2 nghost cells),
+# 8 x 8 x 8 = 512: the 3D shearing box never refines the two x1-boundary columns, so 6 of the
+# 8 radial columns may refine.  (80/H = 16^3 cells could never refine: 2 x 2 x 2 blocks.)
+# A particle restart needs the SAME number of MPI ranks as the run that wrote it.
+# NAS: scripts/cluster/si_strat_nas.pbs, 256 ranks (one Turin node).  Branch si-strat-amr.
+
+<comment>
+problem   = (0.2H)^3 box at 320/H, St = 0.1, Z = 0.02, Pi = 0.05, no SG (stage 1)
+
+<job>
+basename  = box02
+
+<mesh>
+nghost    = 4                # even (mesh refinement); wenoz needs >= 3
+nx1       = 64               # radial: 0.2 H at 320/H
+x1min     = -0.1
+x1max     = 0.1
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+nx2       = 64               # azimuthal
+x2min     = -0.1
+x2max     = 0.1
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 64               # vertical
+x3min     = -0.1
+x3max     = 0.1
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 8                # 8 x 8 x 8 = 512 MeshBlocks
+nx2       = 8
+nx3       = 8
+
+<time>
+evolution  = dynamic
+integrator = imex2+          # required by the dust module's IMEX drag
+cfl_number = 0.3
+nlim       = -1
+tlim       = 314.1592653589793    # 50 P
+ndiag      = 10000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = wenoz
+rsolver     = roe            # not hlle (see si_strat3d_tests.pdf)
+
+<hydro_srcterms>
+const_accel     = true       # radial pressure-gradient mimic, gas only
+const_accel_val = 0.1        # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+stratified = true            # -Omega^2 z on gas and particles
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 1.0          # 262144 particles
+
+<dust>
+coupling      = imex
+shear_fold    = true
+shear_remap   = plm
+nspecies      = 1
+taus_1        = 0.1          # St
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+dt_transport  = relative
+dt_block_safety = 0.5
+drag_solver   = local        # required with shear-periodic x1
+
+<problem>
+pgen_name   = streaming_strat
+rho0        = 1.0
+etavk       = 0.05           # Pi c_s
+dust_Z      = 0.02
+dust_hz     = 0.02           # Gaussian initial layer, in H
+gas_vy0     = -0.05          # dust-free equilibrium (-etavk)
+random_seed = 1
+
+<output1>
+file_type  = hst
+dt         = 0.06283185307179586   # 0.01 P
+data_format = %.14e
+
+<output2>
+file_type  = phst                  # column 12 = max rho_p (vs the Hill density 90 at Gtilde 0.1)
+dt         = 0.06283185307179586   # 0.01 P
+
+<output3>
+file_type  = vtk                   # dust density, 1 MB each
+variable   = dust_dpm
+dt         = 0.6283185307179586    # 0.1 P
+
+<output4>
+file_type  = pvtk                  # all particles, ~10 MB each
+variable   = prtcl_all
+dt         = 0.6283185307179586    # 0.1 P
+
+<output5>
+file_type  = vtk
+variable   = hydro_w
+dt         = 6.283185307179586     # 1 P
+
+<output6>
+file_type  = rst
+dt         = 3.141592653589793     # 0.5 P: restart points for the self-gravity + AMR runs

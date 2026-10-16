@@ -1,0 +1,55 @@
+# AthenaK add-on input: STAGE 2 of the (0.2H)^3 box at 320/H (streaming_strat_box02_320.athinput,
+# St 0.1, Z 0.02, Pi 0.05) -- dust self-gravity Gtilde = 4 pi G rho0/Omega^2 = 0.1 (Hill density
+# 9/Gtilde = 90 rho0) switched on at a stage-1 restart, with AMR to follow the collapse.
+# Read after the .rst:  athena -r rst/box02.00040.rst -i <this file> time/tlim=...
+# A particle restart needs the stage-1 rank count (256).  Branch si-strat-amr, at or after the
+# commit that initialises the dust boundary pointers (dust.hpp pbval_* = nullptr).
+#
+# Refinement: two levels above root (320 -> 640 -> 1280/H) where max rho_p exceeds the Hill
+# density, derefined below rho_H/3; min_max is the only criterion, so the same threshold acts
+# at every level and a clump above rho_H goes straight to the finest level.  Orbital advection
+# stays on (as in stage 1): refined regions are full azimuthal rings, cheap in a 0.2H box; the
+# two x1-boundary columns of 8^3 MeshBlocks never refine (x within 0.075 H of the centre does).
+# Particles split 2^3 on refinement.  Mesh outputs become bin (the vtk writer is uniform-only).
+
+<gravity>
+solver     = multigrid
+four_pi_G  = 0.1
+gas_source = false       # dust-only self-gravity
+mg_remap   = ppmx        # shear-periodic remap of the potential
+threshold  = -1.0        # fixed number of V-cycles per solve
+niteration = 4           # warm-started from the previous potential
+full_multigrid = false
+show_defect = 0
+
+<dust>
+gravity    = true        # REQUIRED: the stage-1 restart stores gravity = false
+
+<particles>
+split_on_refine = true
+
+<mesh_refinement>
+refinement = adaptive
+num_levels = 3           # root + 2 (1280/H)
+ncycle_check = 10
+refinement_interval = 50
+max_nmb_per_rank = 64
+
+<amr_criterion1>
+method    = min_max
+variable  = dust_rho
+value_max = 90.0         # Hill density at Gtilde = 0.1
+value_max_deref = 30.0
+
+<output3>
+file_type  = bin                   # dust density on the refined mesh
+dt         = 0.06283185307179586   # 0.01 P
+
+<output4>
+dt         = 0.06283185307179586   # particles (pvtk) every 0.01 P
+
+<output5>
+file_type  = bin                   # gas on the refined mesh, every 1 P (stage-1 dt)
+
+<output6>
+dt         = 3.141592653589793     # restart every 0.5 P

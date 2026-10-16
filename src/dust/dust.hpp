@@ -214,6 +214,13 @@ class DustGasDrag {
   bool is_shearing_box;      // <shearing_box> block present
   bool is_stratified;        // vertical gravity (3D shearing box only)
   Real qshear, omega0;       // shearing box parameters (0 if no shearing box)
+  // 3D shearing box WITHOUT orbital advection (<shearing_box> orbital_advection = false):
+  // the gas momenta then include the background shear -q Omega x, while every particle
+  // velocity, deposit and dust-side gas velocity is shear-relative.  ShiftGasFrame moves the
+  // gas (u0, and u1 when allocated alike, ghosts included) into the shear-relative frame and
+  // back; GasFrameGuard brackets every task that reads or writes them (see dust_frame.cpp).
+  bool gas_full_frame = false;
+  void ShiftGasFrame(bool to_relative);
   Real dt_cfl;               // particle CFL number for transport timestep
   DustDtTransport dt_transport;  // azimuthal velocity used for the cell-crossing limit
   Real dt_block_safety;      // fraction of a MeshBlock crossed per stage (guard)
@@ -278,9 +285,9 @@ class DustGasDrag {
   DvceArray5D<Real> solver_ap;  // matrix-free A*x / A*p work field
 
   // Boundary communication objects
-  MeshBoundaryValuesDep *pbval_qp;  // additive exchange of (Q,P) ghost deposits
-  MeshBoundaryValuesDep *pbval_dm;  // additive exchange of PMBR ghost deposits
-  MeshBoundaryValuesCC  *pbval_us;  // copy exchange to fill u* ghost zones
+  MeshBoundaryValuesDep *pbval_qp = nullptr;  // additive exchange of (Q,P) ghost deposits
+  MeshBoundaryValuesDep *pbval_dm = nullptr;  // additive exchange of PMBR ghost deposits
+  MeshBoundaryValuesCC  *pbval_us = nullptr;  // copy exchange to fill u* ghost zones
   ShearingBoxCC *psbox_us = nullptr;  // shear-periodic remap of u* x1 ghost zones (3D)
   MeshBoundaryValuesDep *pbval_rd = nullptr;  // additive exchange of rho_dust deposits
   MeshBoundaryValuesCC  *pbval_rc = nullptr;  // copy exchange filling rho_dust ghosts
@@ -425,6 +432,22 @@ class DustGasDrag {
 
  private:
   MeshBlockPack *pmy_pack;  // ptr to MeshBlockPack containing this DustGasDrag
+};
+
+
+//----------------------------------------------------------------------------------------
+//! \class GasFrameGuard
+//! \brief RAII: shift the gas into the shear-relative frame for the lifetime of the guard
+//! (only when DustGasDrag::gas_full_frame, i.e. a 3D shearing box without orbital advection)
+
+class GasFrameGuard {
+ public:
+  explicit GasFrameGuard(DustGasDrag *d) : d_(d) {if (d_->gas_full_frame) {d_->ShiftGasFrame(true);}}
+  ~GasFrameGuard() {if (d_->gas_full_frame) {d_->ShiftGasFrame(false);}}
+  GasFrameGuard(const GasFrameGuard&) = delete;
+  GasFrameGuard& operator=(const GasFrameGuard&) = delete;
+ private:
+  DustGasDrag *d_;
 };
 
 } // namespace dust

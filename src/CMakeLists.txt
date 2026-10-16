@@ -44,6 +44,7 @@ add_executable(
         dust/dust_newdt.cpp
         dust/dust_gravity.cpp
         dust/dust_smr.cpp
+        dust/dust_frame.cpp
         dust/dust_pm.cpp
         dust/dust_push.cpp
         dust/dust_solver.cpp
