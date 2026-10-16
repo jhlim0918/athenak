@@ -1,0 +1,30 @@
+# AthenaK add-on input: STAGE 2 of the (0.2H)^3 box at 320/H, UNIFORM twin of
+# streaming_strat_box02_sg_amr_addon.athinput: the same dust self-gravity (Gtilde = 0.1, rho_H =
+# 90 rho0) from the same 20 P restart, without mesh refinement.  Outputs as the AMR run (bin mesh
+# dumps, so the same readers apply to both).  athena -r rst/box02.00040.rst -i <this file> time/tlim=...
+
+<gravity>
+solver     = multigrid
+four_pi_G  = 0.1
+gas_source = false       # dust-only self-gravity
+mg_remap   = ppmx        # shear-periodic remap of the potential
+threshold  = -1.0        # fixed number of V-cycles per solve
+niteration = 4           # warm-started from the previous potential
+full_multigrid = false
+show_defect = 0
+
+<dust>
+gravity    = true        # REQUIRED: the stage-1 restart stores gravity = false
+
+<output3>
+file_type  = bin                   # dust density, as the AMR twin
+dt         = 0.06283185307179586   # 0.01 P
+
+<output4>
+dt         = 0.06283185307179586   # particles (pvtk) every 0.01 P
+
+<output5>
+file_type  = bin                   # gas, every 1 P (stage-1 dt)
+
+<output6>
+dt         = 3.141592653589793     # restart every 0.5 P

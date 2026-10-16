@@ -42,7 +42,7 @@ def read_rst(fname, nranks_hint=None):
     ncyc, = struct.unpack_from("<i", b, o); o += 4
     lloc = np.frombuffer(b, np.int32, 4*nmb, o).reshape(nmb, 4).copy(); o += 16*nmb
     cost = np.frombuffer(b, np.float32, nmb, o).copy(); o += 4*nmb
-    ng, nx1, nx2, nx3 = bind[0], bind[1], bind[2], bind[3]
+    ng, nx1, nx2, nx3 = (int(v) for v in bind[:4])   # Python ints: NumPy 2 keeps int32 arithmetic
     nout = (nx1 + 2*ng, nx2 + 2*ng, nx3 + 2*ng)
     # particle counts: nranks ints, then (nrd, nid), then size_t data_size; find nranks
     for nr in ([nranks_hint] if nranks_hint else range(1, 65537)):
