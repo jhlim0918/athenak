@@ -36,7 +36,7 @@
        timestep under shear; Phase 4c: dust self-gravity; Phase 4d: the vertical
        policy, restart, diagnostics; Phase 5: particles on statically refined meshes;
        gravity on statically refined meshes; Phase 6: particles on adaptively refined
-       meshes}
+       meshes, and the image-free finest-kernel deposits}
 \author{\code{athenak-multigrid} tree, branches \code{dust-multigrid} and \code{dust-smr}\\
         \small commits \code{449b8f09} (merge), \code{a7c0def3}, \code{774c6519},
         \code{78320aee} (second merge), \code{6c0cafef}, \code{489c656c}, \code{375643e6},
@@ -44,8 +44,9 @@
         \code{386d5968}, \code{538fb43b}, \code{1506c83f}, \code{f54271ba}; Phase 5,
         gravity on refined meshes and Phase 6 on \code{dust-smr}:
         \code{04dbd3dd}, \code{af45c756}, \code{c3d7b308}, \code{1c2c0558}, \code{a2252182},
-        \code{06994aa6}, \code{70fc3e82}, \code{424cd7e3}}
-\date{September 3--15, 2026}
+        \code{06994aa6}, \code{70fc3e82}, \code{424cd7e3}; image-free deposits on
+        \code{si-strat-amr}: \code{1f811c1c}}
+\date{September 3--15, 2026; image-free deposits October 19, 2026}
 
 \begin{document}
 \maketitle
@@ -142,6 +143,10 @@ $2^d$ half-fine-cell children so a population keeps its sampling per cell on the
 level --- the answer to the aliasing the linA mode exposed in Phase 5. The 2D $r$--$z$
 box, whose shear machinery is inert, is freed from the ring and face policies and
 refines in patches; the Johansen \& Youdin (2007) AB and BA runs are set up on it.
+The fine images themselves were later retired (\S\ref{sec:imagefree}): a block $r$ times
+coarser than the finest level now folds the finest-level kernel onto its own cells
+directly, and only a block with a finer neighbour keeps a fixed $2\times$ halo image for
+the exchange, so the deposit memory no longer grows by $8$ per level.
 
 The document also records, for the phases that follow, the integration map derived
 from the code survey: where the gravity solve is called relative to the dust task
@@ -296,6 +301,11 @@ Commit & Phase & Content \\
 \code{424cd7e3} & 6 & \fn{Particles::InitSamplingLevel}: \code{PLEV} set after the
               generator returns (\file{pgen.cpp}), not inside \fn{CreateParticleTags}
               where the block id was still unset (every rank but 0 got garbage) \\
+\code{1f811c1c} & 6 & image-free deposits (\S\ref{sec:imagefree}):
+              \fn{BinWeights}, \fn{DepositStencil} with the target factor,
+              \fn{StencilAtEdge}, the \code{halo} flags and $2\times$ halo images
+              (\fn{SetRefinementFactors}, \fn{ZeroImage}), the six scatter sites;
+              \fn{RestrictImage} and \fn{SetImageFactors} removed \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -1495,6 +1505,11 @@ with one lattice point per cell of each block the two spacings' kernel sums diff
 $O(1)$ at the interface (a lattice property: for random positions both are uniform in
 expectation), so that test is documented as a property of the lattice.
 
+\emph{Superseded in storage, not in result:} the image and \fn{RestrictImage} were
+replaced on October 19, 2026 by folding the fine kernel onto the block's cells
+(\S\ref{sec:imagefree}); the deposited field is the same to round-off, and every
+statement of this subsection about it still holds.
+
 \subsection{The additive exchange across levels}
 
 \fn{MeshBoundaryValuesDep} gains the level-dependent index sets of the cell-centered
@@ -1515,7 +1530,8 @@ exchange, built in its own \fn{InitSendIndices}/\fn{InitRecvIndices} to mirror
       The sender packs, for each of its $n_g$ ghost cells over the quadrant $(f_1,f_2)$
       of that fine neighbor, the $2^d$ cells of its fine image (the finest-kernel
       deposits of its own particles); the payload is $2^d$ times the cell count. The fine
-      receiver adds each into the fine cell it covers, $2n_g$ fine cells deep.
+      receiver adds each into the fine cell it covers, $2n_g$ fine cells deep. (Since
+      \S\ref{sec:imagefree} these values come from the block's $2\times$ halo image.)
 \item Same level: unchanged, bit for bit.
 \end{itemize}
 The rank-packed messaging sizes each payload from these index sets
@@ -1559,7 +1575,7 @@ Generic (cherry-pickable to the dust fork): \file{bvals/bvals\_dep.cpp} and
 \file{bvals.hpp} (level index sets, \fn{RestrictDeposit}, fine-image packing, planes at the
 face level), \file{bvals/bvals\_part.cpp} (\fn{DestinationSlot}), \file{bvals/bvals.cpp}
 (shear maps at the face level), \file{dust/dust\_smr.cpp} (\fn{ZeroImage},
-\fn{RestrictImage}), \fn{dust::DepositStencil} in \file{dust.hpp} and its use at the six
+\fn{RestrictImage}, the latter removed in \S\ref{sec:imagefree}), \fn{dust::DepositStencil} in \file{dust.hpp} and its use at the six
 scatter sites (\fn{DepositDrag} twice, \fn{GatherKickPMBR}, the PC2 advance, the split-BE
 preparation, \fn{DepositMass}), \fn{RestrictField}/\fn{ProlongateField} and the three
 prolongation tasks in \file{dust\_tasks.cpp}, the coarse arrays and guards in
@@ -1753,14 +1769,15 @@ shear-periodic faces are rebuilt (\fn{ParticlesBoundaryValues::InitShearMaps}, t
 constructor's map build factored out: AMR renumbers the face blocks and may move them),
 and \fn{AdaptiveMeshRefinement} calls \fn{DustGasDrag::ReinitAfterMeshUpdate} next to
 the hydro's \fn{ShearingBox::ReinitAfterMeshUpdate}: the per-block factors
-\code{rfac}/\code{any\_coarse} of the finest-kernel deposits from the new levels
+\code{rfac}/\code{any\_coarse} (now \code{rfac}/\code{halo}, \S\ref{sec:imagefree}) of the
+finest-kernel deposits from the new levels
 (\fn{SetRefinementFactors}, shared with the constructor), the per-block global
 $(x_2,x_3)$ offsets of the deposit fold planes in each \code{MeshBoundaryValuesDep}
 (\fn{InitShearOffsets}, likewise factored out), and the shear remaps of $u^*$,
 $\rho_{\rm dust}$ and $g$. Every field and buffer array was already sized for
-\code{max\_nmb\_per\_rank}; with AMR the $2\times$ fine images are allocated at
-construction whether or not a block is coarse at $t = 0$, since any block may become the
-coarser neighbour later.
+\code{max\_nmb\_per\_rank}; the fine images were allocated grow-only once some block was
+coarser than the finest level present (and, since \S\ref{sec:imagefree}, the halo images
+once some block has a finer neighbour).
 
 \subsection{Splitting on refinement}
 
@@ -1850,6 +1867,81 @@ receives exactly the finest-kernel weight of every nearby particle, averaged ove
 own volume, whatever the levels of the blocks around it; the constructor's one-level
 fatal is gone. The generator's \code{lattice\_finest} places $2^{d(l_{\max}-l)}$ points
 per cell accordingly.
+
+\subsection{Image-free deposits}
+\label{sec:imagefree}
+
+\paragraph{Why.} The $2^l$ image made the deposit memory and work of a coarse block grow
+as $8^l$: with $8^3$ MeshBlocks and $n_g = 4$ an image is $(16r)^3$ cells, ten variables
+over the three images, i.e.\ 2.6, 21, 168 and 1340\,MB per block for $r = 2, 4, 8, 16$,
+allocated on \emph{every} block of a pack with a coarse block and zeroed and restricted
+in every deposit. On the $(0.2H)^3$ stratified box (the \code{box02} runs) this is what
+stopped the adaptive mesh: three levels above the $320/H$ root did not fit on a 754\,GB
+Turin node and needed four, and the four-level smoke test was killed out of memory as
+its finest level came in.
+
+\paragraph{The fold.} The restriction of an image is linear and acts on each particle's
+weights separately, so it can be done per particle before anything is stored. In one
+direction, a particle's finest-kernel stencil is three weights $w_{-1}, w_0, w_1$ on the
+fine cells $f_p - 1, f_p, f_p + 1$ (fine index space of the image, ghosts included). The
+image cell $f$ lies in the block cell $\lfloor f/r \rfloor$, and averaging $r^d$ image
+cells of volume $V/r^d$ onto a cell of volume $V$ sums their weights, so the block cell $c$
+receives
+\begin{equation}
+  W_c = \sum_{n=-1}^{1} w_n\,\delta_{c,\lfloor (f_p+n)/r \rfloor},
+\end{equation}
+with the deposit divided by $V$ instead of $V/r^d$. Three consecutive fine cells span at
+most two block cells for $r \ge 2$, so $W$ is again a three-point stencil, about
+$\lfloor f_p/r \rfloor$, and the product over directions is the separable 27-point stencil
+of the existing scatter loops. \fn{dust::BinWeights} does this fold; \fn{DepositStencil}
+now takes the factor $s$ of the target grid (\(s = 1\): the block's cells,
+\(s = 2\): half cells) and folds by $g = r/s$ (no-op when $g = 1$, so a block at the finest
+level, and every block of a uniform mesh, is arithmetically unchanged). The result equals
+the old image + \fn{RestrictImage} to round-off: a one-dimensional check over $2\times10^4$
+random positions for each $r = 2, 4, 8, 16$ agrees to $2.2\times10^{-16}$.
+
+\paragraph{The halo image.} One consumer still needs sub-cell resolution: the message to
+a \emph{finer} neighbour carries the $2^d$ half cells of each ghost cell (the cells at that
+neighbour's level). A block with a finer neighbour (\code{halo(m)} $= 1$, which implies
+\code{rfac} $\ge 2$) therefore also folds the deposits of its \emph{edge} particles --- those
+whose block-cell stencil reaches a ghost cell (\fn{StencilAtEdge}) --- onto a $2\times$
+halo image of itself ($s = 2$, $2(n_x + 2n_g)$ cells per direction). Interior particles
+never contribute to a ghost cell, so they skip the second fold. The halo image has the
+layout of the old one-level image, its size is independent of $r$ (2.6\,MB per $8^3$ block
+with $n_g = 4$), it exists only when some block of the pack has a finer neighbour, and
+\fn{ZeroImage} clears it only on those blocks. \fn{PackAndSendDeposit} reads it at the
+fixed factor 2; \fn{SetImageFactors} and the per-block factors of the exchange are gone,
+and so is \fn{RestrictImage}.
+
+\paragraph{At the six scatter sites} (\fn{DepositDrag} twice, \fn{GatherKickPMBR}, the PC2
+advance, the split-BE preparation, \fn{DepositMass}) the scatter loop became a local
+lambda taking the target array, the stencil and the cell volume; it runs once into the
+block's array and, for an edge particle of a halo block, once more into the halo image
+with the $s = 2$ stencil (the back-reaction sites at the same pre-drift or midpoint
+position as before). The expressions inside are unchanged, so uniform runs are bitwise
+identical.
+
+\paragraph{Checks.} Each against the unmodified code (\code{9aaa5639}) on the same inputs
+(validation document, section ``Image-free deposits''): uniform runs bitwise; the
+two-level SMR NSH equilibrium (\code{dust\_nsh\_shear3d\_smr3}, IMEX, PC2 and hybrid
+couplings), the gravity SMR equilibrium, the Poisson twin (NGP and TSC) and the
+shear-periodic deposit exchange with refined interior or faces identical to the printed
+digits; the AMR sphere collapse with two and three levels bitwise (every dusty block is at
+the finest level there); a mixed SMR sphere with particles on root and level-1 blocks next
+to finer ones identical except the net momenta and centre of mass, which differ at
+$10^{-18}$. The two-level AMR sphere ran in 191\,s instead of 317\,s.
+
+\paragraph{What remains.} On the \code{box02} branch (one Turin node, 256 ranks) three
+levels now fit: 577\,GB right after setup, 617\,GB at the peak, against 747\,GB and an
+out-of-memory kill before; about 4.3\,s per cycle on one node against about 4.7\,s on four.
+The base of $\approx 2.25$\,GB per rank is the preallocation for
+\code{max\_nmb\_per\_rank} $= 256$, not the dust. The cost per cycle is now set by the
+particle load: every MeshBlock has cost 1 in \fn{LoadBalance}, and $2^3$ splitting per level
+puts most particles on the few ranks that own the clumps. Four levels ran at about 30\,s per
+cycle and were killed (signal 9, the node at 700 of 754\,GB, probably at a remesh). The
+three-level run ended at cycle $\approx 156\,990$ in the negative-gas-density crash of the
+earlier runs (the \code{nan\_check} repro tripped at cycle 156\,984), which this change does
+not touch.
 
 \subsection{Files, hooks, parameters}
 

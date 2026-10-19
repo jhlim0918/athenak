@@ -24,9 +24,11 @@
        Dust Self-Gravity (Phase 4c), the Vertical Policy, Restart\\
        and Diagnostics (Phase 4d), Particles on Statically\\
        Refined Meshes (Phase 5), Gravity on Refined Meshes,\\
-       and Particles on Adaptively Refined Meshes (Phase 6)}
-\author{\code{athenak-multigrid} tree, branches \code{dust-multigrid} and \code{dust-smr}}
-\date{September 3--15, 2026}
+       and Particles on Adaptively Refined Meshes (Phase 6),\\
+       with the Image-Free Deposits}
+\author{\code{athenak-multigrid} tree, branches \code{dust-multigrid} and \code{dust-smr};
+        image-free deposits on \code{si-strat-amr} (\code{1f811c1c})}
+\date{September 3--15, 2026; image-free deposits October 19, 2026}
 
 \begin{document}
 \maketitle
@@ -2360,7 +2362,10 @@ mesh presently buys resolution reach --- the finest cells where the filaments ar
 third of the cell count --- and not wall-clock; the remedy is to confine the image of a
 coarse block to the cells within a kernel width of a level boundary, which is where the
 interface argument of \S\ref{sec:phase5} needs it, and let the interior deposit at its
-own resolution.
+own resolution. That remedy is now in the code (\S\ref{sec:phase6-imagefree}): coarse blocks
+fold the finest kernel onto their own cells, and only edge particles of blocks with a
+finer neighbour also fill a fixed $2\times$ halo image. The BA timing above was measured
+before it and has not been repeated.
 
 Run AB reproduces the other half of JY07, their cavitation sequence. The uniform $256^2$
 reference is complete to $t = 40$ and follows their Figure~5 (Fig.~\ref{fig:ab-jy07}): the
@@ -2527,6 +2532,79 @@ analytic one against the cells per wavelength at the finest level. Rendered by
 \label{fig:lin-ba}
 \end{figure}
 
+\subsection{Image-free deposits: the same field without the images}
+\label{sec:phase6-imagefree}
+
+The fine images of the finest-kernel deposits (implementation document, ``Image-free
+deposits'') were replaced on October 19, 2026 by folding each particle's finest-kernel
+weights onto the cells of its own block, plus a fixed $2\times$ halo image on blocks with
+a finer neighbour for the exchange. The change is a rearrangement of the same sums, so the
+test is whether every refined-mesh check still gives the old numbers. Each case below was
+run with the unmodified code (\code{9aaa5639}, built separately) and the new code from the
+same input on the same machine (MacBook, 4 or 8 MPI ranks); the scripts and outputs are in
+the session scratchpad \file{optB\_tests/} (\file{run.sh}, \file{compare.py},
+\file{stencil\_check.py}).
+
+\begin{center}\small
+\begin{tabular}{p{0.30\linewidth}p{0.62\linewidth}}
+\toprule
+case & new against old \\
+\midrule
+fold vs.\ image, 1D, $r = 2$--$16$, $2\times10^4$ positions each & block cells and half
+  cells agree to $2.2\times10^{-16}$ \\
+uniform BA (2D) and 3D NSH, 200 / 20 cycles & histories bitwise identical \\
+NSH, two SMR levels (\code{dust\_nsh\_shear3d\_smr3}), IMEX, PC2, hybrid; 20 cycles & every
+  error column of \file{-errs.dat} identical (e.g.\ $\varepsilon(u_{gx}) = 1.451096\times10^{-15}$,
+  $\varepsilon(v_{\phi,s}) = 3.215726\times10^{-13}$); histories bitwise \\
+NSH with gravity on SMR & errors identical except two at the 4th digit of
+  $3.26\times10^{-15}$ and $2.55\times10^{-16}$; vertical momentum $10^{-23}$ apart \\
+Poisson twin on SMR, NGP / TSC & force errors identical (max $9.029\times10^{-2}$ /
+  $5.725\times10^{-2}$ at the interface, as in \S\ref{sec:gravsmr}); TSC solver
+  error $7.3666\to7.3670\times10^{-10}$ \\
+shear-periodic deposit exchange, refined interior / faces & identical
+  ($\max_{\rm rel} = 5.130207\times10^{-3}$ / $1.434797\times10^{-3}$) \\
+AMR sphere, two levels (64$^3$ root, $t \le 1.5$) and three levels (32$^3$ root) &
+  bitwise; all dusty blocks are at the finest level, so this tests the remesh and the halo
+  bookkeeping, not the fold \\
+SMR sphere, radius $0.4$, root $32^3$, level 2 for $|x_i| < 0.0625$ & mass, $\sum m r^2$,
+  $r_{\max}$, $N_p$, kinetic energies, max $\rho_p$, dispersions identical; net momenta and
+  centre of mass ($\sim10^{-16}$--$10^{-18}$) differ by $\le 10^{-17}$ (summation order) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The last case is the one that exercises the fold: particles live on root and level-1
+blocks next to finer ones, so their deposits go through $r = 4$ and $r = 2$ folds and the
+halo images. That only quantities vanishing by symmetry differ, and only at round-off, is
+what a reordering of the same sums predicts. Timings on the laptop: the two-level AMR
+sphere $317 \to 191$\,s; the three-level one $24.3 \to 19.1$\,s; the largest resident set of
+a rank in the SMR NSH case $1041 \to 626$\,MB.
+
+\paragraph{On the stratified box.} The $(0.2H)^3$ branch without orbital advection was
+restarted at $20.5\,P$ from its $1280/H$ dump with three and with four levels above the
+$320/H$ root on one NAS Turin node (256 ranks, outputs off):
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+ & images (before) & image-free \\
+\midrule
+three levels, memory & killed at 747/754\,GB, one node & 577\,GB after setup, 617\,GB peak \\
+three levels, speed & $\approx 4.7$\,s/cycle on \emph{four} nodes & $\approx 4.3$\,s/cycle on one node \\
+three levels, end & negative-$\rho_g$ crash at cycle 156\,984 & the same crash, cycle $\approx 156\,990$ \\
+four levels & out of memory & $\approx 30$\,s/cycle, killed after 29\,min at 700\,GB \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The three-level run followed the old trajectory into the old crash (the
+negative gas density in a collapsed clump, unrelated to the deposits). Two limits remain.
+Memory: $\approx 2.25$\,GB per rank is allocated before anything refines, the arrays sized for
+\code{max\_nmb\_per\_rank} $= 256$. Speed: \code{LoadBalance} gives every MeshBlock cost 1, and
+with $2^3$ particle splitting per level the ranks owning the clumps carry most of the
+particles while the others wait (stack samples: most ranks in the shear-fold reduction or
+polling for boundary messages, a few in the deposit kernels).
+
 %=========================================================================================
 \section{Summary}
 \label{sec:summary}
@@ -2627,7 +2705,10 @@ cost accounting is sobering: with finest-kernel deposits a derefined block carri
 finest-resolution image and costs more than the refined blocks it replaced, so the
 four-level mesh at a third of the cells runs at $2.2\times$ the cost of the fully refined
 one per cycle; the adaptive mesh buys resolution reach, not wall-clock, until the image
-of a coarse block is confined to the level boundaries. The linear BA mode,
+of a coarse block is confined to the level boundaries. That is now done
+(\S\ref{sec:phase6-imagefree}): the deposits are the same to round-off, three levels on the
+stratified box fit on one node instead of overflowing it, and the remaining limits are the
+per-rank preallocation and the particle load balance. The linear BA mode,
 solved from the YG05 dispersion relation and seeded on uniform and refined meshes, converges
 at second order (within $0.7\%$ of analytic at $32$ cells per wavelength) and grows at a
 single rate on a partially refined mesh, set mostly by its coarse part.
