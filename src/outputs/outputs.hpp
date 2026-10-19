@@ -309,7 +309,8 @@ class ParticleHistoryOutput : public BaseTypeOutput {
   void AdvanceTime(Mesh *pm, ParameterInput *pin);
   int nspecies_;
   bool header_written_;
-  std::vector<Real> global_, sums1_, means_, sums2_;
+  bool growth_;   // dust growth on: Stokes-number columns
+  std::vector<Real> global_, sums1_, means_, sums2_, stokes_;
 };
 
 //----------------------------------------------------------------------------------------

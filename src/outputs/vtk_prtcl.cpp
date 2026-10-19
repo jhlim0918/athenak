@@ -25,6 +25,7 @@
 #include "globals.hpp"
 #include "mesh/mesh.hpp"
 #include "particles/particles.hpp"
+#include "dust/dust.hpp"
 #include "outputs.hpp"
 
 //----------------------------------------------------------------------------------------
@@ -241,6 +242,25 @@ void ParticleVTKOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
 
     for (int p=0; p<npout_thisrank; ++p) {
       vals[p] = static_cast<double>(outpart_idata(n,p));
+    }
+    WriteParticleBlock(partfile, vals, 1, header_offset, pm, rank_offset, npout_min);
+  }
+
+  // Per-particle stopping times (dust module with particle_static or dynamic stopping
+  // times, e.g. dust growth); species_fixed runs keep the historical schema, where the
+  // stopping time follows from pspecies.
+  dust::DustGasDrag *pdust = pm->pmb_pack->pdust;
+  if (pdust != nullptr &&
+      pdust->stopping_time_mode != DustStoppingTimeMode::species_fixed) {
+    std::stringstream msg;
+    msg << std::endl << "SCALARS ptaus" << vtk_type << std::endl
+        << "LOOKUP_TABLE default" << std::endl;
+    if (global_variable::my_rank == 0) {
+      partfile.Write_any_type_at(msg.str().c_str(),msg.str().size(),header_offset,"byte");
+    }
+    header_offset += msg.str().size();
+    for (int p=0; p<npout_thisrank; ++p) {
+      vals[p] = outpart_rdata(IPTS,p);
     }
     WriteParticleBlock(partfile, vals, 1, header_offset, pm, rank_offset, npout_min);
   }

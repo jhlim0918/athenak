@@ -44,6 +44,10 @@ enum class DustDeposit {ngp=0, cic=1, tsc=2};
 // per cycle.
 enum class DustStoppingTimeMode {species_fixed=0, particle_static=1, dynamic=2};
 
+// dust growth carried by the per-particle stopping time (dust_growth.cpp): none, or one
+// size per superparticle grown by equal-size sticking/fragmentation (Birnstiel+12)
+enum class DustGrowth {none=0, monodisperse=1};
+
 // `local` is the regression baseline. `applya` executes one non-mutating coupled
 // operator application and then retains the local answer, for marginal-cost timing.
 // `dc1` and `dc2` unconditionally accept one and two fixed defect corrections.
@@ -94,7 +98,7 @@ void GasKick(const DvceArray5D<Real> &u0, const int m, const int k, const int j,
 
 struct DustGasDragTaskIDs {
   // "before_timeintegrator" tasks
-  TaskID gswitch;
+  TaskID growth, gswitch;
   // "before_stagen" tasks
   TaskID h_irecv, irecvd;
   // "stagen" tasks
@@ -245,6 +249,15 @@ class DustGasDrag {
   bool gravity_source;       // the PM dust density is added to the Poisson source
   bool gravity_force;        // particles feel -grad(phi) of the total potential
   DustStoppingTimeMode stopping_time_mode;
+  // dust growth (dust_growth.cpp): S = growth_omega*IPTS at the reference gas density
+  // growth_rho0; growth_vfrag in units of growth_cs; cumulative particle-step counts of
+  // the fractional-change cap, the [smin, smax] clamp and fragmentation (this rank)
+  DustGrowth growth = DustGrowth::none;
+  Real growth_alpha = 0.0, growth_vfrag = 0.0, growth_smin = 0.0, growth_smax = 0.0;
+  Real growth_maxfrac = 0.0, growth_rho0 = 1.0, growth_omega = 1.0, growth_cs = 1.0;
+  bool growth_drift = true;
+  unsigned long long growth_steps = 0, growth_capped = 0, growth_clamped = 0;
+  unsigned long long growth_frag = 0;
   DustDragSolver drag_solver;
   DustCoupling coupling;
   HybridMode hybrid_mode;
@@ -333,6 +346,10 @@ class DustGasDrag {
   void SetDefaultMasses(ParameterInput *pin);
 
   // ...in "before_timeintegrator" list
+  void InitGrowth(ParameterInput *pin);
+  TaskStatus GrowthStep(Driver *pdrive, int stage);   // operator-split growth of IPTS
+  // public: encloses an NVCC extended host/device lambda
+  void GrowStoppingTimes(Real dt);
   TaskStatus GammaSwitch(Driver *pdrive, int stage);
   // Must be public because NVCC extended host/device lambdas cannot be enclosed by a
   // private or protected member function.

@@ -15,11 +15,15 @@
 //!     <vy>, <vz>, and the number-weighted standard deviations sig_x, sig_y, sig_z
 //!     (= the dust scale height H_d), sig_vx, sig_vy, sig_vz -- Athena-C's "var"
 //!     columns, sqrt(sum (q - <q>)^2/(n - 1)).
+//!   with dust growth (<dust>/growth != none), the Stokes numbers S = Omega t_s of all
+//!     species: mass-weighted mean, maximum, minimum, and the mass fractions with
+//!     S > 0.01, 0.03, 0.1.
 //! Means and deviations are two exact passes with MPI sums, not a one-pass variance.
 
 #include <cstdio>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -45,6 +49,8 @@ ParticleHistoryOutput::ParticleHistoryOutput(ParameterInput *pin, Mesh *pm,
     exit(EXIT_FAILURE);
   }
   nspecies_ = (pm->pmb_pack->pdust != nullptr) ? pm->pmb_pack->pdust->nspecies : 1;
+  growth_ = (pm->pmb_pack->pdust != nullptr) &&
+            (pm->pmb_pack->pdust->growth != DustGrowth::none);
   header_written_ = false;
 }
 
@@ -98,6 +104,31 @@ void ParticleHistoryOutput::LoadOutputData(Mesh *pm) {
   global_.assign(gs, gs + 8);
   global_.push_back(escaped);
   global_.push_back(dmax);
+
+  // ---- dust growth: Stokes-number statistics (sums, then max and min) -----------------
+  stokes_.clear();
+  if (growth_) {
+    const Real om = pdust->growth_omega;
+    Real st[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    Real smax = 0.0, smin = std::numeric_limits<Real>::max();
+    Kokkos::parallel_reduce("phst_stokes",
+        Kokkos::RangePolicy<>(DevExeSpace(), 0, npart),
+    KOKKOS_LAMBDA(const int p, Real &mS, Real &m1, Real &m2, Real &m3, Real &mx,
+                  Real &mn) {
+      Real s = om*pr(IPTS,p), m = pr(IPM,p);
+      mS += m*s;
+      if (s > 0.01) {m1 += m;}
+      if (s > 0.03) {m2 += m;}
+      if (s > 0.1) {m3 += m;}
+      mx = fmax(mx, s);
+      mn = fmin(mn, s);
+    }, Kokkos::Sum<Real>(st[1]), Kokkos::Sum<Real>(st[2]), Kokkos::Sum<Real>(st[3]),
+       Kokkos::Sum<Real>(st[4]), Kokkos::Max<Real>(smax), Kokkos::Min<Real>(smin));
+    st[0] = gs[1];   // total particle mass of this rank
+    stokes_.assign(st, st + 5);
+    stokes_.push_back(smax);
+    stokes_.push_back(smin);
+  }
 
   // ---- per species, pass 1: counts and sums of positions and velocities ---------------
   sums1_.assign(7*nsp, 0.0);
@@ -176,6 +207,23 @@ void ParticleHistoryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
                MPI_COMM_WORLD);
   }
   global_[9] = gmax;
+  if (growth_) {
+    if (global_variable::my_rank == 0) {
+      MPI_Reduce(MPI_IN_PLACE, stokes_.data(), 5, MPI_ATHENA_REAL, MPI_SUM, 0,
+                 MPI_COMM_WORLD);
+      MPI_Reduce(MPI_IN_PLACE, &stokes_[5], 1, MPI_ATHENA_REAL, MPI_MAX, 0,
+                 MPI_COMM_WORLD);
+      MPI_Reduce(MPI_IN_PLACE, &stokes_[6], 1, MPI_ATHENA_REAL, MPI_MIN, 0,
+                 MPI_COMM_WORLD);
+    } else {
+      MPI_Reduce(stokes_.data(), stokes_.data(), 5, MPI_ATHENA_REAL, MPI_SUM, 0,
+                 MPI_COMM_WORLD);
+      MPI_Reduce(&stokes_[5], &stokes_[5], 1, MPI_ATHENA_REAL, MPI_MAX, 0,
+                 MPI_COMM_WORLD);
+      MPI_Reduce(&stokes_[6], &stokes_[6], 1, MPI_ATHENA_REAL, MPI_MIN, 0,
+                 MPI_COMM_WORLD);
+    }
+  }
 #endif
   if (global_variable::my_rank != 0) {
     AdvanceTime(pm, pin);
@@ -201,6 +249,11 @@ void ParticleHistoryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     for (int s=0; s<nsp; ++s) {
       for (int q=0; q<13; ++q) {std::fprintf(pfile, "  [%d]=%s_%d", c++, sl[q], s+1);}
     }
+    if (growth_) {
+      const char *gr[6] = {"St_mean", "St_max", "St_min", "fm_St>0.01", "fm_St>0.03",
+                           "fm_St>0.1"};
+      for (int q=0; q<6; ++q) {std::fprintf(pfile, "  [%d]=%s", c++, gr[q]);}
+    }
     std::fprintf(pfile, "\n");
     header_written_ = true;
   }
@@ -216,6 +269,13 @@ void ParticleHistoryOutput::WriteOutputFile(Mesh *pm, ParameterInput *pin) {
     for (int q=0; q<6; ++q) {
       std::fprintf(pfile, fmt, std::sqrt(sums2_[6*s+q]/denom));
     }
+  }
+  if (growth_) {
+    Real mtot = (stokes_[0] > 0.0) ? stokes_[0] : 1.0;
+    std::fprintf(pfile, fmt, stokes_[1]/mtot);
+    std::fprintf(pfile, fmt, stokes_[5]);
+    std::fprintf(pfile, fmt, stokes_[6]);
+    for (int q=2; q<5; ++q) {std::fprintf(pfile, fmt, stokes_[q]/mtot);}
   }
   std::fprintf(pfile, "\n");
   std::fclose(pfile);

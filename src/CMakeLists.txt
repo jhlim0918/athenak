@@ -43,6 +43,7 @@ add_executable(
         dust/dust.cpp
         dust/dust_newdt.cpp
         dust/dust_gravity.cpp
+        dust/dust_growth.cpp
         dust/dust_smr.cpp
         dust/dust_frame.cpp
         dust/dust_nancheck.cpp

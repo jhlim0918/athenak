@@ -41,7 +41,11 @@ void DustGasDrag::AssembleDustGasDragTasks(
   Hydro *phyd = pmy_pack->phydro;
 
   // assemble "before_timeintegrator" task list
-  id.gswitch = tl["before_timeintegrator"]->AddTask(&DustGasDrag::GammaSwitch,this,none);
+  // the operator-split growth step changes IPTS before GammaSwitch revalidates them and
+  // refreshes taus_max/taus_min (no-op unless <dust>/growth is set)
+  id.growth  = tl["before_timeintegrator"]->AddTask(&DustGasDrag::GrowthStep,this,none);
+  id.gswitch = tl["before_timeintegrator"]->AddTask(&DustGasDrag::GammaSwitch,this,
+                                                    id.growth);
 
   // assemble "before_stagen" task list
   id.h_irecv = tl["before_stagen"]->AddTask(&Hydro::InitRecv, phyd, none);

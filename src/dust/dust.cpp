@@ -449,6 +449,8 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
       }
     }
   }
+  // (2d) dust growth (dust_growth.cpp): needs the stopping-time mode, EOS and Omega
+  InitGrowth(pin);
   if (is_shearing_box && pmy_pack->pmesh->three_d &&
       global_variable::my_rank == 0) {
     if (dt_transport == DustDtTransport::relative) {
@@ -644,6 +646,19 @@ DustGasDrag::~DustGasDrag() {
     if (global_variable::my_rank == 0) {
       std::cout << std::setprecision(14) << "# DUST_ESCAPE_SUMMARY removed=" << ntot
                 << " mass=" << mtot << std::endl;
+    }
+  }
+  if (growth != DustGrowth::none) {
+    unsigned long long cnt[3] = {growth_capped, growth_clamped, growth_frag};
+#if MPI_PARALLEL_ENABLED
+    MPI_Allreduce(MPI_IN_PLACE, cnt, 3, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    if (global_variable::my_rank == 0) {
+      std::cout << "# DUST_GROWTH_SUMMARY steps=" << growth_steps
+                << " capped=" << cnt[0] << " clamped=" << cnt[1]
+                << " fragmenting=" << cnt[2]
+                << " (particle-steps; cap = <dust>/growth_maxfrac = " << growth_maxfrac
+                << ")" << std::endl;
     }
   }
   if (global_variable::my_rank == 0 && dt_guard_count > 0) {

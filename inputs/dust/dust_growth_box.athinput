@@ -1,0 +1,108 @@
+# AthenaK input file: dust growth (<dust>/growth = monodisperse) in an unstratified
+# 2D r-z shearing box, on the quiet particle lattice of the dust_nsh problem generator
+# (dust track D3 tests; see src/dust/dust_growth.cpp).  As given this is test (b):
+# no pressure-gradient forcing and no back-reaction, so gas and dust stay at rest, the
+# drift term vanishes, the PM dust density is exactly eps_1*rho0 at every particle, and
+# the Stokes number of every particle follows
+#     S(t) = [sqrt(S0) + 0.5 sqrt(pi/8) (rho_d/rho_g0) sqrt(3 alpha_t) Omega t]^2
+# (forward-Euler operator split: first order in dt).  Overrides for the other tests:
+#   (c) fragmentation cap:  dust/growth_vfrag=0.01    -> S_frag = 0.01^2/(3e-3) = 0.0333
+#   (d) drift vs NSH:       dust/growth_alpha=0 problem/etavk=0.05
+#                           hydro_srcterms/const_accel_val=0.1 dust/back_reaction=true
+#                           time/nlim=1  (first-cycle rate = sqrt(pi/8) eps |dv_NSH|/2)
+#   (e) restart:            output3 restart, then athena -r
+# The Stokes-number statistics are columns of the phst output.
+
+<comment>
+problem   = dust growth in a uniform 2D r-z shearing box
+
+<job>
+basename  = dgrow_box
+
+<mesh>
+nghost    = 2
+nx1       = 32
+x1min     = -0.5
+x1max     = 0.5
+ix1_bc    = periodic  # plain periodic: 2D r-z geometry
+ox1_bc    = periodic
+
+nx2       = 32        # vertical (unstratified)
+x2min     = -0.5
+x2max     = 0.5
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 1
+
+<time>
+evolution  = dynamic
+integrator = imex2+
+cfl_number = 0.45
+nlim       = -1
+tlim       = 20.0
+ndiag      = 1000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = plm
+rsolver     = hlle
+
+<hydro_srcterms>
+const_accel     = true    # radial pressure-gradient mimic on the gas only (test d)
+const_accel_val = 0.0     # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 1.0
+
+<dust>
+nspecies      = 1
+taus_1        = 1.0e-3    # S0 (Omega = 1)
+back_reaction = false
+deposit       = tsc
+gamma_switch  = false
+stopping_time_mode = dynamic   # required by growth
+dt_cfl        = 0.5
+growth         = monodisperse  # none | monodisperse
+growth_alpha   = 1.0e-3   # alpha_t of dv_turb = sqrt(3 alpha_t S) c_s
+growth_vfrag   = 10.0     # v_frag/c_s (no fragmentation in test b)
+growth_smin    = 1.0e-5
+growth_smax    = 10.0
+growth_maxfrac = 0.05     # cap on the fractional change of t_s per cycle
+growth_drift   = true     # include |v_p - u_g|/2
+
+<problem>
+pgen_name = dust_nsh
+particle_placement = lattice
+check_equilibrium = false # stopping times change: no NSH error file
+user_hist = false
+rho0      = 1.0
+etavk     = 0.0
+eps_1     = 1.0           # rho_d/rho_g0
+
+<output1>
+file_type  = hst
+dt         = 0.5
+data_format = %.14e
+
+<output2>
+file_type  = phst
+dt         = 0.25
+data_format = %.16e
