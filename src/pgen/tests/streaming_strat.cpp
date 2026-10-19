@@ -30,7 +30,13 @@
 //!
 //! Initial velocities: particles at rest in the shearing frame; gas at azimuthal
 //! velocity <problem>/gas_vy0 (default 0, Yang & Johansen 2014; -etavk is the dust-free
-//! equilibrium, i.e. Athena-C par_strat3d ipert = 1).
+//! equilibrium, i.e. Athena-C par_strat3d ipert = 1).  With <problem>/nsh_init = true
+//! (one species), gas and particles instead get the horizontal velocities of the
+//! Nakagawa et al. (1986) drift equilibrium for the local dust-to-gas ratio eps(z) of the
+//! initial profiles (Lim et al. 2025, ApJ 981, 160), for general q:
+//!     v_x = -2 tau eta/D, v_y = -(1+eps) eta/D, u_x = 2 eps tau eta/D,
+//!     u_y = -(1 + eps + 2(2-q) tau^2) eta/D,   D = (1+eps)^2 + 2(2-q) tau^2,
+//! with tau = Omega t_s and eta = etavk; vertical velocities are zero.
 
 // C++ headers
 #include <cmath>
@@ -108,6 +114,7 @@ void ProblemGenerator::StreamingStrat(ParameterInput *pin, const bool restart) {
   Real rho0 = pin->GetOrAddReal("problem", "rho0", 1.0);
   Real etavk = pin->GetReal("problem", "etavk");
   Real gas_vy0 = pin->GetOrAddReal("problem", "gas_vy0", 0.0);
+  const bool nsh_init = pin->GetOrAddBoolean("problem", "nsh_init", false);
 
   // the radial pressure-gradient mimic must act on the gas alone through const_accel
   {
@@ -121,6 +128,32 @@ void ProblemGenerator::StreamingStrat(ParameterInput *pin, const bool restart) {
             std::to_string(ax));
     }
   }
+
+  // dust layer parameters (also needed by the NSH gas velocities)
+  auto &msize = pmy_mesh_->mesh_size;
+  Real lx = msize.x1max - msize.x1min;
+  Real ly = msize.x2max - msize.x2min;
+  Real lz = msize.x3max - msize.x3min;
+  int nsp = pmbp->pdust->nspecies;
+  Real dust_Z = pin->GetOrAddReal("problem", "dust_Z", 0.02);
+  std::vector<Real> zs(nsp);
+  for (int s=0; s<nsp; ++s) {
+    zs[s] = pin->GetOrAddReal("problem", "dust_Z_" + std::to_string(s+1), dust_Z/nsp);
+  }
+  Real dust_hz = pin->GetOrAddReal("problem", "dust_hz", 0.0);
+  bool gauss = (dust_hz > 0.0);
+  Real s2 = gauss ? dust_hz*std::sqrt(2.0) : 1.0;
+  Real znorm = gauss ? 0.5*(std::erf(msize.x3max/s2) - std::erf(msize.x3min/s2)) : lz;
+  Real sigma_g = std::sqrt(2.0*M_PI)*hgas*rho0;
+  // NSH initialization: eps(z) = rho_p(z)/rho_g(z) of the initial (truncated) profiles
+  if (nsh_init && nsp != 1) {
+    Fatal(__FILE__, __LINE__, "streaming_strat: <problem>/nsh_init needs one species");
+  }
+  Real nsh_tau = omega0*pmbp->pdust->taus.h_view(0);
+  Real nsh_kap = 2.0*(2.0 - pin->GetReal("shearing_box", "qshear"));
+  // midplane particle density (Gaussian) or the uniform one
+  Real nsh_rhop = gauss ? zs[0]*sigma_g/(std::sqrt(2.0*M_PI)*dust_hz*znorm) :
+                          zs[0]*sigma_g/lz;
 
   // gas: isothermal hydrostatic equilibrium (all cells, ghosts included)
   auto &indcs = pmy_mesh_->mb_indcs;
@@ -140,33 +173,26 @@ void ProblemGenerator::StreamingStrat(ParameterInput *pin, const bool restart) {
     Real z = CellCenterX(k-ks, nx3, size.d_view(m).x3min, size.d_view(m).x3max);
     Real x = CellCenterX(i-is, nx1, size.d_view(m).x1min, size.d_view(m).x1max);
     Real den = rho0*exp(-0.5*SQR(z/hgas));
+    Real ux = 0.0, uy = gas_vy0;
+    if (nsh_init) {
+      Real eps = nsh_rhop*(gauss ? exp(-0.5*SQR(z/dust_hz)) : 1.0)/den;
+      Real d = SQR(1.0 + eps) + nsh_kap*SQR(nsh_tau);
+      ux = 2.0*eps*nsh_tau*etavk/d;
+      uy = -(1.0 + eps + nsh_kap*SQR(nsh_tau))*etavk/d;
+    }
     u0(m,IDN,k,j,i) = den;
-    u0(m,IM1,k,j,i) = 0.0;
-    u0(m,IM2,k,j,i) = den*(gas_vy0 - qo_full*x);
+    u0(m,IM1,k,j,i) = den*ux;
+    u0(m,IM2,k,j,i) = den*(uy - qo_full*x);
     u0(m,IM3,k,j,i) = 0.0;
   });
 
   // dust: per-block counts from the dust mass in each block, rounded to nspecies
   particles::Particles *ppar = pmbp->ppart;
-  auto &msize = pmy_mesh_->mesh_size;
-  Real lx = msize.x1max - msize.x1min;
-  Real ly = msize.x2max - msize.x2min;
-  Real lz = msize.x3max - msize.x3min;
   Real ppc = pin->GetOrAddReal("particles", "ppc", 1.0);
-  int nsp = pmbp->pdust->nspecies;
-  Real dust_Z = pin->GetOrAddReal("problem", "dust_Z", 0.02);
-  std::vector<Real> zs(nsp);
-  for (int s=0; s<nsp; ++s) {
-    zs[s] = pin->GetOrAddReal("problem", "dust_Z_" + std::to_string(s+1), dust_Z/nsp);
-  }
-  Real dust_hz = pin->GetOrAddReal("problem", "dust_hz", 0.0);
   int64_t seed = pin->GetOrAddInteger("problem", "random_seed", 1);
   Real n_target = ppc*static_cast<Real>(pmy_mesh_->mesh_indcs.nx1)
                      *static_cast<Real>(pmy_mesh_->mesh_indcs.nx2)
                      *static_cast<Real>(pmy_mesh_->mesh_indcs.nx3);
-  bool gauss = (dust_hz > 0.0);
-  Real s2 = gauss ? dust_hz*std::sqrt(2.0) : 1.0;
-  Real znorm = gauss ? 0.5*(std::erf(msize.x3max/s2) - std::erf(msize.x3min/s2)) : lz;
   std::vector<int> off(nmb + 1, 0);
   for (int m=0; m<nmb; ++m) {
     Real area = (size.h_view(m).x1max - size.h_view(m).x1min)
@@ -188,7 +214,6 @@ void ProblemGenerator::StreamingStrat(ParameterInput *pin, const bool restart) {
           "<particles>/ppc");
   }
   // species s: ntot/nsp particles sharing the mass Z_s Sigma_g Lx Ly
-  Real sigma_g = std::sqrt(2.0*M_PI)*hgas*rho0;
   DualArray1D<Real> mps("strat_mp", nsp);
   for (int s=0; s<nsp; ++s) {
     mps.h_view(s) = zs[s]*sigma_g*lx*ly*static_cast<Real>(nsp)
@@ -244,6 +269,13 @@ void ProblemGenerator::StreamingStrat(ParameterInput *pin, const bool restart) {
     pr(IPTS,p) = taus_.d_view(sp);
     pr(IPM,p) = mps.d_view(sp);
     pr(IPVX,p) = 0.0; pr(IPVY,p) = 0.0; pr(IPVZ,p) = 0.0;
+    if (nsh_init) {
+      Real eps = nsh_rhop*(gauss ? exp(-0.5*SQR(z/hz)) : 1.0)
+                 /(rho0*exp(-0.5*SQR(z/hgas)));
+      Real d = SQR(1.0 + eps) + nsh_kap*SQR(nsh_tau);
+      pr(IPVX,p) = -2.0*nsh_tau*etavk/d;
+      pr(IPVY,p) = -(1.0 + eps)*etavk/d;
+    }
     pr(IPRX,p) = 0.0; pr(IPRY,p) = 0.0; pr(IPRZ,p) = 0.0;
   });
 
@@ -282,6 +314,9 @@ void ProblemGenerator::StreamingStrat(ParameterInput *pin, const bool restart) {
     }
     std::cout << "streaming_strat: dust/gas mass in box = "
               << ztot*sigma_g*lx*ly/mgas_box << ", etavk = " << etavk
-              << " (Pi = " << etavk/cs << "), gas_vy0 = " << gas_vy0 << std::endl;
+              << " (Pi = " << etavk/cs << "), "
+              << (nsh_init ? std::string("NSH velocities for the local eps(z) (midplane "
+                             "eps = ") + std::to_string(nsh_rhop/rho0) + ")" :
+                             "gas_vy0 = " + std::to_string(gas_vy0)) << std::endl;
   }
 }

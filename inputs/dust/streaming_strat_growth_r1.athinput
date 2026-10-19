@@ -1,0 +1,133 @@
+# AthenaK input file: R1 -- the streaming instability with live dust growth in a
+# stratified shearing box (NHFP preliminary result; dust growth src/dust/dust_growth.cpp).
+# Quasi-2D in the style of Lim et al. (2025, ApJ 981, 160): a thin 3D box, 0.2 H x 4 cells
+# x 0.2 H at 1280/H, so only axisymmetric structure is resolved (the dust module and
+# streaming_strat are 3D-only), with orbital advection (FARGO) on, a uniform mesh, and
+# periodic z (YJ14; Lim+25 also ran periodic VBCs).  Pi = 0.05, Z = 0.02, one species
+# starting at S0 = tau_s = 1e-3 (below the clumping threshold: Zcrit(1e-3) ~ 0.035,
+# Li & Youdin 2021), Gaussian layer H_p0 = Pi H/2 = 0.025 H with NSH velocities for the
+# local eps(z) (problem/nsh_init), 1 particle per cell.
+# Growth: monodisperse, dv^2 = 3 alpha_t S c_s^2 + |v_p - u_g|^2/4, fragmentation above
+# v_frag; turbulent cap S_frag = v_frag^2/(3 alpha_t c_s^2).
+# Controls (same input): dust/back_reaction=false (no SI); dust/growth=none with
+# dust/stopping_time_mode=species_fixed (no growth).
+# Never HLLE for stratified SI (it suppresses it); WENO-Z + Roe as the YJ14 input.
+
+<comment>
+problem   = stratified SI with dust growth, thin 3D box, 1280/H
+
+<job>
+basename  = r1
+
+<mesh>
+nghost    = 3                # wenoz needs 3
+nx1       = 256              # radial: 0.2 H at 1280/H
+x1min     = -0.1
+x1max     = 0.1
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+nx2       = 4                # azimuthal: 4 cells (the minimum), Ly = H/320
+x2min     = -0.0015625
+x2max     = 0.0015625
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 256              # vertical: 0.2 H
+x3min     = -0.1
+x3max     = 0.1
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 32               # 8 x 1 x 8 = 64 MeshBlocks
+nx2       = 4
+nx3       = 32
+
+<time>
+evolution  = dynamic
+integrator = imex2+          # required by the dust module's IMEX drag
+cfl_number = 0.3             # 3D shearing-box hydro rule
+nlim       = -1
+tlim       = 1000.0          # Omega^-1 (159 P); extend by restart
+ndiag      = 10000
+
+<hydro>
+eos         = isothermal
+iso_sound_speed = 1.0
+reconstruct = wenoz
+rsolver     = roe            # not hlle
+
+<hydro_srcterms>
+const_accel     = true       # radial pressure-gradient mimic, gas only
+const_accel_val = 0.1        # = 2*omega0*etavk
+const_accel_dir = 1
+
+<shearing_box>
+qshear    = 1.5
+omega0    = 1.0
+stratified = true            # -Omega^2 z on gas and particles
+orbital_advection = true     # FARGO
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 1.0          # 262144 particles
+
+<dust>
+coupling      = imex
+shear_fold    = true
+shear_remap   = plm
+nspecies      = 1
+taus_1        = 1.0e-3       # S0
+back_reaction = true
+deposit       = tsc
+gamma_switch  = false
+dt_cfl        = 0.5
+dt_transport  = relative
+dt_block_safety = 0.5
+drag_solver   = local        # required with shear-periodic x1
+stopping_time_mode = dynamic # required by growth
+growth         = monodisperse
+growth_alpha   = 1.0e-4      # alpha_t of dv_turb (no imposed turbulence in the box)
+growth_vfrag   = 0.01        # v_frag/c_s -> S_frag = 0.333
+growth_smin    = 1.0e-4
+growth_smax    = 1.0
+growth_maxfrac = 0.05
+growth_drift   = true
+
+<problem>
+pgen_name   = streaming_strat
+rho0        = 1.0            # midplane gas density
+etavk       = 0.05           # Pi c_s
+dust_Z      = 0.02           # Sigma_p/Sigma_g
+dust_hz     = 0.025          # Gaussian H_p0 = Pi H/2 (Lim+25)
+nsh_init    = true           # NSH velocities for the local eps(z)
+random_seed = 1
+
+<output1>
+file_type  = hst
+dt         = 1.0
+data_format = %.14e
+
+<output2>
+file_type  = phst            # max rho_p, H_p (sig_z), Stokes-number statistics
+dt         = 1.0
+data_format = %.14e
+
+<output3>
+file_type  = vtk             # PM dust density
+variable   = dust_dpm
+dt         = 2.0
+
+<output4>
+file_type  = vtk             # gas primitives
+variable   = hydro_w
+dt         = 20.0
+
+<output5>
+file_type  = pvtk            # particles: positions, velocities, ptaus
+variable   = prtcl_all
+dt         = 10.0
+
+<output6>
+file_type  = rst
+dt         = 100.0
