@@ -40,6 +40,7 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
     coarse_rd("dust_crd",1,1,1,1,1),
     coarse_g("dust_cg",1,1,1,1,1),
     rfac("dust_rfac",1),
+    halo("dust_halo",1),
     fimg_q("dust_fimg_q",1,1,1,1,1),
     fimg_d("dust_fimg_d",1,1,1,1,1),
     fimg_r("dust_fimg_r",1,1,1,1,1),
@@ -106,9 +107,10 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   multilevel = pmy_pack->pmesh->multilevel;
   // adaptive refinement: Particles::RedistributeAfterRemesh routes the particles when
   // MeshBlocks change, ReinitAfterMeshUpdate rebuilds the per-block state below
-  // any number of levels: a block l levels below the finest deposits through a 2^l fine
-  // image (SetRefinementFactors); the exchange restricts the image to each neighbour's
-  // level (MeshBoundaryValuesDep::PackAndSendDeposit)
+  // any number of levels: a block l levels below the finest deposits the finest-level
+  // kernel binned onto its own cells, and a block with a finer neighbour also onto a
+  // half-cell halo image, which the exchange sends to that neighbour
+  // (SetRefinementFactors, DepositStencil, MeshBoundaryValuesDep::PackAndSendDeposit)
   bool shear_x1 = (pmy_pack->pmesh->mesh_bcs[BoundaryFace::inner_x1] ==
                    BoundaryFlag::shear_periodic);
   if (!(pmy_pack->pmesh->strictly_periodic)) {
@@ -475,11 +477,10 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   }
   Kokkos::realloc(qdep,  nmb, 5, ncells3, ncells2, ncells1);
   Kokkos::realloc(ustar, nmb, 3, ncells3, ncells2, ncells1);
-  // finest-level deposits: per-block factor and the fine images of the deposit fields
-  // (with AMR any block may become the coarser one later, so the images always exist)
-  // the images are allocated by SetRefinementFactors, only once some block of this pack
-  // is coarser than the finest level present, at the size that needs (grow-only)
+  // finest-level deposits: per-block factor and halo flag; the halo images are allocated
+  // by SetRefinementFactors once some block of this pack has a finer neighbour
   rfac = DualArray1D<int>("dust_rfac", nmb);
+  halo = DualArray1D<int>("dust_halo", nmb);
   SetRefinementFactors();
   if (multilevel) {
     // coarse copies of the copy-exchanged fields (same layout as Hydro::coarse_u0)
@@ -492,8 +493,8 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
     if (global_variable::my_rank == 0) {
       std::cout << "# dust: " << (pmy_pack->pmesh->adaptive ? "adaptive" : "static")
                 << " mesh refinement active: every MeshBlock deposits "
-                << "with the finest-level kernel (2^l fine image on a block l levels "
-                << "below it, volume-averaged onto its cells); ghost deposits are "
+                << "with the finest-level kernel (binned onto its cells, plus a "
+                << "half-cell halo on blocks with a finer neighbour); ghost deposits are "
                 << "exchanged conservatively across level boundaries; u*, rho_dust and "
                 << "g are "
                 << "prolongated" << std::endl;
@@ -539,10 +540,6 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   // layer, both with the shear remap) and the force field (copy exchange)
   pbval_rd = new MeshBoundaryValuesDep(pmy_pack, pin);
   pbval_rd->InitializeBuffers(1);
-  pbval_qp->SetImageFactors(rfac);
-  pbval_dm->SetImageFactors(rfac);
-  pbval_rd->SetImageFactors(rfac);
-  if (pbval_solver_add != nullptr) {pbval_solver_add->SetImageFactors(rfac);}
   pbval_rc = new MeshBoundaryValuesCC(pmy_pack, pin, false);
   pbval_rc->InitializeBuffers(1);
   if (shear_x1) {
@@ -566,50 +563,53 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
 //! \fn void DustGasDrag::SetRefinementFactors()
 //! \brief rfac(m) = 2^(l_fine - l) for a block at level l, where l_fine is the finest
 //! level PRESENT on the mesh (not the finest allowed: until anything refines, every
-//! block deposits directly); any_coarse = some block of this pack has rfac > 1.  The
-//! fine images are (re)allocated here, grow-only, to this pack's block count and largest
-//! factor, and img_r records the factor ZeroImage clears up to.
+//! block deposits directly), and halo(m) = 1 when the block has a finer neighbour (its
+//! ghost deposits are then sent at twice its resolution); any_halo = some block of this
+//! pack has one.  The halo images (2(nx+2ng) cells per active direction, independent of
+//! rfac) are (re)allocated here, grow-only in the block count.  Needs the neighbour table
+//! of the current mesh (SetNeighbors runs before the AMR hook).
 
 void DustGasDrag::SetRefinementFactors() {
-  any_coarse = false;
+  any_halo = false;
   int nmb = pmy_pack->nmb_thispack;
   if (static_cast<int>(rfac.extent(0)) < nmb) {Kokkos::resize(rfac, nmb);}
+  if (static_cast<int>(halo.extent(0)) < nmb) {Kokkos::resize(halo, nmb);}
   Mesh *pm = pmy_pack->pmesh;
   int lfine = pm->root_level;
   if (multilevel) {
     for (int g=0; g<pm->nmb_total; ++g) {lfine = std::max(lfine, pm->lloc_eachmb[g].level);}
   }
-  img_r = 1;
+  auto &nghbr = pmy_pack->pmb->nghbr;
+  const int nnghbr = pmy_pack->pmb->nnghbr;
   for (int m=0; m<nmb; ++m) {
     int lev = pmy_pack->pmb->mb_lev.h_view(m);
     rfac.h_view(m) = multilevel ? (1 << (lfine - lev)) : 1;
-    if (rfac.h_view(m) > 1) {any_coarse = true;}
-    img_r = std::max(img_r, rfac.h_view(m));
+    int h = 0;
+    if (multilevel) {
+      for (int n=0; n<nnghbr; ++n) {
+        if (nghbr.h_view(m,n).gid >= 0 && nghbr.h_view(m,n).lev > lev) {h = 1; break;}
+      }
+    }
+    halo.h_view(m) = h;
+    if (h) {any_halo = true;}
   }
   rfac.modify_host();
   rfac.sync_device();
-  if (any_coarse) {
+  halo.modify_host();
+  halo.sync_device();
+  if (any_halo) {
     auto &indcs = pm->mb_indcs;
-    int ry = (indcs.nx2 > 1) ? img_r : 1, rz = (indcs.nx3 > 1) ? img_r : 1;
-    int n1 = img_r*(indcs.nx1 + 2*indcs.ng);
-    int n2 = ry*((indcs.nx2 > 1) ? (indcs.nx2 + 2*indcs.ng) : 1);
-    int n3 = rz*((indcs.nx3 > 1) ? (indcs.nx3 + 2*indcs.ng) : 1);
-    if (fimg_q.extent_int(0) < nmb || fimg_q.extent_int(4) < n1 ||
-        fimg_q.extent_int(3) < n2 || fimg_q.extent_int(2) < n3) {
-      int na = std::max(nmb, fimg_q.extent_int(0));
-      n1 = std::max(n1, fimg_q.extent_int(4));
-      n2 = std::max(n2, fimg_q.extent_int(3));
-      n3 = std::max(n3, fimg_q.extent_int(2));
+    int n1 = 2*(indcs.nx1 + 2*indcs.ng);
+    int n2 = (indcs.nx2 > 1) ? 2*(indcs.nx2 + 2*indcs.ng) : 1;
+    int n3 = (indcs.nx3 > 1) ? 2*(indcs.nx3 + 2*indcs.ng) : 1;
+    if (fimg_q.extent_int(0) < nmb || fimg_q.extent_int(4) != n1 ||
+        fimg_q.extent_int(3) != n2 || fimg_q.extent_int(2) != n3) {
+      int na = std::max(nmb, (fimg_q.extent_int(4) == n1) ? fimg_q.extent_int(0) : 0);
       Kokkos::realloc(fimg_q, na, 5, n3, n2, n1);
       Kokkos::realloc(fimg_d, na, 4, n3, n2, n1);
       Kokkos::realloc(fimg_r, na, 1, n3, n2, n1);
     }
   }
-  // the additive exchanges restrict the image to each finer neighbour's level
-  if (pbval_qp != nullptr) {pbval_qp->SetImageFactors(rfac);}
-  if (pbval_dm != nullptr) {pbval_dm->SetImageFactors(rfac);}
-  if (pbval_rd != nullptr) {pbval_rd->SetImageFactors(rfac);}
-  if (pbval_solver_add != nullptr) {pbval_solver_add->SetImageFactors(rfac);}
 }
 
 //----------------------------------------------------------------------------------------

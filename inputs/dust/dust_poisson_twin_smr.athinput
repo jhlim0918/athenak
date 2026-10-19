@@ -8,10 +8,9 @@
 # in all three directions, so the coarse-fine faces, edges and corners are all exercised.
 #
 # With <dust>/deposit = ngp the particle-mesh dust density is the profile to round-off on
-# EVERY level: a coarse block deposits with the finest-level kernel into its 2x fine
-# image, NGP puts the whole mass m_p = f*rho*V_coarse into one fine-image cell
-# (rho = m_p/V_fine), and the restriction averages the 2^3 fine cells back onto the
-# coarse cell, returning m_p/V_coarse = f*rho.  So every metric the generator prints
+# EVERY level: a coarse block deposits with the finest-level kernel binned onto its
+# cells, NGP puts the whole mass m_p = f*rho*V_coarse into one fine cell, and the
+# binning returns it to the coarse cell holding that fine cell: m_p/V_coarse = f*rho.  So every metric the generator prints
 # (# FFT-POISSON ERRORS, # TS41-EPS) must equal the gas-only run's ON THIS SAME MESH,
 # and the force gathered at the particles (# DUST-GRAVITY FORCE ERROR) must equal it too.
 # The refined mesh is NOT compared with the uniform one: the discretisation differs.

@@ -18,16 +18,16 @@
 //!
 //! Static mesh refinement (level jumps of one between neighbors): every deposited field
 //! is a density (mass, momentum or a rate per unit volume), and every block deposits
-//! with the kernel of the FINEST level (dust::DepositStencil: a block one level below the
-//! finest scatters into a 2x fine image of itself, which is then volume-averaged onto its
-//! cells).  The exchange across a level boundary is then both conservative and
-//! consistent:
+//! with the kernel of the FINEST level present (dust::DepositStencil: binned onto the
+//! block's own cells, and by a block with a finer neighbour also onto a half-cell halo
+//! image of itself, 2x its resolution).  The exchange across a level boundary is then
+//! both conservative and consistent:
 //!   * a FINE block sends its ghost shell RESTRICTED to the coarse resolution (the
 //!     volume average of the 2^d fine ghost cells covering each coarse cell: the mass
 //!     m W of the fine cells is summed and divided by the coarse volume);
-//!   * a COARSE block sends the 2^d fine-image cells of each of its ghost cells (the
-//!     finest-kernel deposits of its own particles), which the fine receiver adds into
-//!     the corresponding fine cells.
+//!   * a COARSE block sends the 2^d half cells of each of its ghost cells from its halo
+//!     image (the finest-kernel deposits of its own particles at the receiver's
+//!     resolution), which the fine receiver adds into the corresponding fine cells.
 //! A fine cell thus receives the finest-kernel weight of every nearby particle and a
 //! coarse cell the volume average of those weights, whatever block the particles live
 //! in; a uniform particle lattice at the finest spacing deposits an exactly uniform
@@ -177,7 +177,7 @@ void MeshBoundaryValuesDep::InitShearOffsets() {
 //!          transverse overhang of ng/2 coarse cells on the interior side(s) of the
 //!          parent (f = 0 -> the block is the lower child -> overhang upward)
 //!   ifine: FINER neighbor: own ghost cells, ng deep, over the transverse half (f1,f2)
-//!          covered by that fine neighbor, each sent as its 2^d fine-image cells
+//!          covered by that fine neighbor, each sent as its 2^d half cells (halo image)
 
 void MeshBoundaryValuesDep::InitSendIndices(MeshBoundaryBuffer &buf,
                                             int ox1, int ox2, int ox3, int f1, int f2) {
@@ -275,7 +275,7 @@ void MeshBoundaryValuesDep::InitSendIndices(MeshBoundaryBuffer &buf,
   } else {
     fi.bks = mb.ks - ng;          fi.bke = mb.ks - 1;
   }
-  // each ghost cell is sent as its nsub_ fine-image cells
+  // each ghost cell is sent as its nsub_ half cells (halo image)
   buf.ifine_ndat = nsub_*(fi.bie - fi.bis + 1)*(fi.bje - fi.bjs + 1)*
                    (fi.bke - fi.bks + 1);
   }
@@ -291,7 +291,7 @@ void MeshBoundaryValuesDep::InitSendIndices(MeshBoundaryBuffer &buf,
 //!          of that neighbor, extended by ng/2 cells across the midline (the fine
 //!          block's interior overhang)
 //!   icoar: COARSER neighbor: indices are in this block's COARSE index space (ng coarse
-//!          cells deep, whole transverse range); the buffer holds the 2^d fine-image
+//!          cells deep, whole transverse range); the buffer holds the 2^d half
 //!          cells of each such coarse cell, added into the fine cells they cover
 
 void MeshBoundaryValuesDep::InitRecvIndices(MeshBoundaryBuffer &buf,
@@ -456,8 +456,6 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a,
   const int nsub = nsub_;
   const bool multi_d = pmy_pack->pmesh->multi_d;
   const bool three_d = pmy_pack->pmesh->three_d;
-  const bool have_rfac = have_rfac_;
-  auto rf = rfac_.d_view;
 #if MPI_PARALLEL_ENABLED
   // Build (or refresh) the rank-packed metadata before the kernel writes off-rank
   // payloads directly into the aggregate send buffer.
@@ -479,7 +477,7 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a,
     // only load buffers when neighbor exists
     if (nghbr.d_view(m,n).gid >= 0) {
       // neighbor coarser: pack the restricted ghost shell; same: own ghosts; finer:
-      // the fine-image cells of own ghosts over the neighbor's half of the face
+      // the halo-image half cells of own ghosts over the neighbor's half of the face
       const bool to_coarse = (nghbr.d_view(m,n).lev < mblev.d_view(m));
       const bool to_fine = (nghbr.d_view(m,n).lev > mblev.d_view(m));
       const MeshBufferIndcs &ix = to_coarse ? sbuf[n].icoar[0] :
@@ -498,30 +496,15 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a,
       int dm = nghbr.d_view(m,n).gid - mbgid.d_view(0);
       int dn = nghbr.d_view(m,n).dest;
 
-      // value of cell (k,j,i) of the range; when to_fine, sub-cell q of the cell at the
-      // NEIGHBOUR's level (2^d per cell) = mean of the (r/2)^d image cells it covers,
-      // r = this block's image factor (2 with one level: the image cells themselves)
-      const int r = have_rfac ? rf(m) : 2;
-      const int h = r/2;
+      // value of cell (k,j,i) of the range; when to_fine, half cell q (2^d per cell, the
+      // NEIGHBOUR's resolution) of the cell, from the halo image (2x this block)
       auto value = [&](const int k, const int j, const int i, const int q) -> Real {
         if (to_coarse) {return ca(m,v,k,j,i);}
         if (!to_fine) {return a(m,v,k,j,i);}
         const int si = q & 1;
         const int sj = multi_d ? ((q >> 1) & 1) : 0;
         const int sk = three_d ? ((q >> 2) & 1) : 0;
-        const int i0 = r*i + si*h;
-        const int j0 = multi_d ? r*j + sj*h : j;
-        const int k0 = three_d ? r*k + sk*h : k;
-        const int hj = multi_d ? h : 1, hk = three_d ? h : 1;
-        Real sum = 0.0;
-        for (int kk=0; kk<hk; ++kk) {
-          for (int jj=0; jj<hj; ++jj) {
-            for (int ii=0; ii<h; ++ii) {
-              sum += fimg(m, v, k0 + kk, j0 + jj, i0 + ii);
-            }
-          }
-        }
-        return sum/static_cast<Real>(h*hj*hk);
+        return fimg(m, v, three_d ? 2*k + sk : k, multi_d ? 2*j + sj : j, 2*i + si);
       };
 
       // Middle loop over k,j
@@ -530,7 +513,7 @@ TaskStatus MeshBoundaryValuesDep::PackAndSendDeposit(DvceArray5D<Real> &a,
         int j = (idx - k * nj) + jl;
         k += kl;
 
-        // Inner (vector) loop over i (and the fine-image sub-cells)
+        // Inner (vector) loop over i (and the half cells of the halo image)
         // copy directly into recv buffer if MeshBlocks on same rank
         if (nghbr.d_view(m,n).rank == my_rank) {
           Kokkos::parallel_for(Kokkos::ThreadVectorRange(tmember,il*ns,(iu+1)*ns),
@@ -702,7 +685,7 @@ TaskStatus MeshBoundaryValuesDep::RecvAndSumDeposit(DvceArray5D<Real> &a) {
               a(m,v,k,j,i) += val;
             } else {
               // (k,j,i) are COARSE indices of this block and q the fine sub-cell: add
-              // the sender's fine-image value into that fine cell
+              // the sender's halo-image value into that fine cell
               const int si = q & 1;
               const int sj = multi_d ? ((q >> 1) & 1) : 0;
               const int sk = three_d ? ((q >> 2) & 1) : 0;

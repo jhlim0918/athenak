@@ -167,35 +167,74 @@ void PMWeights(const Real x, const Real xmin, const Real xmax, const int nx,
 }
 
 //----------------------------------------------------------------------------------------
+//! \fn void BinWeights
+//! \brief Fold a 3-point stencil on a grid g times finer onto the grid itself: fine cell
+//! f lies in cell f/g, so the weight of every cell is the sum of the fine weights of the
+//! fine cells it contains (the fine kernel integrated over the cell).  Three consecutive
+//! fine cells span at most two cells when g >= 2, so the result is again a 3-point
+//! stencil about ip/g.  g = 1 leaves the stencil untouched.  Fine indices are >= 0
+//! (the fine grid carries g times the ghost cells).
+
+KOKKOS_INLINE_FUNCTION
+void BinWeights(const int g, int &ip, Real w[3]) {
+  if (g == 1) {return;}
+  const int op = ip/g;
+  Real b[3] = {0.0, 0.0, 0.0};
+  for (int n=-1; n<=1; ++n) {b[(ip + n)/g - op + 1] += w[n + 1];}
+  ip = op;
+  w[0] = b[0]; w[1] = b[1]; w[2] = b[2];
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn void DepositStencil
 //! \brief Particle-mesh stencil used for every DEPOSIT (scatter) of the module.  With
-//! static mesh refinement all MeshBlocks deposit with the kernel of the FINEST level so
-//! that the deposited density is one consistent field across level boundaries: a block
-//! one level below the finest (r = 2) scatters into its fine image (r*nx cells and r*ng
-//! ghost cells per direction, cell volume V/r^d), which is then volume-averaged onto its
-//! own cells (DustGasDrag::RestrictImage); a block at the finest level (r = 1) scatters
-//! into its own cells.  Gathers keep using the block's own cells (PMWeights directly).
-//! On a uniform mesh r = 1 and the arithmetic is unchanged.
+//! mesh refinement all MeshBlocks deposit with the kernel of the FINEST level present, so
+//! that the deposited density is one consistent field across level boundaries.  A block
+//! r = 2^l times coarser than the finest level evaluates that kernel on the r x finer
+//! grid and bins it (BinWeights) onto a grid s x finer than its own cells: s = 1 for the
+//! block's own deposit arrays (active zone + ghosts, cell volume V), s = 2 for the
+//! half-cell halo image that the additive exchange sends to FINER neighbours (cell volume
+//! V/2^d, see DustGasDrag::fimg_q).  The result equals the old volume average of a fine
+//! image of the block to round-off, with no image at all.  Gathers keep using the
+//! block's own cells (PMWeights directly).  On a uniform mesh r = s = 1 and the
+//! arithmetic is unchanged.
 
 KOKKOS_INLINE_FUNCTION
 void DepositStencil(const RegionSize &sz, const Real x, const Real y, const Real z,
                     const int nx1, const int nx2, const int nx3,
-                    const int is, const int js, const int ks, const int r,
+                    const int is, const int js, const int ks, const int r, const int s,
                     const bool three_d, const int scheme,
                     int &ip, int &jp, int &kp, Real wx[3], Real wy[3], Real wz[3],
                     Real &vol) {
+  const int g = r/s;
   PMWeights(x, sz.x1min, sz.x1max, r*nx1, r*is, scheme, ip, wx);
   PMWeights(y, sz.x2min, sz.x2max, r*nx2, r*js, scheme, jp, wy);
+  BinWeights(g, ip, wx);
+  BinWeights(g, jp, wy);
   vol = sz.dx1*sz.dx2;
   if (three_d) {
     PMWeights(z, sz.x3min, sz.x3max, r*nx3, r*ks, scheme, kp, wz);
+    BinWeights(g, kp, wz);
     vol *= sz.dx3;
-    if (r > 1) {vol /= static_cast<Real>(r*r*r);}
+    if (s > 1) {vol /= static_cast<Real>(s*s*s);}
   } else {
     kp = ks;
     wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0;
-    if (r > 1) {vol /= static_cast<Real>(r*r);}
+    if (s > 1) {vol /= static_cast<Real>(s*s);}
   }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn bool StencilAtEdge
+//! \brief The block-cell stencil about (ip,jp,kp) reaches a ghost cell (any direction):
+//! only such particles contribute to the halo image.
+
+KOKKOS_INLINE_FUNCTION
+bool StencilAtEdge(const int ip, const int jp, const int kp, const int is, const int js,
+                   const int ks, const int nx1, const int nx2, const int nx3,
+                   const bool three_d) {
+  return (ip <= is) || (ip >= is + nx1 - 1) || (jp <= js) || (jp >= js + nx2 - 1) ||
+         (three_d && ((kp <= ks) || (kp >= ks + nx3 - 1)));
 }
 
 //----------------------------------------------------------------------------------------
@@ -275,15 +314,20 @@ class DustGasDrag {
   DvceArray5D<Real> coarse_rd;  // rho_dust
   DvceArray5D<Real> coarse_g;   // gforce
   bool multilevel;           // SMR mesh: restrict/prolongate around the copy exchanges
-  // SMR: finest-level deposits.  rfac(m) = 2 on blocks one level below the finest level
-  // (they scatter into the fine images below, then RestrictImage averages onto their
-  // cells), 1 otherwise.  any_coarse = some block of this pack has rfac = 2.
-  bool any_coarse = false;
+  // SMR/AMR: finest-level deposits.  rfac(m) = 2^(l_fine - l) for a block at level l
+  // (l_fine = finest level present): its particles deposit through the finest-level
+  // kernel binned onto its own cells (DepositStencil, s = 1).  A block with a FINER
+  // neighbour (halo(m) = 1, so rfac >= 2) also bins the deposits of its edge particles
+  // onto the half-cell halo image (s = 2, 2(nx+2ng) cells per direction): the additive
+  // exchange sends those half cells of its ghost shell to the finer side.  The images
+  // exist only once some block of this pack has a finer neighbour (any_halo), and their
+  // size no longer depends on the number of levels.
+  bool any_halo = false;
   DualArray1D<int> rfac;
-  DvceArray5D<Real> fimg_q;     // fine image of qdep (5 vars)
-  DvceArray5D<Real> fimg_d;     // fine image of dmom (4 vars)
-  DvceArray5D<Real> fimg_r;     // fine image of rho_dust (1 var)
-  int img_r = 1;                // largest rfac of this pack (ZeroImage extent)
+  DualArray1D<int> halo;
+  DvceArray5D<Real> fimg_q;     // halo image of qdep (5 vars)
+  DvceArray5D<Real> fimg_d;     // halo image of dmom (4 vars)
+  DvceArray5D<Real> fimg_r;     // halo image of rho_dust (1 var)
   DvceArray5D<Real> solver_r;   // coupled-solver residual
   DvceArray5D<Real> solver_p;   // PCG search direction
   DvceArray5D<Real> solver_ap;  // matrix-free A*x / A*p work field
@@ -416,17 +460,15 @@ class DustGasDrag {
   // coarse ghosts at physical faces, and prolongate the fine ghosts next to coarser
   // neighbors.  No-ops on a uniform mesh.
   void RestrictField(DvceArray5D<Real> &a, DvceArray5D<Real> &ca);
-  // SMR finest-level deposits (dust_smr.cpp): zero a fine image before a scatter, and
-  // volume-average it onto the block cells (active zone + ghosts) after; both no-ops
-  // when no block of this pack has rfac = 2
+  // SMR/AMR finest-level deposits (dust_smr.cpp): zero the halo image of the blocks
+  // with a finer neighbour before a scatter (no-op when there are none)
   void ZeroImage(DvceArray5D<Real> &fimg);
-  void RestrictImage(DvceArray5D<Real> &fimg, DvceArray5D<Real> &a);
   void ProlongateField(MeshBoundaryValuesCC *pbval, DvceArray5D<Real> &a,
                        DvceArray5D<Real> &ca);
   void DepositMass();                // the deposit kernel (rho_dust, active + ghosts)
   void ComputeForceField();          // gforce on active cells from phi
   void AssembleDustDensityNow();   // synchronous deposit + exchanges (static solves)
-  void SetRefinementFactors();     // rfac/any_coarse from the current block levels
+  void SetRefinementFactors();     // rfac/halo from the current block levels
   void ReinitAfterMeshUpdate();    // AMR: per-block state after a remesh
   void ComputeGravForceNow();        // synchronous force field + exchanges
   // ...in "after_stagen" list

@@ -71,6 +71,7 @@ TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
     auto &qdep_ = qdep;
     auto &fimg_ = fimg_q;
     auto rf = rfac.d_view;
+    auto hl = halo.d_view;
     ZeroImage(fimg_q);
 
     par_for("dust_pc2_predictor",DevExeSpace(),0,(npart-1),
@@ -105,32 +106,42 @@ TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
           }
         }
       }
-      // deposit with the finest-level stencil (own cells when rfac = 1)
+      // deposit with the finest-level stencil binned onto the block cells (its own
+      // stencil when rfac = 1), and onto the halo image at the edge of a block with a
+      // finer neighbour
+      auto scatter = [&](const DvceArray5D<Real> &tgt, const int i0, const int j0,
+                         const int k0, const Real *ax, const Real *ay, const Real *az,
+                         const Real vol) {
+        Real rate = pr(IPM,p)/(pr(IPTS,p)*vol);
+        Real gx = -dt*rate*(ugx-pr(IPVX,p));
+        Real gy = -dt*rate*(ugy-pr(IPVY,p));
+        Real gz = -dt*rate*(ugz-pr(IPVZ,p));
+        for (int c=clo; c<=chi; ++c) {
+          for (int b=0; b<3; ++b) {
+            Real wcb = az[c]*ay[b];
+            if (wcb == 0.0) continue;
+            for (int a=0; a<3; ++a) {
+              Real w = wcb*ax[a];
+              int kk = k0+c-1, jj = j0+b-1, ii = i0+a-1;
+              DepositAdd(&tgt(m,1,kk,jj,ii), w*gx);
+              DepositAdd(&tgt(m,2,kk,jj,ii), w*gy);
+              DepositAdd(&tgt(m,3,kk,jj,ii), w*gz);
+              DepositAdd(&tgt(m,4,kk,jj,ii), w*rate);
+            }
+          }
+        }
+      };
       const int r = rf(m);
       Real vol;
       DepositStencil(mbsize.d_view(m), pr(IPX,p), pr(IPY,p), pr(IPZ,p), nx1, nx2, nx3,
-                     is, js, ks, r, three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
-      const DvceArray5D<Real> &tgt = (r > 1) ? fimg_ : qdep_;
-      Real rate = pr(IPM,p)/(pr(IPTS,p)*vol);
-      Real gx = -dt*rate*(ugx-pr(IPVX,p));
-      Real gy = -dt*rate*(ugy-pr(IPVY,p));
-      Real gz = -dt*rate*(ugz-pr(IPVZ,p));
-      for (int c=clo; c<=chi; ++c) {
-        for (int b=0; b<3; ++b) {
-          Real wcb = wz[c]*wy[b];
-          if (wcb == 0.0) continue;
-          for (int a=0; a<3; ++a) {
-            Real w = wcb*wx[a];
-            int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
-            DepositAdd(&tgt(m,1,kk,jj,ii), w*gx);
-            DepositAdd(&tgt(m,2,kk,jj,ii), w*gy);
-            DepositAdd(&tgt(m,3,kk,jj,ii), w*gz);
-            DepositAdd(&tgt(m,4,kk,jj,ii), w*rate);
-          }
-        }
+                     is, js, ks, r, 1, three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
+      scatter(qdep_, ip, jp, kp, wx, wy, wz, vol);
+      if (hl(m) && StencilAtEdge(ip, jp, kp, is, js, ks, nx1, nx2, nx3, three_d)) {
+        DepositStencil(mbsize.d_view(m), pr(IPX,p), pr(IPY,p), pr(IPZ,p), nx1, nx2, nx3,
+                       is, js, ks, r, 2, three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
+        scatter(fimg_, ip, jp, kp, wx, wy, wz, vol);
       }
     });
-    RestrictImage(fimg_q, qdep);
     return TaskStatus::complete;
   }
 
@@ -152,21 +163,21 @@ TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
   auto &qdep_ = qdep;
   auto &fimg_ = fimg_q;
   auto rf = rfac.d_view;
+  auto hl = halo.d_view;
   ZeroImage(fimg_q);
 
   par_for("dust_scatter",DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m = pi(PGID,p) - gids;
-    // finest-level deposit stencil (the block's own cells when rfac = 1)
+    // finest-level deposit stencil binned onto the block cells (the block's own stencil
+    // when rfac = 1)
     const int r = rf(m);
     int ip, jp, kp;
     Real wx[3], wy[3], wz[3], vol;
     DepositStencil(mbsize.d_view(m), pr(IPX,p), pr(IPY,p), pr(IPZ,p), nx1, nx2, nx3,
-                   is, js, ks, r, three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
-    const DvceArray5D<Real> &tgt = (r > 1) ? fimg_ : qdep_;
-    // guard against particles that escaped migration (indicates an upstream bug); the
-    // stencil indices are those of the (r x) deposit grid
-    if (ip < (r*is-1) || ip > (r*(is+nx1)) || jp < (r*js-1) || jp > (r*(js+nx2)) ||
-        (three_d && (kp < (r*ks-1) || kp > (r*(ks+nx3))))) {
+                   is, js, ks, r, 1, three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
+    // guard against particles that escaped migration (indicates an upstream bug)
+    if (ip < (is-1) || ip > (is+nx1) || jp < (js-1) || jp > (js+nx2) ||
+        (three_d && (kp < (ks-1) || kp > (ks+nx3)))) {
       Kokkos::printf("DustGasDrag halo violation: p=%d gid=%d x=(%.6e %.6e %.6e) "
                      "block x1=[%.4e,%.4e] x2=[%.4e,%.4e] x3=[%.4e,%.4e] "
                      "ip,jp,kp=(%d %d %d)\n", p, pi(PGID,p),
@@ -178,26 +189,35 @@ TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
     }
 
     Real cj  = a_dt/(pr(IPTS,p) + a_dt);
-    Real muc = pr(IPM,p)*cj/vol;
     Real vx = pr(IPVX,p), vy = pr(IPVY,p), vz = pr(IPVZ,p);
-
     int clo = three_d ? 0 : 1, chi = three_d ? 2 : 1;
-    for (int c=clo; c<=chi; ++c) {
-      for (int b=0; b<3; ++b) {
-        Real wcb = wz[c]*wy[b]*muc;
-        if (wcb == 0.0) continue;
-        for (int a=0; a<3; ++a) {
-          Real w = wcb*wx[a];
-          int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
-          DepositAdd(&tgt(m,0,kk,jj,ii), w);
-          DepositAdd(&tgt(m,1,kk,jj,ii), w*vx);
-          DepositAdd(&tgt(m,2,kk,jj,ii), w*vy);
-          DepositAdd(&tgt(m,3,kk,jj,ii), w*vz);
+    auto scatter = [&](const DvceArray5D<Real> &tgt, const int i0, const int j0,
+                       const int k0, const Real *ax, const Real *ay, const Real *az,
+                       const Real vol_) {
+      Real muc = pr(IPM,p)*cj/vol_;
+      for (int c=clo; c<=chi; ++c) {
+        for (int b=0; b<3; ++b) {
+          Real wcb = az[c]*ay[b]*muc;
+          if (wcb == 0.0) continue;
+          for (int a=0; a<3; ++a) {
+            Real w = wcb*ax[a];
+            int kk = k0+c-1, jj = j0+b-1, ii = i0+a-1;
+            DepositAdd(&tgt(m,0,kk,jj,ii), w);
+            DepositAdd(&tgt(m,1,kk,jj,ii), w*vx);
+            DepositAdd(&tgt(m,2,kk,jj,ii), w*vy);
+            DepositAdd(&tgt(m,3,kk,jj,ii), w*vz);
+          }
         }
       }
+    };
+    scatter(qdep_, ip, jp, kp, wx, wy, wz, vol);
+    // the half-cell halo image at the edge of a block with a finer neighbour
+    if (hl(m) && StencilAtEdge(ip, jp, kp, is, js, ks, nx1, nx2, nx3, three_d)) {
+      DepositStencil(mbsize.d_view(m), pr(IPX,p), pr(IPY,p), pr(IPZ,p), nx1, nx2, nx3,
+                     is, js, ks, r, 2, three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
+      scatter(fimg_, ip, jp, kp, wx, wy, wz, vol);
     }
   });
-  RestrictImage(fimg_q, qdep);
 
   return TaskStatus::complete;
 }
@@ -364,6 +384,7 @@ TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
   auto &dmom_ = dmom;
   auto &fimg_ = fimg_d;
   auto rf = rfac.d_view;
+  auto hl = halo.d_view;
   const bool heat = drag_heating;
 
   par_for("dust_gather",DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
@@ -413,16 +434,17 @@ TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
 
     // finest-level deposit stencil at the (pre-drift) particle position: identical to
     // the gather stencil on a block at the finest level (gather and scatter share W),
-    // the 2x fine image one level below it
+    // the finest-level kernel binned onto the block cells below it
     const int r = rf(m);
+    const Real xd = pr(IPX,p), yd = pr(IPY,p), zd = pr(IPZ,p);
     int ipd = ip, jpd = jp, kpd = kp;
     Real wxd[3] = {wx[0], wx[1], wx[2]};
     Real wyd[3] = {wy[0], wy[1], wy[2]};
     Real wzd[3] = {wz[0], wz[1], wz[2]};
     Real vol;
     if (r > 1) {
-      DepositStencil(mbsize.d_view(m), pr(IPX,p), pr(IPY,p), pr(IPZ,p), nx1, nx2, nx3,
-                     is, js, ks, r, three_d, scheme, ipd, jpd, kpd, wxd, wyd, wzd, vol);
+      DepositStencil(mbsize.d_view(m), xd, yd, zd, nx1, nx2, nx3, is, js, ks, r, 1,
+                     three_d, scheme, ipd, jpd, kpd, wxd, wyd, wzd, vol);
     } else {
       vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
       if (three_d) {vol *= mbsize.d_view(m).dx3;}
@@ -442,32 +464,42 @@ TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
     // kinetic energy lost by particle + gas beyond the gas kinetic-energy change that
     // GasKick already books), deposited as heat
     if (br) {
-      const DvceArray5D<Real> &tgt = (r > 1) ? fimg_ : dmom_;
-      Real fac = -pr(IPM,p)/vol;
-      Real qheat = 0.0;
+      Real du2 = 0.0;
       if (heat) {
-        Real du2 = SQR(ux - pr(IPVX,p) + dvx) + SQR(uy - pr(IPVY,p) + dvy)
-                 + SQR(uz - pr(IPVZ,p) + dvz);   // |u~ - v_old|^2
-        qheat = pr(IPM,p)*cj*(1.0 - 0.5*cj)*du2/vol;
+        du2 = SQR(ux - pr(IPVX,p) + dvx) + SQR(uy - pr(IPVY,p) + dvy)
+            + SQR(uz - pr(IPVZ,p) + dvz);   // |u~ - v_old|^2
       }
-      for (int c=clo; c<=chi; ++c) {
-        for (int b=0; b<3; ++b) {
-          Real wcb = wzd[c]*wyd[b]*fac;
-          if (wcb == 0.0) continue;
-          Real wcbq = wzd[c]*wyd[b]*qheat;
-          for (int a=0; a<3; ++a) {
-            Real w = wcb*wxd[a];
-            int kk = kpd+c-1, jj = jpd+b-1, ii = ipd+a-1;
-            DepositAdd(&tgt(m,0,kk,jj,ii), w*dvx);
-            DepositAdd(&tgt(m,1,kk,jj,ii), w*dvy);
-            DepositAdd(&tgt(m,2,kk,jj,ii), w*dvz);
-            if (heat) {DepositAdd(&tgt(m,3,kk,jj,ii), wcbq*wxd[a]);}
+      auto scatter = [&](const DvceArray5D<Real> &tgt, const int i0, const int j0,
+                         const int k0, const Real *ax, const Real *ay, const Real *az,
+                         const Real vol_) {
+        Real fac = -pr(IPM,p)/vol_;
+        Real qheat = 0.0;
+        if (heat) {qheat = pr(IPM,p)*cj*(1.0 - 0.5*cj)*du2/vol_;}
+        for (int c=clo; c<=chi; ++c) {
+          for (int b=0; b<3; ++b) {
+            Real wcb = az[c]*ay[b]*fac;
+            if (wcb == 0.0) continue;
+            Real wcbq = az[c]*ay[b]*qheat;
+            for (int a=0; a<3; ++a) {
+              Real w = wcb*ax[a];
+              int kk = k0+c-1, jj = j0+b-1, ii = i0+a-1;
+              DepositAdd(&tgt(m,0,kk,jj,ii), w*dvx);
+              DepositAdd(&tgt(m,1,kk,jj,ii), w*dvy);
+              DepositAdd(&tgt(m,2,kk,jj,ii), w*dvz);
+              if (heat) {DepositAdd(&tgt(m,3,kk,jj,ii), wcbq*ax[a]);}
+            }
           }
         }
+      };
+      scatter(dmom_, ipd, jpd, kpd, wxd, wyd, wzd, vol);
+      // the half-cell halo image at the edge of a block with a finer neighbour
+      if (hl(m) && StencilAtEdge(ipd, jpd, kpd, is, js, ks, nx1, nx2, nx3, three_d)) {
+        DepositStencil(mbsize.d_view(m), xd, yd, zd, nx1, nx2, nx3, is, js, ks, r, 2,
+                       three_d, scheme, ipd, jpd, kpd, wxd, wyd, wzd, vol);
+        scatter(fimg_, ipd, jpd, kpd, wxd, wyd, wzd, vol);
       }
     }
   });
-  if (br) {RestrictImage(fimg_d, dmom);}
 
   return TaskStatus::complete;
 }

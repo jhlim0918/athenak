@@ -4,8 +4,8 @@
 # and the interior bar x in [-0.25,0.25] (the two middle columns), full y (annular
 # policy for orbital advection), z in [-0.25,0.25] (the two middle rows) is refined to
 # level 1.  The two x1 columns on the shear-periodic faces stay at root level (mesh
-# policy).  Every MeshBlock deposits with the finest-level kernel (the root blocks
-# through a 2x fine image averaged onto their cells), and with problem/lattice_finest =
+# policy).  Every MeshBlock deposits with the finest-level kernel (on the root blocks
+# binned onto their cells), and with problem/lattice_finest =
 # true the particle lattice sits at the finest-level cell centres everywhere (8x more
 # particles per root block, masses scaled accordingly): the deposits are then exactly
 # uniform across the level boundaries and the NSH state must hold to round-off (all

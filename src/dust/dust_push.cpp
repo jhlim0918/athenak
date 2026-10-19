@@ -120,6 +120,7 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
     int scheme = static_cast<int>(deposit);
 
     auto rf = rfac.d_view;
+    auto hl = halo.d_view;
     if (hybrid_mode == HybridMode::pc2) {
       if (br) {
         Kokkos::deep_copy(DevExeSpace(), dmom, 0.0);
@@ -230,43 +231,54 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
 
         if (br) {
           // finest-level deposit stencil at the midpoint (the gather stencil itself on
-          // a block at the finest level, the 2x fine image one level below)
+          // a block at the finest level, the finest-level kernel binned onto the block
+          // cells below it)
           const int r = rf(m);
           Real vol;
           if (r > 1) {
-            DepositStencil(mbsize.d_view(m), xh, yh, zh, nx1, nx2, nx3, is, js, ks, r,
+            DepositStencil(mbsize.d_view(m), xh, yh, zh, nx1, nx2, nx3, is, js, ks, r, 1,
                            three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
           } else {
             vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
             if (three_d) vol *= mbsize.d_view(m).dx3;
           }
-          const DvceArray5D<Real> &tgt = (r > 1) ? fimg_ : dmom_;
-          Real fac = -pr(IPM,p)/vol;
-          // frictional dissipation of the midpoint drag impulse (midpoint quadrature of
-          // m |u - v|^2/t_s over dt, minus the kinetic-energy form correction), as heat
-          Real qheat = 0.0;
-          if (heat) {
-            qheat = pr(IPM,p)*(dvx_drag*(ugx-vxh) + dvy_drag*(ugy-vyh) + dvz_drag*(ugz-vzh)
-                               - 0.5*(SQR(dvx_drag) + SQR(dvy_drag) + SQR(dvz_drag)))/vol;
-          }
-          for (int c=clo; c<=chi; ++c) {
-            for (int b=0; b<3; ++b) {
-              Real wcb = wz[c]*wy[b]*fac;
-              if (wcb == 0.0) continue;
-              Real wcbq = wz[c]*wy[b]*qheat;
-              for (int a=0; a<3; ++a) {
-                Real w = wcb*wx[a];
-                int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
-                DepositAdd(&tgt(m,0,kk,jj,ii), w*dvx_drag);
-                DepositAdd(&tgt(m,1,kk,jj,ii), w*dvy_drag);
-                DepositAdd(&tgt(m,2,kk,jj,ii), w*dvz_drag);
-                if (heat) {DepositAdd(&tgt(m,3,kk,jj,ii), wcbq*wx[a]);}
+          auto scatter = [&](const DvceArray5D<Real> &tgt, const int i0, const int j0,
+                             const int k0, const Real *ax, const Real *ay, const Real *az,
+                             const Real vol_) {
+            Real fac = -pr(IPM,p)/vol_;
+            // frictional dissipation of the midpoint drag impulse (midpoint quadrature
+            // of m |u - v|^2/t_s over dt, minus the kinetic-energy form correction)
+            Real qheat = 0.0;
+            if (heat) {
+              qheat = pr(IPM,p)*(dvx_drag*(ugx-vxh) + dvy_drag*(ugy-vyh)
+                                 + dvz_drag*(ugz-vzh)
+                                 - 0.5*(SQR(dvx_drag) + SQR(dvy_drag) + SQR(dvz_drag)))/vol_;
+            }
+            for (int c=clo; c<=chi; ++c) {
+              for (int b=0; b<3; ++b) {
+                Real wcb = az[c]*ay[b]*fac;
+                if (wcb == 0.0) continue;
+                Real wcbq = az[c]*ay[b]*qheat;
+                for (int a=0; a<3; ++a) {
+                  Real w = wcb*ax[a];
+                  int kk = k0+c-1, jj = j0+b-1, ii = i0+a-1;
+                  DepositAdd(&tgt(m,0,kk,jj,ii), w*dvx_drag);
+                  DepositAdd(&tgt(m,1,kk,jj,ii), w*dvy_drag);
+                  DepositAdd(&tgt(m,2,kk,jj,ii), w*dvz_drag);
+                  if (heat) {DepositAdd(&tgt(m,3,kk,jj,ii), wcbq*ax[a]);}
+                }
               }
             }
+          };
+          scatter(dmom_, ip, jp, kp, wx, wy, wz, vol);
+          // the half-cell halo image at the edge of a block with a finer neighbour
+          if (hl(m) && StencilAtEdge(ip, jp, kp, is, js, ks, nx1, nx2, nx3, three_d)) {
+            DepositStencil(mbsize.d_view(m), xh, yh, zh, nx1, nx2, nx3, is, js, ks, r, 2,
+                           three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
+            scatter(fimg_, ip, jp, kp, wx, wy, wz, vol);
           }
         }
       });
-      if (br) {RestrictImage(fimg_d, dmom);}
     } else {
       if (br) {
         Kokkos::deep_copy(DevExeSpace(), qdep, 0.0);
@@ -296,34 +308,44 @@ TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
 
         if (!br) return;
         int m = pi(PGID,p) - gids;
-        // finest-level deposit stencil (the block's own cells when rfac = 1)
+        // finest-level deposit stencil binned onto the block cells (the block's own
+        // stencil when rfac = 1)
         const int r = rf(m);
         int ip, jp, kp;
         Real wx[3], wy[3], wz[3], vol;
-        DepositStencil(mbsize.d_view(m), x0, y0, z0, nx1, nx2, nx3, is, js, ks, r,
+        DepositStencil(mbsize.d_view(m), x0, y0, z0, nx1, nx2, nx3, is, js, ks, r, 1,
                        three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
-        const DvceArray5D<Real> &tgt = (r > 1) ? fimg_ : qdep_;
         Real cj = dt/(pr(IPTS,p) + dt);
-        Real muc = pr(IPM,p)*cj/vol;
-        Real rate = pr(IPM,p)/(pr(IPTS,p)*vol);
         int clo = three_d ? 0 : 1, chi = three_d ? 2 : 1;
-        for (int c=clo; c<=chi; ++c) {
-          for (int b=0; b<3; ++b) {
-            Real wcb = wz[c]*wy[b];
-            if (wcb == 0.0) continue;
-            for (int a=0; a<3; ++a) {
-              Real w = wcb*wx[a];
-              int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
-              DepositAdd(&tgt(m,0,kk,jj,ii), w*muc);
-              DepositAdd(&tgt(m,1,kk,jj,ii), w*muc*pr(IPVX,p));
-              DepositAdd(&tgt(m,2,kk,jj,ii), w*muc*pr(IPVY,p));
-              DepositAdd(&tgt(m,3,kk,jj,ii), w*muc*pr(IPVZ,p));
-              DepositAdd(&tgt(m,4,kk,jj,ii), w*rate);
+        auto scatter = [&](const DvceArray5D<Real> &tgt, const int i0, const int j0,
+                           const int k0, const Real *ax, const Real *ay, const Real *az,
+                           const Real vol_) {
+          Real muc = pr(IPM,p)*cj/vol_;
+          Real rate = pr(IPM,p)/(pr(IPTS,p)*vol_);
+          for (int c=clo; c<=chi; ++c) {
+            for (int b=0; b<3; ++b) {
+              Real wcb = az[c]*ay[b];
+              if (wcb == 0.0) continue;
+              for (int a=0; a<3; ++a) {
+                Real w = wcb*ax[a];
+                int kk = k0+c-1, jj = j0+b-1, ii = i0+a-1;
+                DepositAdd(&tgt(m,0,kk,jj,ii), w*muc);
+                DepositAdd(&tgt(m,1,kk,jj,ii), w*muc*pr(IPVX,p));
+                DepositAdd(&tgt(m,2,kk,jj,ii), w*muc*pr(IPVY,p));
+                DepositAdd(&tgt(m,3,kk,jj,ii), w*muc*pr(IPVZ,p));
+                DepositAdd(&tgt(m,4,kk,jj,ii), w*rate);
+              }
             }
           }
+        };
+        scatter(qdep_, ip, jp, kp, wx, wy, wz, vol);
+        // the half-cell halo image at the edge of a block with a finer neighbour
+        if (hl(m) && StencilAtEdge(ip, jp, kp, is, js, ks, nx1, nx2, nx3, three_d)) {
+          DepositStencil(mbsize.d_view(m), x0, y0, z0, nx1, nx2, nx3, is, js, ks, r, 2,
+                         three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
+          scatter(fimg_, ip, jp, kp, wx, wy, wz, vol);
         }
       });
-      if (br) {RestrictImage(fimg_q, qdep);}
     }
     return TaskStatus::complete;
   }

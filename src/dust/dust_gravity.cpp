@@ -95,29 +95,40 @@ void DustGasDrag::DepositMass() {
   auto &rho = rho_dust;
   auto &fimg_ = fimg_r;
   auto rf = rfac.d_view;
+  auto hl = halo.d_view;
 
   par_for("dust_grav_deposit",DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m = pi(PGID,p) - gids;
-    // finest-level deposit stencil (the block's own cells when rfac = 1)
+    // finest-level deposit stencil binned onto the block cells (the block's own stencil
+    // when rfac = 1)
     const int r = rf(m);
     int ip, jp, kp;
     Real wx[3], wy[3], wz[3], vol;
     DepositStencil(mbsize.d_view(m), pr(IPX,p), pr(IPY,p), pr(IPZ,p), nx1, nx2, nx3,
-                   is, js, ks, r, three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
-    const DvceArray5D<Real> &tgt = (r > 1) ? fimg_ : rho;
-    Real minv = pr(IPM,p)/vol;
+                   is, js, ks, r, 1, three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
     int clo = three_d ? 0 : 1, chi = three_d ? 2 : 1;
-    for (int c=clo; c<=chi; ++c) {
-      for (int b=0; b<3; ++b) {
-        Real wcb = wz[c]*wy[b]*minv;
-        if (wcb == 0.0) continue;
-        for (int a=0; a<3; ++a) {
-          DepositAdd(&tgt(m,0,kp+c-1,jp+b-1,ip+a-1), wcb*wx[a]);
+    auto scatter = [&](const DvceArray5D<Real> &tgt, const int i0, const int j0,
+                       const int k0, const Real *ax, const Real *ay, const Real *az,
+                       const Real vol_) {
+      Real minv = pr(IPM,p)/vol_;
+      for (int c=clo; c<=chi; ++c) {
+        for (int b=0; b<3; ++b) {
+          Real wcb = az[c]*ay[b]*minv;
+          if (wcb == 0.0) continue;
+          for (int a=0; a<3; ++a) {
+            DepositAdd(&tgt(m,0,k0+c-1,j0+b-1,i0+a-1), wcb*ax[a]);
+          }
         }
       }
+    };
+    scatter(rho, ip, jp, kp, wx, wy, wz, vol);
+    // the half-cell halo image at the edge of a block with a finer neighbour
+    if (hl(m) && StencilAtEdge(ip, jp, kp, is, js, ks, nx1, nx2, nx3, three_d)) {
+      DepositStencil(mbsize.d_view(m), pr(IPX,p), pr(IPY,p), pr(IPZ,p), nx1, nx2, nx3,
+                     is, js, ks, r, 2, three_d, scheme, ip, jp, kp, wx, wy, wz, vol);
+      scatter(fimg_, ip, jp, kp, wx, wy, wz, vol);
     }
   });
-  RestrictImage(fimg_r, rho_dust);
 }
 
 //----------------------------------------------------------------------------------------

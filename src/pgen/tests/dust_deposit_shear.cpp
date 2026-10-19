@@ -226,7 +226,7 @@ void ProblemGenerator::DustDepositShear(ParameterInput *pin, const bool restart)
   MeshBoundaryValuesDep dep(pmbp, pin);
   dep.InitializeBuffers(nvar);
   Require(dep.InitRecv(nvar), "InitRecv");
-  // the 2x fine image from which sends to finer neighbours are packed (dust::
+  // the half-cell halo image from which sends to finer neighbours are packed (dust::
   // DepositStencil): nothing was deposited into it here, so it is all zero
   DvceArray5D<Real> fimg("dds_fimg", nmb, nvar, (pm->three_d ? 2*ncells3 : ncells3),
                          2*ncells2, 2*ncells1);
