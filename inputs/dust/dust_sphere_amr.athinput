@@ -1,0 +1,121 @@
+# AthenaK input file (AMR variant of dust_sphere.athinput): pressureless collapse of a uniform sphere of dust particles (Simon et
+# al. 2016, ApJ 822, 55, Sect. 2.2.1; Athena-C prob/particle_sphere.c), problem generator
+# src/pgen/tests/dust_sphere.cpp.  Radius 0.25 in a unit box, one particle per cell at rest,
+# G = 8e-3 (4 pi G = 0.1005), rho_p0 = 1: t_ff = sqrt(3 pi/(32 G rho_p0)) = 6.0705.  Particle
+# self-gravity alone: no drag (taus = 1e10), no back-reaction, the gas an inert uniform
+# background that does not feel the potential; vacuum boundaries for the potential through
+# the multigrid multipole expansion (mg_bc = multipole, outflow mesh faces).  Analytic:
+# r/r0 = cos^2 a, rho/rho0 = cos^-6 a, a + sin(2a)/2 = (pi/2) t/t_ff.
+# Uniform runs: this file (64^3) or mesh/nx1=... overrides; AMR: dust_sphere_amr add-on keys
+# appended on the command line (see validation/run/dust8_sphere/run.sh).
+
+<comment>
+problem   = uniform sphere of dust particles collapsing under its own gravity
+
+<job>
+basename  = sphere
+
+<mesh>
+nghost    = 2
+nx1       = 64
+x1min     = -0.5
+x1max     = 0.5
+ix1_bc    = outflow
+ox1_bc    = outflow
+nx2       = 64
+x2min     = -0.5
+x2max     = 0.5
+ix2_bc    = outflow
+ox2_bc    = outflow
+nx3       = 64
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = outflow
+ox3_bc    = outflow
+
+<meshblock>
+nx1       = 8
+nx2       = 8
+nx3       = 8
+
+<time>
+evolution  = dynamic
+integrator = imex2+  # required by the dust module's IMEX coupling
+cfl_number = 0.3
+nlim       = -1
+tlim       = 5.88839 # 0.97 t_ff
+ndiag      = 100
+
+<hydro>
+eos         = isothermal
+reconstruct = plm
+rsolver     = hlle
+iso_sound_speed = 0.1   # inert background; sets the hydro timestep only
+
+<gravity>
+solver     = multigrid
+four_pi_G  = 0.10053096491487338   # 4 pi x 8e-3
+gas_source = false     # the particles alone source phi (with vacuum boundaries a uniform
+                       # gas would add its own potential well)
+mg_bc      = multipole # vacuum boundaries (multipole expansion of the source)
+mporder    = 4
+threshold  = -1.0
+niteration = 10
+full_multigrid = true
+fmg_ncycle = 1
+show_defect = 0
+
+<particles>
+particle_type = dust
+pusher        = imex_dust
+ppc           = 0.001    # placeholder: the generator replaces the particles
+split_on_refine = true   # 2^3 children per refinement
+
+<dust>
+coupling       = imex
+nspecies       = 1
+taus_1         = 1.0e10  # no drag
+back_reaction  = false
+deposit        = tsc
+gravity        = true
+gravity_source = true    # the particles source the potential
+gravity_force  = true
+dt_cfl         = 0.5
+
+<problem>
+pgen_name = dust_sphere
+radius    = 0.25
+rho_p0    = 1.0
+rho_gas   = 1.0
+npc       = 1        # particles per cell per dimension
+offset    = 0.0      # lattice at the cell centres
+jitter    = 0.0
+user_hist = true     # mass, sum m r^2, r_max, centre of mass, particle count
+
+<output1>
+file_type  = hst
+dt         = 0.0303524   # 0.005 t_ff
+data_format = %.14e
+
+<output2>
+file_type  = phst        # column 12 = max rho_p
+dt         = 0.0303524
+
+<output3>
+file_type  = bin
+variable   = dust_dpm
+dt         = 0.303524    # 0.05 t_ff
+
+# ---- AMR (dust_sphere_amr): root 64^3 in 8^3 MeshBlocks, two levels (256^3 effective) ----
+<mesh_refinement>
+refinement = adaptive
+num_levels = 3
+ncycle_check = 5
+refinement_interval = 5
+max_nmb_per_rank = 2000
+
+<amr_criterion1>
+method    = min_max
+variable  = dust_rho
+value_max = 0.5            # A: every block holding dust (override 4.0 for B)
+value_max_deref = 0.05     # (B: 1.5)

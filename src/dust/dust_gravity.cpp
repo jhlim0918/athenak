@@ -241,6 +241,7 @@ TaskStatus DustGasDrag::ProlongateRhoDust(Driver *pdrive, int stage) {
 // task wrappers: "stagen" force field (after the driver's Poisson solve)
 
 TaskStatus DustGasDrag::ComputeGravForce(Driver *pdrive, int stage) {
+  NanCheckGuard nanchk(this, "ComputeGravForce", stage);   // <dust>/nan_check (dust_nancheck.cpp)
   if (!GravityStage(pdrive, stage) || !gravity_force) {return TaskStatus::complete;}
   ComputeForceField();
   return TaskStatus::complete;

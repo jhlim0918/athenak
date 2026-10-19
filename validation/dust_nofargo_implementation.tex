@@ -1,0 +1,305 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,urlcolor=blue!60!black,
+            citecolor=blue!60!black]{hyperref}
+\usepackage[htt]{hyphenat}
+\usepackage{microtype}
+\emergencystretch=3em
+\usepackage{listings}
+\lstset{basicstyle=\ttfamily\footnotesize, backgroundcolor=\color{gray!8},
+        frame=single, rulecolor=\color{gray!40}, breaklines=true,
+        columns=fullflexible, keepspaces=true, showstringspaces=false}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\file}[1]{\texttt{\small #1}}
+\newcommand{\fn}[1]{\texttt{\small #1}}
+\newcommand{\Om}{\Omega_0}
+\newcommand{\qom}{q\Om}
+\newcommand{\vsh}{v_{\rm sh}}
+
+\newcommand{\invariant}[2]{%
+  \par\vspace{0.6em}\noindent
+  \fcolorbox{gray!40}{gray!8}{\parbox{0.97\linewidth}{\textbf{#1}\quad #2}}%
+  \par\vspace{0.6em}}
+
+\title{Dust Particles in the AthenaK Shearing Box\\
+       without Orbital Advection\\[0.4em]
+       \large \textsc{Implementation Document}\\
+       \large Phase 7: the dust module in the full-velocity (non-FARGO) frame, the
+       problem generators, and restart tools for switching the frame and doubling the
+       resolution}
+\author{\code{athenak-multigrid} tree, branch \code{si-strat-amr}}
+\date{October 15, 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+%========================================================================================
+\section{Why}
+
+In the 3D shearing box AthenaK integrates the gas either with \emph{orbital advection}
+(\code{<shearing\_box> orbital\_advection = true}, the default; the FARGO scheme of
+Masset 2000 and Johnson, Guan \& Gammie 2008): the background shear
+$\vsh = -\qom x$ is transported by an exact remap and the stored momenta are the
+\emph{perturbations} about it; or without it, when the stored momenta are the
+\emph{full} momenta and the shear is advected by the Riemann solver like any other flow.
+
+Orbital advection is cheaper (the timestep ignores the shear speed) and less diffusive,
+but on a refined mesh it imposes the \emph{annular policy}
+(\fn{MeshRefinement::CheckForRefinement}, \code{sbox\_ring\_policy\_}): the remap shifts
+whole azimuthal rows, so a refined region must span the full $y$ extent at every level.
+A clump of radius $\sim 0.01$--$0.1H$ in a box $L_y = 1.6H$ wide therefore drags a full
+ring of MeshBlocks to the finest level.  Without orbital advection the policy does not
+apply and refinement can follow a clump in $y$ as well.  The gas side of the
+full-velocity shearing box (source terms, momentum-offset shear-periodic boundaries,
+refinement) exists since Phase 0 (\file{shearing\_box\_srcterms.cpp}, the
+\code{test/shwave-smr} fold-in).  The \emph{dust} module, however, was written for the
+perturbation frame only and never read the flag: this document makes it work in both.
+
+\invariant{Goal.}{With \code{orbital\_advection = false} every dust operation acts on the
+gas exactly as it does with orbital advection; with \code{orbital\_advection = true}
+(and everywhere outside a 3D shearing box) the code is bitwise unchanged.}
+
+%========================================================================================
+\section{The two frames}
+
+With orbital advection the gas state is $(\rho, \rho\mathbf{u}', E')$ with
+$\mathbf{u}' = \mathbf{u} - \vsh\hat{y}$; without it $(\rho, \rho\mathbf{u}, E)$.  The
+source terms differ accordingly (\fn{ShearingBox::SourceTermsCC}): the perturbation frame
+has the reduced Coriolis terms $+2\Om\rho u'_y$, $-(2-q)\Om\rho u'_x$; the full frame has
+$+2\Om\rho u_y + 2q\Om^2\rho x$, $-2\Om\rho u_x$.
+
+The dust module is shear-relative \emph{throughout}, whatever the gas frame:
+\begin{itemize}
+\item particle velocities (\file{dust\_push.cpp}: ``all velocities are measured relative
+  to the background shear flow''), with the shear transport $\dot y \mathrel{-}= \qom x$
+  added to the position drift;
+\item the deposited dust momenta \code{qdep}, \code{dmom};
+\item the gas velocity $u^\ast$ gathered by the particles and its copy exchange and
+  shear-periodic remap (\code{pbval\_us}, \code{psbox\_us});
+\item the unknowns of the implicit drag solves (local and coupled), which form
+  $\rho\mathbf{u} + \mathbf{q}$ and divide by $\rho+\rho_d$.
+\end{itemize}
+Without orbital advection all of these would mix a full-frame gas velocity with
+shear-relative dust velocities: the drag would act on a relative velocity in error by
+$\qom x$, i.e.\ up to $1.2\,c_s$ at the radial faces of a $1.6H$ box.
+
+%========================================================================================
+\section{Design: a frame guard on the tasks that touch the gas}
+
+The gas momenta are read at about a dozen places in four files, inside fused kernels,
+solver iterations and boundary-dependent gathers.  Converting each read would scatter the
+frame logic and miss the derived fields that are exchanged between MeshBlocks.  Instead
+the gas is moved into the shear-relative frame for the duration of every dust task that
+reads or writes it, and moved back at the end:
+
+\begin{lstlisting}
+class GasFrameGuard {            // dust.hpp
+ public:
+  explicit GasFrameGuard(DustGasDrag *d) : d_(d) {if (d_->gas_full_frame) d_->ShiftGasFrame(true);}
+  ~GasFrameGuard() {if (d_->gas_full_frame) d_->ShiftGasFrame(false);}
+  ...
+};
+TaskStatus DustGasDrag::GasImplicitSolve(Driver *pdrive, int stage) {
+  if (!ActiveStage(pdrive, stage)) {return TaskStatus::complete;}
+  GasFrameGuard frame(this);   // shear-relative gas while this task runs
+  ...                          // unchanged dust code
+}
+\end{lstlisting}
+
+\paragraph{The shift} (\fn{DustGasDrag::ShiftGasFrame}, new file \file{dust\_frame.cpp}).
+For every cell of \code{u0} --- and of \code{u1} when it is allocated like \code{u0} ---
+including the ghosts, at the cell centre $x$:
+\begin{equation}
+  M_y \leftarrow M_y + \rho\,t,\qquad
+  E \leftarrow E + M_y\,t + \tfrac12\rho\,t^2,\qquad
+  t = \begin{cases} +\qom x = -\vsh & \text{into the shear-relative frame,}\\
+                    -\qom x = +\vsh & \text{back to the full frame.}\end{cases}
+\end{equation}
+The energy line keeps the internal energy fixed (it is the change of $\frac12\rho u_y^2$
+under $u_y\to u_y+t$); isothermal runs have no energy.  The density is not touched, so the
+two shifts are exact inverses up to one rounding of $M_y$ (measured: $2.3\times10^{-16}$
+relative).
+
+\paragraph{Why this is exact for every dust operation.}  Inside the guard the gas is in
+precisely the state the dust code assumes, so
+\begin{itemize}
+\item additive momentum changes ($\Delta\mathbf{M}$ from \code{dmom}, the drag history)
+  are frame-invariant anyway;
+\item assignments of new velocities by the implicit solves are made in the relative
+  frame and carried back by the exit shift;
+\item frictional heating, computed from relative velocities, is converted correctly:
+  the exit shift adds $\Delta M_y\,\vsh$, which is exactly the difference between the
+  full-frame and relative-frame kinetic-energy changes of an ideal gas.
+\end{itemize}
+The ghost cells are shifted at their own $x$, beyond the mesh: the full-frame ghosts of
+the shear-periodic boundary carry the momentum offset $\rho\qom L_x$, and the shift turns
+them into the continuous relative-frame field that the dust exchanges and remaps expect.
+
+\paragraph{Where.}  The guard sits at the five \emph{task entry points}, after their
+early returns (so idle tasks do not pay for the shift), and nowhere below them, so no
+shift is ever nested:
+
+\begin{center}\small
+\begin{tabular}{lll}
+\toprule
+task & file & gas use \\
+\midrule
+\fn{DepositDrag}       & \file{dust\_pm.cpp}   & gathers the gas velocity (hybrid PC2 predictor) \\
+\fn{GasImplicitSolve}  & \file{dust\_pm.cpp}   & $u^\ast=(\rho\mathbf{u}+\mathbf{q})/(\rho+\rho_d)$, local
+  and coupled solves (calls \fn{UpdateHybridMetric}, \fn{SolveCoupledStage}) \\
+\fn{ApplyPMBR}         & \file{dust\_pm.cpp}   & back-reaction momentum and heating \\
+\fn{AddDragHistoryGas} & \file{dust\_pm.cpp}   & IMEX drag history into the gas \\
+\fn{FirstTwoImpRK}     & \file{dust\_push.cpp} & midpoint $u^\ast$ from \code{u0}, \code{u1}; saves \code{u1}$\leftarrow$\code{u0} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Activation.}  \code{gas\_full\_frame} is set in the \fn{DustGasDrag}
+constructor: a 3D mesh, a hydro module, a \code{<shearing\_box>} block and
+\code{orbital\_advection = false}.  The 2D $r$--$z$ shearing box has no orbital advection
+and no shear-periodic remap, and its azimuthal gas velocity is already shear-relative:
+it is unaffected.  With orbital advection the guard does nothing at all (not even a
+kernel launch), which is what keeps those runs bitwise unchanged.
+
+\paragraph{Cost.}  Two passes over \code{u0} and \code{u1} per guarded task, i.e.\ a few
+streaming kernels per stage --- small next to the particle work, and only without orbital
+advection.  The real cost of dropping orbital advection is the hydrodynamic timestep:
+the signal speed $c_s + |\vsh|$ reaches $c_s + \qom L_x/2$ at the radial faces, so
+$\Delta t$ falls by $1 + \qom L_x/(2c_s)$: $1.15$ for $L_x = 0.2H$, $1.3$ for $0.4H$,
+$2.2$ for $1.6H$ (validation document, test~3).
+
+%========================================================================================
+\section{Two defects the full-velocity frame exposed}
+
+Neither is in the frame shift; both were found by running the stratified streaming
+instability without orbital advection, which crashed at start-up in $\sim$90\% of
+attempts --- \emph{with the old binary as well} --- and were located with an
+AddressSanitizer build (\code{-fsanitize=address}).
+
+\paragraph{1. The gas momentum offset was applied to the dust module's own fields.}
+Without orbital advection the full-frame background velocity jumps by $\qom L_x$ across
+the box, so \fn{ShearingBoxCC::RecvAndUnpackCC} offsets the wrapped azimuthal momentum
+($M_y \mathrel{+}= \rho\,\delta v_y$, and the energy) of the data it remaps through the
+radial faces.  It did so for \emph{every} array, but the dust module uses
+\fn{ShearingBoxCC} for three fields that are not the gas state: the shear-relative
+$u^\ast$ (3 components: the ``offset'' wrote $u^\ast_x\,\delta v_y$ into $u^\ast_z$), the
+dust density $\rho_d$ (1 component: the reads of \code{IM2} and \code{IDN} ran past the
+array --- the heap-buffer overflow) and the gravitational force (3 components).  Fix: a
+member \code{bool gas\_momenta = true} of \fn{ShearingBoxCC}; the offset is applied only
+when it is true, and the dust module sets it false on \code{psbox\_us}, \code{psbox\_rc}
+and \code{psbox\_g}.  The hydro (and MHD) objects keep the default, so the gas boundary is
+unchanged.
+
+\paragraph{2. Three exchange pointers were read before they were set.}  The
+\fn{DustGasDrag} constructor calls \fn{SetRefinementFactors} (to size the fine images)
+before it creates the deposit exchanges, relying on \code{if (pbval\_qp != nullptr)} to
+skip them; but \code{pbval\_qp}, \code{pbval\_dm} and \code{pbval\_us} had no initialiser,
+unlike the other exchange pointers of the class.  Freshly mapped heap memory is zero, so
+usually the test passed by luck; without orbital advection fewer objects are allocated
+first, the dust object lands on reused memory, and \fn{SetImageFactors} wrote through a
+wild pointer (the later crash in \fn{BuildRankPackedVarMetadata} of the deposit
+exchange).  Fix: \code{= nullptr} on the three declarations.  The factors are set on the
+real exchanges a few lines later, as before, so static-refinement runs were never
+affected; running jobs that passed construction are unaffected too.
+
+%========================================================================================
+\section{Problem generators}
+
+Both dust shearing-box generators set the gas momenta, which must be the full ones
+without orbital advection:
+\begin{itemize}
+\item \fn{StreamingStrat} (\file{pgen/tests/streaming\_strat.cpp}):
+  $M_y = \rho\,(u_{y,0} - \qom x)$ with $u_{y,0}$ = \code{<problem>/gas\_vy0}, ghosts
+  included.
+\item \fn{DustNSH} (\file{pgen/tests/dust\_nsh.cpp}): in 3D,
+  $M_y = \rho_0(u_{g,\phi} + \delta u_y + \vsh)$ and, for an ideal gas,
+  $E = P/(\gamma-1) + \frac12\rho_0[u_{g,x}^2 + (u_{g,\phi}+\vsh)^2]$.  Its equilibrium
+  diagnostic (\code{-errs.dat}) now measures the shear-relative mean momentum
+  $\langle M_y + \rho\qom x\rangle$, so the error columns mean the same thing in both
+  frames.
+\end{itemize}
+The particle velocities set by both are shear-relative and need no change.
+
+%========================================================================================
+\section{Restart tools}
+
+Both tools (\file{scripts/}) read and write the AthenaK restart format directly (input
+parameters up to \code{<par\_end>}; \code{nmb\_total}, \code{root\_level},
+\code{RegionSize} (9 doubles), two \code{RegionIndcs} (19 ints each), time, dt, cycle; the
+\code{LogicalLocation} and cost lists; per-rank particle counts and the particle widths;
+the per-MeshBlock data size; the MeshBlock data in gid order with ghosts; then the
+particles rank by rank, each block variable-major over that rank's particles).
+
+\paragraph{\file{rst\_orbital\_advection.py} \textit{src out} \code{off|on}.}  Applies the
+frame shift above to every MeshBlock of any refinement level (block width from its
+logical level) and sets \code{orbital\_advection} in the file's own \code{<shearing\_box>}
+block, so the file is self-consistent and no add-on is needed for the flag.  Particles are
+untouched.  On$\to$off$\to$on returns the original file to $2.3\times10^{-16}$ in $M_y$
+and bitwise elsewhere.
+
+\paragraph{\file{rst\_refine2.py} \textit{src template out nranks}.}  Doubles the
+resolution of a uniform restart (an AthenaK restart cannot change the mesh): the
+conserved gas variables are prolongated with the minmod-limited linear scheme of
+\fn{ProlongCC} (child averages equal the parent: mass and momentum to round-off) and
+every particle becomes $2^3$ children at $\pm\Delta x/4$ with mass$/8$, as
+\fn{Particles::SplitOnRefine} does (positions and the \code{IPX1/IPY1/IPZ1} registers
+shifted; a child that would cross the shear-periodic $x$ faces takes the opposite
+offset; tags $8\,\mathrm{tag}+c$; the sampling level \code{PLEV} becomes the new level).
+The MeshBlock order and the header structs come from a \emph{template}: a 0-cycle restart
+of the same problem at the doubled resolution written by AthenaK itself.  The particles
+are distributed to the ranks of the requested count with a port of
+\fn{Mesh::LoadBalance}, so the refined file is not tied to the rank count that wrote the
+original --- the one way around the rule that a particle restart needs the writer's
+ranks.  (An in-code alternative, refining every MeshBlock once through the AMR path, works
+from $t=0$ but corrupted the particles of refined $x_1$-boundary blocks on a restart with
+a large shear offset; it was not kept.)
+
+%========================================================================================
+\section{Input-file interface}
+
+\begin{center}\small
+\begin{tabular}{p{0.38\linewidth}p{0.55\linewidth}}
+\toprule
+parameter & meaning \\
+\midrule
+\code{<shearing\_box> orbital\_advection} & \code{false}: gas in the full-velocity frame;
+  the dust module shifts it while its tasks run.  Removes the annular refinement policy
+  (patches in $y$ allowed); the $x_1$-boundary MeshBlocks still never refine. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Switching a running problem.}  Orbital advection is a property of the stored
+state, so it cannot be changed by an add-on alone: convert the restart, then restart from
+the converted file with the same number of ranks (the particles are not
+redistributed), e.g.\ for the $(1.6H)^2\times0.2H$ Sch\"afer et al.\ (2024) box:
+\begin{lstlisting}
+python3 scripts/rst_orbital_advection.py rst/s24.00012.rst s24_24P_nofargo.rst off
+mpiexec -np 512 ./athena -r s24_24P_nofargo.rst -i addon_sg_amr.athinput time/tlim=...
+\end{lstlisting}
+with an add-on carrying \code{<gravity>}, \code{<dust> gravity = true},
+\code{<mesh\_refinement>}, the criterion and \code{<particles> split\_on\_refine = true}.
+
+%========================================================================================
+\section{Limitations}
+
+\begin{itemize}
+\item Hydro only: the dust module has no MHD coupling, and the shift acts on the hydro
+  arrays.
+\item Coarse/fine interfaces \emph{normal to $y$} --- new with this phase, since rings never have\n  them --- carry an $O(\Delta x^2)$ truncation error of the gas in the full frame (the\n  momentum flux $\rho u_y^2$ is quadratic in $x$; validation document, test~2).\n\item The full-velocity frame costs the timestep factor above everywhere and adds the
+  numerical diffusion of advecting the shear across the grid; whether a given science
+  question tolerates it is a validation question (test~3).
+\item The $x_1$-boundary MeshBlocks never refine in either frame
+  (\fn{Mesh::CheckShearingBoxRefinement}); refinement of those columns through a remesh
+  is the separate open problem noted above.
+\end{itemize}
+
+\end{document}

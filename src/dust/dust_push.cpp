@@ -33,6 +33,7 @@ namespace dust {
 //! unlike IonNeutral::FirstTwoImpRK no implicit solves are performed here.
 
 TaskStatus DustGasDrag::FirstTwoImpRK(Driver *pdrive, int stage) {
+  NanCheckGuard nanchk(this, "FirstTwoImpRK", stage);   // <dust>/nan_check (dust_nancheck.cpp)
   hydro::Hydro *phyd = pmy_pack->phydro;
   GasFrameGuard frame(this);   // shear-relative gas while this task runs (dust_frame.cpp)
   if (coupling == DustCoupling::hybrid && stage == 2) {
@@ -90,6 +91,7 @@ TaskStatus DustGasDrag::FirstTwoImpRK(Driver *pdrive, int stage) {
 //! is the only nonzero history contribution of the imex2+ tableau.
 
 TaskStatus DustGasDrag::ExplicitPush(Driver *pdrive, int stage) {
+  NanCheckGuard nanchk(this, "ExplicitPush", stage);   // <dust>/nan_check (dust_nancheck.cpp)
   if (!ActiveStage(pdrive, stage)) {return TaskStatus::complete;}
 
   particles::Particles *ppar = pmy_pack->ppart;

@@ -221,6 +221,10 @@ class DustGasDrag {
   // back; GasFrameGuard brackets every task that reads or writes them (see dust_frame.cpp).
   bool gas_full_frame = false;
   void ShiftGasFrame(bool to_relative);
+  // debug tripwire (<dust>/nan_check): after the guarded tasks, abort with a report at the
+  // first non-finite value or non-positive gas density (dust_nancheck.cpp)
+  bool nan_check = false;
+  void NanCheck(const char *where, int stage);
   Real dt_cfl;               // particle CFL number for transport timestep
   DustDtTransport dt_transport;  // azimuthal velocity used for the cell-crossing limit
   Real dt_block_safety;      // fraction of a MeshBlock crossed per stage (guard)
@@ -448,6 +452,22 @@ class GasFrameGuard {
   GasFrameGuard& operator=(const GasFrameGuard&) = delete;
  private:
   DustGasDrag *d_;
+};
+
+//! \class NanCheckGuard
+//! \brief RAII: run DustGasDrag::NanCheck when the guarded task returns (any return path);
+//! nothing when <dust>/nan_check is false
+
+class NanCheckGuard {
+ public:
+  NanCheckGuard(DustGasDrag *d, const char *where, int stage) : d_(d), w_(where), s_(stage) {}
+  ~NanCheckGuard() {if (d_->nan_check) {d_->NanCheck(w_, s_);}}
+  NanCheckGuard(const NanCheckGuard&) = delete;
+  NanCheckGuard& operator=(const NanCheckGuard&) = delete;
+ private:
+  DustGasDrag *d_;
+  const char *w_;
+  int s_;
 };
 
 } // namespace dust

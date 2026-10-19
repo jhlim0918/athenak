@@ -1052,6 +1052,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     DustNSH(pin, is_restart);
   } else if (pgen_fun_name.compare("dust_grav_orbit") == 0) {
     DustGravOrbit(pin, is_restart);
+  } else if (pgen_fun_name.compare("dust_sphere") == 0) {
+    DustSphere(pin, is_restart);
   } else if (pgen_fun_name.compare("dust_jeans") == 0) {
     DustJeans(pin, is_restart);
   } else if (pgen_fun_name.compare("dusty_wave") == 0) {

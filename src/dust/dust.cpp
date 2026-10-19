@@ -112,30 +112,33 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
   bool shear_x1 = (pmy_pack->pmesh->mesh_bcs[BoundaryFace::inner_x1] ==
                    BoundaryFlag::shear_periodic);
   if (!(pmy_pack->pmesh->strictly_periodic)) {
-    // exceptions: 3D shearing box with shear-periodic x1 (and periodic x2), and, in 3D,
+    // exceptions, all in 3D: the shearing box with shear-periodic x1 (and periodic x2),
     // physical (non-periodic) x3 faces such as the outflow faces of a self-gravitating
-    // slab (Phase 4c).  Ghost deposits landing beyond a physical face have no receiver
-    // and are discarded; a particle that leaves the mesh through one is not routed
-    // (the deposit halo check aborts on it) -- the vertical policy is a later phase.
+    // slab (Phase 4c), and physical faces in any direction (an isolated self-gravitating
+    // cloud with vacuum potential boundaries, dust_sphere).  Ghost deposits landing beyond
+    // a physical face have no receiver and are discarded, and a particle crossing one is
+    // removed (ParticlesBoundaryValues::SetNewPrtclGID handles every face alike); the
+    // gas velocity gathered within a cell of a physical face reads the hydro ghosts.
     auto &bcs = pmy_pack->pmesh->mesh_bcs;
-    bool x1_ok = (bcs[BoundaryFace::inner_x1] == BoundaryFlag::periodic) || shear_x1;
-    bool x2_ok = (bcs[BoundaryFace::inner_x2] == BoundaryFlag::periodic) &&
-                 (bcs[BoundaryFace::outer_x2] == BoundaryFlag::periodic);
-    bool x3_periodic = (bcs[BoundaryFace::inner_x3] == BoundaryFlag::periodic) &&
-                       (bcs[BoundaryFace::outer_x3] == BoundaryFlag::periodic);
-    if (!(pmy_pack->pmesh->three_d && x1_ok && x2_ok)) {
+    auto periodic = [&](int ib, int ob) {
+      return (bcs[ib] == BoundaryFlag::periodic) && (bcs[ob] == BoundaryFlag::periodic);
+    };
+    bool x2_periodic = periodic(BoundaryFace::inner_x2, BoundaryFace::outer_x2);
+    if (!(pmy_pack->pmesh->three_d) || (shear_x1 && !x2_periodic)) {
       std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
                 << std::endl << "Dust drag requires periodic boundaries in all "
-                << "directions, or in 3D: periodic/shear-periodic x1, periodic x2 and "
-                << "any x3" << std::endl;
+                << "directions, or a 3D mesh (with periodic x2 if x1 is shear-periodic)"
+                << std::endl;
       std::exit(EXIT_FAILURE);
     }
-    physical_faces = !x3_periodic;
-    if (!x3_periodic && global_variable::my_rank == 0) {
-      std::cout << "# dust: physical x3 boundaries: ghost deposits beyond the x3 faces "
-                << "are discarded and a particle crossing an x3 face is removed "
-                << "(outflow, Athena-C zbc_out = 1); removed mass is accounted in "
-                << "DUST_ESCAPE_SUMMARY" << std::endl;
+    bool x1_closed = shear_x1 || periodic(BoundaryFace::inner_x1, BoundaryFace::outer_x1);
+    physical_faces = !(x1_closed && x2_periodic &&
+                       periodic(BoundaryFace::inner_x3, BoundaryFace::outer_x3));
+    if (physical_faces && global_variable::my_rank == 0) {
+      std::cout << "# dust: physical mesh boundaries: ghost deposits beyond them are "
+                << "discarded and a particle crossing one is removed (outflow, Athena-C "
+                << "zbc_out = 1); removed mass is accounted in DUST_ESCAPE_SUMMARY"
+                << std::endl;
     }
   }
   // y-remap order of the shear-periodic fold of ghost deposits across the radial faces
@@ -406,6 +409,7 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
     omega0 = 0.0;
     is_stratified = false;
   }
+  nan_check = pin->GetOrAddBoolean("dust", "nan_check", false);
   if (drag_solver != DustDragSolver::local && shear_x1) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
               << std::endl << "Coupled drag solvers require ordinary periodic boundaries; "

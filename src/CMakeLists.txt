@@ -45,6 +45,7 @@ add_executable(
         dust/dust_gravity.cpp
         dust/dust_smr.cpp
         dust/dust_frame.cpp
+        dust/dust_nancheck.cpp
         dust/dust_pm.cpp
         dust/dust_push.cpp
         dust/dust_solver.cpp
@@ -145,6 +146,7 @@ add_executable(
         pgen/tests/dust_damping.cpp
         pgen/tests/dust_nsh.cpp
         pgen/tests/dust_grav_orbit.cpp
+        pgen/tests/dust_sphere.cpp
         pgen/tests/dust_jeans.cpp
         pgen/tests/dusty_wave.cpp
         pgen/tests/dust_deposit_shear.cpp

@@ -265,6 +265,7 @@ void DustGasDrag::UpdateHybridMetric(Driver *pdrive, int stage) {
 //! masses and on the other test particles.
 
 TaskStatus DustGasDrag::GasImplicitSolve(Driver *pdrive, int stage) {
+  NanCheckGuard nanchk(this, "GasImplicitSolve", stage);   // <dust>/nan_check (dust_nancheck.cpp)
   if (!ActiveStage(pdrive, stage)) {return TaskStatus::complete;}
   GasFrameGuard frame(this);   // shear-relative gas while this task runs (dust_frame.cpp)
   if (coupling == DustCoupling::hybrid) {
@@ -329,6 +330,7 @@ TaskStatus DustGasDrag::GasImplicitSolve(Driver *pdrive, int stage) {
 //! which makes the momentum exchange antisymmetric to round-off.
 
 TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
+  NanCheckGuard nanchk(this, "GatherKickPMBR", stage);   // <dust>/nan_check (dust_nancheck.cpp)
   if (!ActiveStage(pdrive, stage)) {return TaskStatus::complete;}
   if (coupling == DustCoupling::hybrid &&
       !(hybrid_mode == HybridMode::split_be && stage == 2)) {
@@ -477,6 +479,7 @@ TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
 //! R_g = dmom/(a_impl*dt) consumed by AddDragHistoryGas at the next stage.
 
 TaskStatus DustGasDrag::ApplyPMBR(Driver *pdrive, int stage) {
+  NanCheckGuard nanchk(this, "ApplyPMBR", stage);   // <dust>/nan_check (dust_nancheck.cpp)
   if (!ActiveStage(pdrive, stage) || !back_reaction) {return TaskStatus::complete;}
   GasFrameGuard frame(this);   // shear-relative gas while this task runs (dust_frame.cpp)
 
@@ -538,6 +541,7 @@ TaskStatus DustGasDrag::ApplyPMBR(Driver *pdrive, int stage) {
 //! consumed at explicit stage 2.
 
 TaskStatus DustGasDrag::AddDragHistoryGas(Driver *pdrive, int stage) {
+  NanCheckGuard nanchk(this, "AddDragHistoryGas", stage);   // <dust>/nan_check (dust_nancheck.cpp)
   if (coupling != DustCoupling::imex) {return TaskStatus::complete;}
   if (stage != 2 || !back_reaction) {return TaskStatus::complete;}
   GasFrameGuard frame(this);   // shear-relative gas while this task runs (dust_frame.cpp)

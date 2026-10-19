@@ -1,0 +1,21 @@
+# AthenaK add-on input: the (0.2H)^3 box, no-orbital-advection AMR branch pushed to FOUR levels
+# above the 320/H root (5120/H finest), restarted from a dump of the 1280/H branch
+# (streaming_strat_box02_sg_amr_nofargo_addon.athinput; e.g. rst/box02.00041.rst at 20.5 P).
+# Only the parameters below change; gravity (Gtilde = 0.1), the criterion (rho_p > 180, deref
+# 60), particle splitting and orbital_advection = false come from the restart.
+#   athena -r <nofargo rst> -i <this file> time/tlim=...
+# Each level halves dt and splits the particles 2^3 more in the refined clumps, so the particle
+# files are written less often than the mesh dumps.
+
+<mesh_refinement>
+num_levels = 5           # root + 4: 320 -> 640 -> 1280 -> 2560 -> 5120/H
+max_nmb_per_rank = 256
+
+<output3>
+dt         = 0.06283185307179586   # dust_dpm (bin) every 0.01 P, as before
+
+<output4>
+dt         = 0.3141592653589793    # particles (pvtk) every 0.05 P (was 0.01 P)
+
+<output6>
+dt         = 1.5707963267948966    # restart every 0.25 P
