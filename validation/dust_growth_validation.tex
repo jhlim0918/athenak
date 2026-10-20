@@ -26,12 +26,12 @@
 
 \title{Dust Growth on Superparticles in AthenaK\\[0.4em]
        \large \textsc{Validation Document}\\
-       \large D3 tests (a)--(e), cost, and the R1 set-up}
+       \large D3 tests (a)--(e), cost, and R1: the stratified SI with growth}
 \author{worktree \code{athenak-worktrees/dust-growth}, branch \code{dust-growth}
         (parent \code{9aaa5639})\\
         \small commits \code{a821cb4d} (growth step, diagnostics, tests) and
         \code{e231fc7f} (\code{nsh\_init}, R1 set-up)}
-\date{October 19, 2026}
+\date{October 19--20, 2026}
 
 \begin{document}
 \maketitle
@@ -46,8 +46,13 @@ $\St_{\rm frag}=\vf^2/(3\alpha_t c_s^2)$ to 0.2\%; (d) the drift term reproduces
 Nakagawa--Sekiya--Hayashi relative velocities of three species to $10^{-12}$ in 2D,
 in 3D with orbital advection and in 3D without; (e) the stopping times survive a
 restart bitwise and pass through AMR particle splitting unchanged. The growth step
-costs 1--8\% per cycle. The document also records the set-up of the R1 production runs
-(thin 3D box, h-2, started October 19) and a 320/H smoke test of that set-up.
+costs 1--8\% per cycle. R1, the stratified streaming instability in a thin 3D box at
+$1280/H$ with $Z=0.02$, $\Pi=0.05$ and grains starting at $\St=10^{-3}$ (below the
+clumping threshold), shows the effect growth has: the grains reach the fragmentation
+cap $\St\approx0.33$ within $\sim\!55\,\Omega^{-1}$, and the particle density exceeds
+the Hill density from $t=82\,\Omega^{-1}$ to the end of the run ($300\,\Omega^{-1}$,
+peak $1920\rho_{g0}$), while the identical run without growth never exceeds
+$2.9\rho_{g0}$.
 \end{abstract}
 
 \tableofcontents
@@ -297,8 +302,8 @@ runs & \code{fid} (growth + back-reaction) and \code{nogrowth} ($\St=10^{-3}$ fi
 machine & h-2, jobs 276 (\code{fid}) and 277 (\code{nogrowth}), 64 ranks each, run
   directories \file{/data/limjay/runs/si\_growth\_r1/\{fid,nogrowth\}}, source
   \file{/data/limjay/athenak\_growth} \\
-length & $t=300\,\Omega^{-1}$ ($\approx$48 orbits), $\Delta t=2.2\times10^{-4}$, about
-  10 h; restart files every $100\,\Omega^{-1}$ allow extension \\
+length & $t=300\,\Omega^{-1}$ ($\approx$48 orbits), $\Delta t=2.2\times10^{-4}$
+  ($1.35\times10^6$ cycles); restart files every $100\,\Omega^{-1}$ \\
 outputs & hst and phst every $1\,\Omega^{-1}$, dust density every 2, gas every 20,
   particle VTK with \code{ptaus} every 10 \\
 \bottomrule
@@ -328,11 +333,69 @@ by $\St$ at $t=60\,\Omega^{-1}$.}
 \label{fig:smoke}
 \end{figure}
 
-\subsection{Production runs}
-Both jobs started at 09:58 PDT on October 19 and run at 27.1 s (\code{fid}) and 25.2 s
-(\code{nogrowth}) per 1000 cycles, i.e.\ about 2 minutes per $\Omega^{-1}$; they should
-reach $t=300$ around 19:30--20:15 PDT. Results go into the next version of this
-document, made with \file{scripts/analysis/si\_growth\_r1\_fig.jl}.
+\subsection{Results}
+Both runs reached $t=300\,\Omega^{-1}$ (exit 0): \code{nogrowth} in 9.4 h and \code{fid}
+in 19.7 h of wall time. \code{fid} started at 27 s per 1000 cycles, like \code{nogrowth}
+(25 s), but slowed to 42 s once clumps formed, presumably because the dense regions
+load a few ranks heavily (one MeshBlock per rank, uniform mesh). Figure~\ref{fig:r1}
+shows the growth run at $t=300$ and both runs' maximum density.
+
+\paragraph{Growth.} The midplane grains grow first, where $\rho_d$ is largest. The
+mass-weighted mean Stokes number passes $0.01$ at $t=19$, $0.03$ at $t=35$ and $0.1$
+at $t=52\,\Omega^{-1}$; the largest grains reach the turbulent fragmentation cap
+$\St_{\rm frag}=0.33$ at $t=53$, and half of the mass has $\St>0.1$ at $t=55$ (90\% at
+$t=124$). From then on the size distribution is a narrow spike at the cap (panel c):
+at $t=300$ the mean is 0.296 and 99\% of the mass has $\St>0.1$. Grains high in the
+layer, where $\rho_d$ is small, lag far behind (the smallest is still at
+$\St=0.011$ at $t=300$).
+
+\paragraph{Clumping.} As the grains grow they settle (particle scale height $0.025H$ at
+$t=0$, $0.018H$ at 50, $0.011H$ at 100, $0.008H$ at 300) and the SI develops: the
+maximum particle density passes $10\rho_{g0}$ at $t=46$, $100\rho_{g0}$ at $t=72$ and the
+Hill density $\rho_H=180\rho_{g0}$ (Lim et al.\ 2025) at $t=82\,\Omega^{-1}$, 13 orbits
+after the start. It stays above $\rho_H$ for the rest of the run (217 of the 219 outputs
+after $t=82$; the lowest is $175\rho_{g0}$), first exceeds $1000\rho_{g0}$ at $t=194$, and
+peaks at $1920\rho_{g0}$ at $t=199$; the median over $t\ge150$ is $605\rho_{g0}$. At
+$t=300$ the layer is a set of tangled, strongly stirred filaments with one dense clump
+near $x=+0.05H$ (panels d, e). In this quasi-2D box the dense structures are
+axisymmetric rings, as in the 2D runs of Lim et al.\ (2025).
+
+\paragraph{The control.} With $\St=10^{-3}$ fixed, the maximum particle density never
+exceeds $2.9\rho_{g0}$ in $300\,\Omega^{-1}$, and the layer is still settling slowly
+($H_p=0.025H\to0.015H$; the settling time of $\St=10^{-3}$ grains is
+$\sim\!10^3\,\Omega^{-1}$). This agrees with Lim et al.\ (2025), who found no strong
+clumping at $\tau_s=0.001$, $Z=0.02$ even at $5120/H$ over $10^4\,\Omega^{-1}$.
+
+\paragraph{Growth-step diagnostics.} \code{DUST\_GROWTH\_SUMMARY} of \code{fid}: of the
+$3.6\times10^{11}$ particle-steps, $40\%$ were fragmenting (the particles dithering at
+the cap) and $2.6\times10^5$ ($7\times10^{-7}$) hit the 5\% per-cycle cap
+\code{growth\_maxfrac}. This is the first run in which the cap bound at all. The likely
+cause is small grains ($\St\sim0.005$) swept into clumps of $\rho_p\sim10^3\rho_{g0}$,
+where the growth rate exceeds 5\% per step: for those particle-steps the growth was set
+by the cap (and so by $\Delta t$) rather than by the law. The minimum Stokes number dips
+briefly at $t\approx205$, 250 and 265 (panel b), consistent with a few small grains
+fragmenting in the strongly perturbed gas around the clumps and regrowing. Neither
+affects the bulk of the mass, which sits at the cap.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/dust_growth_r1_t300.png}
+\caption{R1 at $1280/H$. (a) Maximum particle density of the growth run (blue) and the
+no-growth control (orange), with the Hill density $180\rho_{g0}$; (b) Stokes-number
+statistics of the growth run; (c) mass distribution of $\St$ at several times; (d)
+$y$-averaged particle density and (e) particles coloured by $\St$ at
+$t=300\,\Omega^{-1}$.}
+\label{fig:r1}
+\end{figure}
+
+\paragraph{Data.} Run directories \file{/data/limjay/runs/si\_growth\_r1/\{fid,nogrowth\}}
+on h-2 (0.89 and 0.86 GB); archived on October 20 as \code{<run>\_meta.tar} (histories,
+logs, input, binary), \code{<run>\_data.tar} (restart, mesh and particle VTK files) and
+\code{<run>.sha256} in \file{/data/limjay/archive\_dust\_growth} for transfer to Lou
+(checksums verified; the tar contents add up byte for byte to the run directories). The figure is made by
+\file{julia scripts/analysis/si\_growth\_r1\_fig.jl <fid dir> <nogrowth dir> <out.png>}
+from the \code{phst} files, the particle VTK files at
+$t=10, 20, 40, 60, 100, 200, 300$ and the dust density at $t=300$.
 
 %=========================================================================================
 \section{Notes from setting up}
