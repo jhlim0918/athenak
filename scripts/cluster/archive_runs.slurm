@@ -97,7 +97,9 @@ avail_kb() {
          fi ;;
     esac
   fi
-  echo "$(df -Pk "$d" 2>/dev/null | tail -1 | awk '{print $4+0}') df"
+  # printf, not print: mawk (h-2) prints integers above 2^31 as 1.6731e+10, which the
+  # [ -lt ] guard below cannot compare, so the space check would be skipped
+  echo "$(df -Pk "$d" 2>/dev/null | tail -1 | awk '{printf "%.0f", $4}') df"
 }
 
 hr_kb() {  # KB -> human, without assuming GNU numfmt
