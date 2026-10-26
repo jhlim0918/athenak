@@ -1,0 +1,63 @@
+#PBS -S /bin/bash
+#PBS -N gt_cost_smoke
+#PBS -l select=2:ncpus=256:mpiprocs=256:model=tur_ath
+#PBS -l walltime=0:50:00
+#PBS -q devel
+#PBS -j oe
+#PBS -W group_list=s3183
+
+# Cost smoke test for an allocation request (2026-10-22): the SC14 gravito-turbulence box
+# (64H x 64H x 16H, 4 cells/H, 8^3 MeshBlocks, WENO-Z + FOFC, hse_outflow, multigrid
+# self-gravity, beta = 10 cooling, mass renormalization) run three ways, back to back on
+# the same 2 Turin nodes (512 ranks) with the same binary, NLIM cycles each from the cold
+# start:
+#   hydro   inputs/shearing_box/gravito_turb_l64z16.athinput        (HLLC)
+#   mhd     inputs/shearing_box/gravito_turb_l64z16_mhd.athinput    (HLLD + CT; net
+#           vertical flux, plasma_beta = 1e3, va_max = 20)
+#   mhd_ad  the same + ambipolar diffusion, <mhd> eta_ad = ETA_AD (constant coefficient:
+#           eta_A = eta_ad*B^2; eta_ad = 1 is Am = 1 at the midplane density rho0 = 1),
+#           explicit (AthenaK's super-time-stepping does not take ambipolar diffusion)
+# Only history output.  Per-cycle cost: the elapsed time between the cycle-NSKIP and the
+# last diagnostic line (the first cycles carry the setup and the cold multigrid solves).
+#
+# SUBMIT FROM A SCRATCH DIRECTORY:
+#     mkdir -p /nobackup/$USER/gt_l64z16/cost_smoke && cd /nobackup/$USER/gt_l64z16/cost_smoke
+#     qsub <this script>
+
+ATHENAK=$HOME/athenak-multigrid
+EXE=$ATHENAK/${BUILD:-build-mhd}/src/athena
+NLIM=${NLIM:-300}
+NSKIP=${NSKIP:-50}
+ETA_AD=${ETA_AD:-1.0}
+
+source /opt/cray/pe/modules/3.2.11.7/init/bash
+module load PrgEnv-cray 2>/dev/null || true
+module use /opt/cray/pals/modulefiles
+module load cray-pals cray-fftw
+
+NRANKS=$(wc -l < $PBS_NODEFILE)
+NNODES=$(sort -u $PBS_NODEFILE | wc -l)
+PPN=$(( NRANKS / NNODES ))
+cd $PBS_O_WORKDIR
+
+cp $ATHENAK/inputs/shearing_box/gravito_turb_l64z16.athinput hydro.athinput
+cp $ATHENAK/inputs/shearing_box/gravito_turb_l64z16_mhd.athinput mhd.athinput
+sed 's/^<mhd>/<mhd>\neta_ad = '"$ETA_AD"'/' mhd.athinput > mhd_ad.athinput
+
+OVR=(time/nlim=$NLIM time/ndiag=$NSKIP problem/mass_renorm=true
+     output1/dt=0.25 output2/dt=1.0e9 output3/dt=1.0e9 output4/dt=1.0e9)
+echo "# job $PBS_JOBID on $NNODES nodes, $NRANKS ranks, $(date); commit $(git -C $ATHENAK rev-parse --short HEAD); $EXE" > summary.txt
+for run in hydro mhd mhd_ad; do
+  mkdir -p $run
+  mpiexec -np $NRANKS -ppn $PPN $EXE -i $run.athinput -d $run job/basename=gt \
+    "${OVR[@]}" > $run.log 2>&1
+  # per-cycle wall time after the first NSKIP cycles
+  awk -v run=$run -v nskip=$NSKIP '
+    /^elapsed=/ {split($1,a,"="); split($2,c,"="); split($3,t,"="); split($4,d,"=");
+                 if (c[2] == nskip) {e0 = a[2]; c0 = c[2]}
+                 e1 = a[2]; c1 = c[2]; t1 = t[2]; d1 = d[2]}
+    END {if (c1 > c0) printf "%-7s %.4f s/cycle (cycles %d-%d), t = %.4f, dt = %.3e\n",
+                             run, (e1-e0)/(c1-c0), c0, c1, t1, d1}' $run.log >> summary.txt
+  grep -i "fatal\|nan" $run.log | head -3 >> summary.txt
+done
+cat summary.txt

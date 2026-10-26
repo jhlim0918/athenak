@@ -23,7 +23,10 @@
 #     job appends every 120 s and kills mpiexec at the first nan ("# WATCHDOG" in run.log).
 #
 # The input: a copy named input.athinput in the run directory is used if present (so a run
-# can start before the input is committed); otherwise the tracked input is copied there.
+# can start before the input is committed); otherwise INPUT is copied there -- a path under
+# $ATHENAK or absolute; default inputs/shearing_box/gravito_turb_l64z16.athinput.  For ideal
+# MHD (2026-10-26): INPUT=inputs/shearing_box/gravito_turb_l64z16_mhd.athinput with an MHD
+# build (BUILD=build-mhd); the MHD runs start cold (a hydro restart carries no field).
 #
 # SUBMIT FROM THE RUN DIRECTORY in /nobackup:
 #     mkdir -p /nobackup/$USER/gt_l64z16/b10 && cd /nobackup/$USER/gt_l64z16/b10
@@ -31,14 +34,57 @@
 #     mkdir -p /nobackup/$USER/gt_l64z16/b10_renorm && cd /nobackup/$USER/gt_l64z16/b10_renorm
 #     qsub -N gt_l64_b10rn -v RENORM=1 <this script>
 # SMOKE TEST:   qsub -q devel -l walltime=0:30:00 -v NLIM=50 <this script>
+#
+# MORPH (restart a PARENT run's rst with a new cooling time and end time; the new run's own
+# rst files then carry BETA/TLIM, so the chain continues them without PARENT):
+#     mkdir -p /nobackup/$USER/gt_l64z16/b3_renorm && cd /nobackup/$USER/gt_l64z16/b3_renorm
+#     qsub -N gt_l64_b3rn -v RENORM=1,BETA=3,TLIM=400,MAX_JOBS=1,\
+#          PARENT=/nobackup/$USER/gt_l64z16/b10_renorm/rst/GravitoTurb.00030.rst <this script>
+#   RENORM must match the parent (the restart carries mass_renorm and its target; RENORM
+#   here only labels the run).  MAX_JOBS=1 caps a runaway collapse at one walltime.
+#
+# AMR STAGE (a morph with refinement switched on; the input's refinement keys are present
+# but off, and a restart can switch them on from the command line):
+#     qsub -N gt_l64_amr -v RENORM=1,BETA=10,TLIM=1000,MAX_JOBS=8,AMR=1,\
+#          PARENT=/nobackup/$USER/gt_l64z16/b10_renorm/rst/GravitoTurb.00010.rst <this script>
+#   LEVELS (num_levels incl. root, default 4: 4 -> 8 -> 16 -> 32 cells/H), CAP
+#   (max_nmb_per_rank, default 64 = 4x the 16 root blocks/rank: every array is sized to it),
+#   NJEANS (override <problem>/amr_njeans, e.g. to force refinement in a smoke test).
+#   BUILD=<build dir under $ATHENAK> picks the binary (default build-cluster).
+#   DUMP_DT sets the hydro_w and grav_phi dump interval (default: the input's 1/Omega).
+#   OVERLAY=<input file> is read over the PARENT restart's parameters (-r PARENT -i
+#   OVERLAY): the way to add keys the restart lacks, e.g. inputs/shearing_box/
+#   gravito_turb_l64z16_clump_amr_overlay.athinput (fragment-following AMR at beta = 3).
+#
+# BETA RAMP (fresh start; 2026-10-22): beta falls linearly from BETA0 at t = 0 to BETA
+# (default the input's 10) at t = TRAMP, then stays (<hydro_srcterms> bcool_beta0,
+# bcool_t_ramp): a gentle onset instead of the cold-start burst.  TLIM sets the end time.
+# RES=8 runs 8 cells/H (512 x 512 x 128) on 16^3 MeshBlocks (8192 blocks, as at 4 cells/H);
+# give it more nodes, e.g. 8 nodes = 2048 ranks, 4 blocks each:
+#     qsub -N gt_l64_rp8 -l select=8:ncpus=256:mpiprocs=256:model=tur_ath \
+#          -v RENORM=1,BETA0=100,TRAMP=50,TLIM=100,RES=8 <this script>
 
 ATHENAK=$HOME/athenak-multigrid
-TRACKED=$ATHENAK/inputs/shearing_box/gravito_turb_l64z16.athinput
+INPUT=${INPUT:-inputs/shearing_box/gravito_turb_l64z16.athinput}
+case $INPUT in /*) TRACKED=$INPUT ;; *) TRACKED=$ATHENAK/$INPUT ;; esac
 SCRIPT=${SCRIPT:-$PBS_O_WORKDIR/../gt_l64z16.pbs}   # what the chain resubmits
 RENORM=${RENORM:-0}
 NLIM=${NLIM:--1}
-EXE=$ATHENAK/build-cluster/src/athena
-MAX_JOBS=2
+PARENT=${PARENT:-}
+BETA=${BETA:-}
+TLIM=${TLIM:-}
+AMR=${AMR:-0}
+LEVELS=${LEVELS:-4}
+CAP=${CAP:-64}
+NJEANS=${NJEANS:-}
+OVERLAY=${OVERLAY:-}
+DUMP_DT=${DUMP_DT:-}
+BUILD=${BUILD:-build-cluster}
+EXE=$ATHENAK/$BUILD/src/athena
+MAX_JOBS=${MAX_JOBS:-2}
+BETA0=${BETA0:-}
+TRAMP=${TRAMP:-}
+RES=${RES:-4}
 WALL=23:45:00                            # athena stops here and writes a final rst
 
 source /opt/cray/pe/modules/3.2.11.7/init/bash
@@ -57,9 +103,24 @@ die() { echo "ERROR: $*" | tee -a run.log; exit 1; }
 # the binary must have the mass renormalization and the FOFC allocation fix (2c1b0f5c)
 strings $EXE | grep -q "mass renormalization to M" \
   || die "$EXE predates the mass renormalization: git pull and rebuild build-cluster"
+if [ -n "$BETA0$TRAMP" ]; then     # the beta ramp (2026-10-22) must be in the binary
+  strings $EXE | grep -q "bcool_t_ramp" || die "$EXE has no beta ramp: rebuild"
+fi
+if grep -q "^<mhd>" "$TRACKED" 2>/dev/null || grep -q "^<mhd>" input.athinput 2>/dev/null; then
+  # gravito_turb with MHD (2026-10-26): field setup, Alfven floor, MHD hse_outflow
+  strings $EXE | grep -q "vertical_znf" || die "$EXE has no MHD gravito_turb: use build-mhd"
+fi
 
 if ! ls rst/*.rst > /dev/null 2>&1; then
-  [ -f input.athinput ] || cp $TRACKED input.athinput || die "no input"
+  if [ -n "$PARENT" ]; then
+    [ -r "$PARENT" ] || die "PARENT $PARENT not readable"
+    [ -n "$BETA" ] && [ -n "$TLIM" ] || die "a morph from PARENT needs BETA and TLIM"
+    [ -z "$OVERLAY" ] || [ -r "$OVERLAY" ] || die "OVERLAY $OVERLAY not readable"
+    echo "$PARENT" > parent.txt
+    [ -n "$OVERLAY" ] && cp "$OVERLAY" overlay.athinput
+  else
+    [ -f input.athinput ] || cp $TRACKED input.athinput || die "no input"
+  fi
   echo $RENORM > renorm.txt
 elif [ "$(cat renorm.txt 2>/dev/null)" != "$RENORM" ]; then
   die "this directory holds a RENORM=$(cat renorm.txt 2>/dev/null) run but RENORM=$RENORM"
@@ -67,7 +128,7 @@ fi
 
 {
   echo "# job $PBS_JOBID on $NNODES node(s): $(sort -u $PBS_NODEFILE | tr '\n' ' '), $NRANKS ranks"
-  echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD); RENORM=$RENORM"
+  echo "# started $(date); commit $(git -C $ATHENAK rev-parse --short HEAD); RENORM=$RENORM AMR=$AMR"
 } >> run.log
 
 nrows0() { [ -f "$1" ] && wc -l < "$1" || echo 0; }
@@ -75,11 +136,40 @@ U0=$(nrows0 GravitoTurb.user.hst); H0=$(nrows0 GravitoTurb.hydro.hst)
 
 if ls rst/*.rst > /dev/null 2>&1; then
   RST=$(ls rst/*.rst | tail -1)
-  echo "# restarting from $RST" >> run.log
-  mpiexec -np $NRANKS -ppn $PPN $EXE -r $RST -d ./ -t $WALL >> run.log 2>&1 &
+  ROVR=()                                # tlim.txt in the run directory: new end time
+  [ -f tlim.txt ] && ROVR+=(time/tlim=$(cat tlim.txt))
+  RIN=()                                 # restart_overlay.athinput: keys over the restart's
+  [ -f restart_overlay.athinput ] && RIN=(-i restart_overlay.athinput)   # (new keys too)
+  echo "# restarting from $RST${RIN:+ with restart_overlay.athinput}${ROVR:+, overrides ${ROVR[*]}}" >> run.log
+  mpiexec -np $NRANKS -ppn $PPN $EXE -r $RST "${RIN[@]}" -d ./ -t $WALL "${ROVR[@]}" \
+    >> run.log 2>&1 &
+elif [ -n "$PARENT" ]; then
+  OVR=(hydro_srcterms/bcool_beta=$BETA time/tlim=$TLIM time/nlim=$NLIM)
+  [ "$AMR" = "1" ] && OVR+=(mesh_refinement/refinement=adaptive
+                            mesh_refinement/num_levels=$LEVELS
+                            mesh_refinement/max_nmb_per_rank=$CAP)
+  [ -n "$NJEANS" ] && OVR+=(problem/amr_njeans=$NJEANS)
+  [ -n "$DUMP_DT" ] && OVR+=(output2/dt=$DUMP_DT output3/dt=$DUMP_DT)
+  START=(-r $PARENT)
+  [ -n "$OVERLAY" ] && START+=(-i overlay.athinput)
+  echo "# morph from $PARENT${OVERLAY:+ with overlay $OVERLAY}, overrides ${OVR[*]}" \
+    >> run.log
+  mpiexec -np $NRANKS -ppn $PPN $EXE "${START[@]}" -d ./ -t $WALL "${OVR[@]}" \
+    >> run.log 2>&1 &
 else
   OVR=(time/nlim=$NLIM)
   [ "$RENORM" = "1" ] && OVR+=(problem/mass_renorm=true)
+  [ -n "$BETA" ] && OVR+=(hydro_srcterms/bcool_beta=$BETA)
+  [ -n "$BETA0" ] && OVR+=(hydro_srcterms/bcool_beta0=$BETA0)
+  [ -n "$TRAMP" ] && OVR+=(hydro_srcterms/bcool_t_ramp=$TRAMP)
+  [ -n "$TLIM" ] && OVR+=(time/tlim=$TLIM)
+  [ -n "$DUMP_DT" ] && OVR+=(output2/dt=$DUMP_DT output3/dt=$DUMP_DT)
+  if [ "$RES" = "8" ]; then
+    OVR+=(mesh/nx1=512 mesh/nx2=512 mesh/nx3=128 meshblock/nx1=16 meshblock/nx2=16
+          meshblock/nx3=16)
+  elif [ "$RES" != "4" ]; then
+    die "RES=$RES: only 4 or 8 cells/H"
+  fi
   echo "# first job: input.athinput, overrides ${OVR[*]}" >> run.log
   mpiexec -np $NRANKS -ppn $PPN $EXE -i input.athinput -d ./ -t $WALL "${OVR[@]}" \
     >> run.log 2>&1 &
@@ -109,13 +199,18 @@ echo "# job $PBS_JOBID ended $(date), exit $RC" >> run.log
 
 # chain: resubmit only after a wall-clock stop, at most MAX_JOBS jobs in total
 echo $PBS_JOBID >> jobs.list
-last=$(grep -E "^Terminating on" run.log | tail -1)
+# only THIS job's part of run.log: a job that dies at startup (I/O error reading the
+# restart) must not be mistaken for a wall-clock stop by an earlier job's message
+last=$(awk -v hdr="# job $PBS_JOBID on" 'index($0, hdr) == 1 {f = 1}
+       f && /^Terminating on/ {l = $0} END {print l}' run.log)
 if [ -f WATCHDOG_NAN ]; then
   echo "# final state: NaN (watchdog)" >> run.log
 elif [ "$last" = "Terminating on wall clock limit" ]; then
   if [ $(wc -l < jobs.list) -lt $MAX_JOBS ]; then
     echo "# wall clock stop: resubmitting" >> run.log
-    qsub -N $PBS_JOBNAME -v RENORM=$RENORM,SCRIPT=$SCRIPT $SCRIPT
+    # same node count as this job (a qsub -l select=... at submission is not inherited)
+    qsub -N $PBS_JOBNAME -l select=$NNODES:ncpus=256:mpiprocs=256:model=tur_ath \
+      -v RENORM=$RENORM,MAX_JOBS=$MAX_JOBS,BUILD=$BUILD,INPUT=$INPUT,SCRIPT=$SCRIPT $SCRIPT
   else
     echo "# wall clock stop but MAX_JOBS=$MAX_JOBS reached: not resubmitting" >> run.log
   fi

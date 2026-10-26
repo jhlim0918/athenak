@@ -1,0 +1,31 @@
+#PBS -S /bin/bash
+#PBS -N gt_census
+#PBS -l select=1:ncpus=256:model=tur_ath
+#PBS -l walltime=1:00:00
+#PBS -q devel
+#PBS -j oe
+#PBS -W group_list=s3183
+#PBS -m ae
+#PBS -M jay.lim1@unlv.edu
+
+# Clump census (scripts/analysis/gt_clump_census.py) of every hydro_w dump of the runs in
+# RUNS, on one Turin node: NPROC worker processes, one dump each (a 256x256x64 dump reads
+# in ~1 s).  Writes <run>/clump_census.npy and <run>/sigma_maps.npz.
+#
+# Submit from the directory holding the run directories (and a copy of the census script,
+# or set CENSUS):
+#     cd /nobackup/$USER/gt_l64z16 && qsub gt_clump_census.pbs
+#     qsub -v RUNS="b10 b10_renorm" gt_clump_census.pbs
+
+RUNS=${RUNS:-"b10 b10_renorm b10_plm b10_plm_renorm"}
+NPROC=${NPROC:-96}
+CENSUS=${CENSUS:-$PBS_O_WORKDIR/gt_clump_census.py}
+PY=/opt/cray/pe/python/3.11.7/bin/python3          # has numpy + scipy
+export PYTHONPATH=$HOME/athenak-multigrid/vis/python   # bin_convert.py
+
+cd $PBS_O_WORKDIR
+for r in $RUNS; do
+  echo "# $(date): census of $r"
+  $PY $CENSUS $r $NPROC || echo "# FAILED: $r"
+done
+echo "# $(date): done"
