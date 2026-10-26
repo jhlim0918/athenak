@@ -1,0 +1,59 @@
+# AthenaK input file: OVERLAY that restarts a gravito_turb_l64z16 run (64H x 64H x 16H,
+# 4 cells/H, 8^3 MeshBlocks) with adaptive refinement that follows fragments, at beta = 3.
+# It is not a complete input: pass it WITH a restart file,
+#
+#   athena -r <run>/rst/GravitoTurb.00030.rst -i <this file> -d ./
+#
+# main.cpp loads the parameters stored in the restart file, then this file over them
+# (adding the keys the restart lacks), then the command line.  <mesh> and <meshblock>
+# are deliberately absent: the restart's arrays carry its own nghost and block size.
+#
+# Refinement (GravitoTurbRefinement, src/pgen/fluids/gravito_turb.cpp):
+#  * Jeans number nJ = 2 pi cs/(dx sqrt(4 pi G rho)) over cells denser than the Roche
+#    density: refine below 8 (twice the Truelove limit), derefine above 8*2.5 = 20.
+#    Levels are added only where they are needed, up to level 6 (num_levels = 7:
+#    4 -> 8 -> ... -> 256 cells/H).
+#  * cs floored at 1 inside the gate.
+#  * hold: a block with rho > 100 is refined to level 3 (32 cells/H) and never derefined
+#    below it, so a fragment stays refined while it heats (cs 3 -> 10 at 4 cells/H keeps
+#    its nJ near the derefinement threshold); deeper levels still come from nJ alone.
+#  * buffer: the criterion includes each block's ghost zones, so refinement reaches
+#    4 cells beyond the flagged gas (8 at the new level), away from the multigrid force
+#    error at a level jump.
+# A fully refined clump at level 6 is out of reach: with orbital advection every refined
+# region spans the whole box in y (64H), ~10^6-10^7 blocks.  The Jeans criterion adds
+# levels only as the fragment contracts.
+# First try (job 245052, 2026-10-12): njeans 16 and cs floor 0.3 refined the cold streams
+# ahead of the fragment -- 30-58 full-y rings at level 1 by t = 304 (uniform-run census;
+# njeans 8: <= 1), then a cascade to level 4 at 70-104k blocks by t = 307 with rho_max
+# only 26-45, dt ~ 2e-4, ~5 s/cycle (t = 400 would take ~400 h) -- and a glibc heap
+# corruption at t = 307.8 (cause unknown, not memory exhaustion).
+
+<mesh_refinement>
+refinement = adaptive
+num_levels = 7        # root + 6
+max_nmb_per_rank = 256  # 131k blocks at 512 ranks (8192 root), ~1.5 GB/rank of the
+                        # 754 GB Turin nodes.  The uniform beta = 3 dumps, counted as full-y
+                        # rings, already need 50-75k at t = 317-329 before any buffer or
+                        # deeper level.  Hydro::CopyCons copies only the blocks in use now.
+ncycle_check = 10     # cycles between checks of the criterion
+refinement_interval = 5
+
+<amr_criterion0>
+method    = user      # GravitoTurbRefinement
+
+<hydro_srcterms>
+bcool_beta = 3.0
+
+<output4>
+dt = 1.0              # restart files every 1/Omega (the first try lost 4.9 h to a crash)
+
+<problem>
+amr_njeans = 8.0
+amr_njeans_deref = 2.5
+amr_rho_min = 2.1165  # Roche density 9 Omega^2/(4 pi G)
+amr_cs_min = 1.0
+amr_tstart = 0.0
+amr_rho_hold = 100.0
+amr_hold_level = 3
+amr_buffer = true

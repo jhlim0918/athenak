@@ -259,6 +259,7 @@ void BCHelperMHD(MeshBlockPack *ppack, DualArray2D<Real> b_in, DvceFaceFld4D<Rea
         break;
       case BoundaryFlag::outflow:
       case BoundaryFlag::diode:
+      case BoundaryFlag::hse_outflow:   // the field is copied as in outflow
       case BoundaryFlag::vacuum:
         for (int k=0; k<ng; ++k) {
           b0.x1f(m,ks-k-1,j,i) = b0.x1f(m,ks,j,i);
@@ -298,6 +299,7 @@ void BCHelperMHD(MeshBlockPack *ppack, DualArray2D<Real> b_in, DvceFaceFld4D<Rea
         break;
       case BoundaryFlag::outflow:
       case BoundaryFlag::diode:
+      case BoundaryFlag::hse_outflow:   // the field is copied as in outflow
       case BoundaryFlag::vacuum:
         for (int k=0; k<ng; ++k) {
           b0.x1f(m,ke+k+1,j,i) = b0.x1f(m,ke,j,i);

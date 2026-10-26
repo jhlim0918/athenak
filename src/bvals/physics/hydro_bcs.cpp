@@ -18,7 +18,7 @@
 
 void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Real> u0,
                     int is, int ie, int js, int je, int ks, int ke, int n1, int n2,
-                    int n3);
+                    int n3, bool coarse);
 
 //----------------------------------------------------------------------------------------
 //! \fn void BoundaryValues::HydroBCs()
@@ -42,7 +42,7 @@ void MeshBoundaryValues::HydroBCs(MeshBlockPack *ppack, DualArray2D<Real> u_in,
   int ks = indcs.ks;
   int ke = indcs.ke;
 
-  BCHelperHydro(ppack, u_in, u0, is, ie, js, je, ks, ke, n1, n2, n3);
+  BCHelperHydro(ppack, u_in, u0, is, ie, js, je, ks, ke, n1, n2, n3, false);
 }
 
 //----------------------------------------------------------------------------------------
@@ -65,11 +65,13 @@ void MeshBoundaryValues::HydroBCsCoarse(MeshBlockPack *ppack, DualArray2D<Real> 
   int cks = indcs.cks;
   int cke = indcs.cke;
 
-  BCHelperHydro(ppack, u_in, coarse_u0, cis, cie, cjs, cje, cks, cke, cn1, cn2, cn3);
+  BCHelperHydro(ppack, u_in, coarse_u0, cis, cie, cjs, cje, cks, cke, cn1, cn2, cn3,
+                true);
 }
 
 void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Real> u0,
-              int is, int ie, int js, int je, int ks, int ke, int n1, int n2, int n3) {
+              int is, int ie, int js, int je, int ks, int ke, int n1, int n2, int n3,
+              bool coarse) {
   // loop over all MeshBlocks in this MeshBlockPack
   auto &pm = ppack->pmesh;
   int &ng = ppack->pmesh->mb_indcs.ng;
@@ -264,15 +266,18 @@ void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Rea
   // (Omega = 0) this reduces to diode.  Disc self-gravity is not included in the
   // extrapolation.  Not implemented for x1/x2 (falls to default there).
   // This helper also serves MHD's u0, where phydro is null: take the EOS and shearing box
-  // from whichever fluid exists.  hse_outflow itself is hydro-only (the ghost energy is
-  // rebuilt without the magnetic term).
-  if (ppack->pmhd != nullptr &&
-      (pm->mesh_bcs[BoundaryFace::inner_x3] == BoundaryFlag::hse_outflow ||
-       pm->mesh_bcs[BoundaryFace::outer_x3] == BoundaryFlag::hse_outflow)) {
-    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "hse_outflow is not implemented for MHD (the ghost energy has no "
-              << "magnetic term)" << std::endl;
-    std::exit(EXIT_FAILURE);
+  // from whichever fluid exists.  With MHD, u0(IEN) holds the total energy: the edge
+  // temperature is taken after removing the edge cell's magnetic energy, and the ghost
+  // energy adds the ghost's.  The field BC (bfield_bcs.cpp) treats hse_outflow as
+  // outflow, copying the edge faces into the ghosts, so the ghost's cell-centred field is
+  // known here from the active faces: Bx, By as in the edge cell, Bz = the boundary face.
+  // (The field exchange and CT update precede the physical BCs, so these faces are
+  // current.)
+  const bool mhd = (ppack->pmhd != nullptr);
+  DvceArray4D<Real> bx1f, bx2f, bx3f;
+  if (mhd) {
+    auto &bf = coarse ? ppack->pmhd->coarse_b0 : ppack->pmhd->b0;
+    bx1f = bf.x1f; bx2f = bf.x2f; bx3f = bf.x3f;
   }
   auto &size = ppack->pmb->mb_size;
   auto &eos = (ppack->phydro != nullptr) ? ppack->phydro->peos->eos_data
@@ -326,9 +331,16 @@ void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Rea
         Real mx = u0(m,IM1,ks,j,i), my = u0(m,IM2,ks,j,i), mz = u0(m,IM3,ks,j,i);
         Real vx = mx/de, vy = my/de, vz = fmin(0.0, mz/de);
         Real a2 = ciso2;
+        Real emag_e = 0.0, emag_g = 0.0;   // edge and ghost magnetic energy (MHD)
+        if (mhd) {
+          Real bh2 = SQR(0.5*(bx1f(m,ks,j,i) + bx1f(m,ks,j,i+1))) +
+                     SQR(0.5*(bx2f(m,ks,j,i) + bx2f(m,ks,j+1,i)));
+          emag_e = 0.5*(bh2 + SQR(0.5*(bx3f(m,ks,j,i) + bx3f(m,ks+1,j,i))));
+          emag_g = 0.5*(bh2 + SQR(bx3f(m,ks,j,i)));
+        }
         if (ideal) {
           Real ekin = 0.5*(mx*mx + my*my + mz*mz)/de;
-          a2 = fmax(gm1*(u0(m,IEN,ks,j,i) - ekin)/de, 1.0e-30);
+          a2 = fmax(gm1*(u0(m,IEN,ks,j,i) - ekin - emag_e)/de, 1.0e-30);
         }
         Real dz = (size.d_view(m).x3max - size.d_view(m).x3min)/static_cast<Real>(nk);
         Real ze = size.d_view(m).x3min + 0.5*dz;
@@ -345,7 +357,7 @@ void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Rea
           } else if (n==IM3) {
             u0(m,n,ks-k-1,j,i) = dg*vz;
           } else if (ideal && n==IEN) {
-            u0(m,n,ks-k-1,j,i) = dg*a2/gm1 + 0.5*dg*(vx*vx + vy*vy + vz*vz);
+            u0(m,n,ks-k-1,j,i) = dg*a2/gm1 + 0.5*dg*(vx*vx + vy*vy + vz*vz) + emag_g;
           } else {
             u0(m,n,ks-k-1,j,i) = u0(m,n,ks,j,i)*(dg/de);   // passive scalars
           }
@@ -396,9 +408,16 @@ void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Rea
         Real mx = u0(m,IM1,ke,j,i), my = u0(m,IM2,ke,j,i), mz = u0(m,IM3,ke,j,i);
         Real vx = mx/de, vy = my/de, vz = fmax(0.0, mz/de);
         Real a2 = ciso2;
+        Real emag_e = 0.0, emag_g = 0.0;   // edge and ghost magnetic energy (MHD)
+        if (mhd) {
+          Real bh2 = SQR(0.5*(bx1f(m,ke,j,i) + bx1f(m,ke,j,i+1))) +
+                     SQR(0.5*(bx2f(m,ke,j,i) + bx2f(m,ke,j+1,i)));
+          emag_e = 0.5*(bh2 + SQR(0.5*(bx3f(m,ke,j,i) + bx3f(m,ke+1,j,i))));
+          emag_g = 0.5*(bh2 + SQR(bx3f(m,ke+1,j,i)));
+        }
         if (ideal) {
           Real ekin = 0.5*(mx*mx + my*my + mz*mz)/de;
-          a2 = fmax(gm1*(u0(m,IEN,ke,j,i) - ekin)/de, 1.0e-30);
+          a2 = fmax(gm1*(u0(m,IEN,ke,j,i) - ekin - emag_e)/de, 1.0e-30);
         }
         Real dz = (size.d_view(m).x3max - size.d_view(m).x3min)/static_cast<Real>(nk);
         Real ze = size.d_view(m).x3max - 0.5*dz;
@@ -415,7 +434,7 @@ void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Rea
           } else if (n==IM3) {
             u0(m,n,ke+k+1,j,i) = dg*vz;
           } else if (ideal && n==IEN) {
-            u0(m,n,ke+k+1,j,i) = dg*a2/gm1 + 0.5*dg*(vx*vx + vy*vy + vz*vz);
+            u0(m,n,ke+k+1,j,i) = dg*a2/gm1 + 0.5*dg*(vx*vx + vy*vy + vz*vz) + emag_g;
           } else {
             u0(m,n,ke+k+1,j,i) = u0(m,n,ke,j,i)*(dg/de);   // passive scalars
           }

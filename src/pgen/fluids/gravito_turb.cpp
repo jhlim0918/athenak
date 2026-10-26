@@ -51,6 +51,16 @@
 //! parameters: amr_njeans (16), amr_njeans_deref (2.5, must exceed 2), amr_rho_min
 //! (Roche density 9 Omega^2/(4 pi G)), amr_cs_min (0), amr_tstart (0: no flags are
 //! raised before this time, so one input serves a cold start and a saturated start).
+//! Two additions for following a fragment (all off by default):
+//!  * amr_rho_hold > 0: a block whose gas exceeds this density is refined until it is
+//!    amr_hold_level levels above the root and is never derefined below that.  The Jeans
+//!    criterion still decides any deeper levels.  A bound clump heats as it contracts
+//!    (c_s ~ 3 -> 10 at 4 cells/H, beta = 3), which keeps its nJ near the derefinement
+//!    threshold; the hold keeps it from flickering out of refinement.
+//!  * amr_buffer = true: the criterion (and the hold) is evaluated over the block's
+//!    ghost zones too, so refinement reaches nghost cells beyond the flagged gas
+//!    (2 nghost cells at the new level).  The multigrid force error at a level jump
+//!    moves a clump within ~8 cells of it (sg_clump interface test, 2026-10-08).
 //!
 //! Mass renormalization (<problem> mass_renorm = true; Booth & Clarke 2019, MNRAS 483,
 //! 3718, sec. 2): the outflow z boundaries drain the box (the SC14 runs here lose 24% of
@@ -68,7 +78,26 @@
 //! files carry it.  An extra history column dm_renorm holds the mass injected since the
 //! previous history row (the boundary loss, plus whatever the density floor adds).
 //! Particles are not rescaled: with dust the dust-to-gas ratio drifts down as gas is
-//! added.
+//! added.  With MHD the magnetic field is not rescaled either (the net flux is a
+//! conserved parameter of the box): density, momenta, scalars and the non-magnetic part
+//! of the total energy are.
+//!
+//! MHD (an <mhd> block instead of <hydro>; source terms in <mhd_srcterms>; 2026-10-22):
+//! the same disc threaded by a field set by <problem>/b_config,
+//!   none          B = 0
+//!   vertical      uniform Bz = B0: net vertical flux
+//!   vertical_znf  Bz = B0 sin(2 pi x/Lx): zero net flux
+//! with B0 from the midplane plasma beta <problem>/plasma_beta = 2 P0/B0^2 (P0 = K rho0^gamma,
+//! Heaviside-Lorentz units, magnetic pressure B^2/2).  The field does not enter the
+//! hydrostatic profile (it is uniform in z).  The tenuous halo makes the Alfven speed,
+//! and so the time step, run away once field reaches it: <problem>/va_max > 0 is an
+//! Alfven-speed ceiling, imposed as a density floor rho >= B^2/va_max^2 after every stage
+//! (velocity and temperature kept, so momentum and internal energy scale with the added
+//! mass; the field is untouched).  The mass it adds is history column dm_vafloor (per
+//! interval, summed over ranks).  MHD history columns: rho_wmax = int rho*(-Bx*By) dV,
+//! wmax = int -Bx*By dV (Maxwell stress, add to wgrv + wrey for alpha'), emag = int B^2/2 dV,
+//! babs = int |B| dV and divb = int |div B| dx dV (div B from the face fields, dx = the
+//! cell's smallest width): divb/babs is the mean relative divergence, round-off under CT.
 
 #include <algorithm>
 #include <cfloat>
@@ -99,8 +128,10 @@
 void GravitoTurbHistory(HistoryData *pdata, Mesh *pm);
 // User-defined refinement criterion (Jeans number with a density gate)
 void GravitoTurbRefinement(MeshBlockPack *pmbp);
-// User source term: rescale the gas to a fixed total mass (mass_renorm)
-void GravitoTurbRenormalizeMass(Mesh *pm, const Real bdt);
+// User source terms: Alfven-speed floor (va_max) and mass renormalization (mass_renorm)
+void GravitoTurbUserSrcs(Mesh *pm, const Real bdt);
+void GravitoTurbAlfvenFloor(Mesh *pm);
+void GravitoTurbRenormalizeMass(Mesh *pm);
 
 namespace {
 struct GravitoTurbVariables {
@@ -108,12 +139,18 @@ struct GravitoTurbVariables {
   Real lx, ly;
   bool orbital_advection;
   Real amr_njeans, amr_njeans_deref, amr_rho_min, amr_cs_min, amr_tstart;
+  Real amr_rho_hold;  // hold blocks above this density at >= amr_hold_level (0: off)
+  int amr_hold_level;
+  bool amr_buffer;    // evaluate the criterion over the ghost zones as well
   bool mass_renorm;
   Real mass_target;   // total gas mass the renormalization restores
   Real dm_renorm;     // mass injected since the last history row (same on every rank)
   int renorm_cycle;   // cycle of the current renormalization count
   int renorm_calls;   // source-term calls so far in that cycle (one per stage)
   int nstages;        // explicit stages of <time>/integrator (as in driver.cpp)
+  bool mhd;           // the gas is an <mhd> fluid
+  Real va_max;        // Alfven-speed ceiling (MHD; 0: off)
+  Real dm_vafloor;    // mass the Alfven floor added since the last history row (this rank)
 };
 GravitoTurbVariables gt_var;
 
@@ -133,6 +170,14 @@ Real HashNoise(int64_t gk, int64_t gj, int64_t gi, int64_t c, int64_t seed) {
   return 2.0*(static_cast<Real>(x >> 11)/9007199254740992.0) - 1.0;  // 53-bit mantissa
 }
 
+// the gas arrays, of whichever fluid exists (<hydro> or <mhd>)
+DvceArray5D<Real> &GasU0(MeshBlockPack *pmbp) {
+  return (pmbp->pmhd != nullptr) ? pmbp->pmhd->u0 : pmbp->phydro->u0;
+}
+DvceArray5D<Real> &GasW0(MeshBlockPack *pmbp) {
+  return (pmbp->pmhd != nullptr) ? pmbp->pmhd->w0 : pmbp->phydro->w0;
+}
+
 // total gas mass in the active cells of all MeshBlocks on all ranks
 Real TotalGasMass(MeshBlockPack *pmbp) {
   auto &indcs = pmbp->pmesh->mb_indcs;
@@ -140,7 +185,7 @@ Real TotalGasMass(MeshBlockPack *pmbp) {
   int ni = indcs.nx1, nj = indcs.nx2, nk = indcs.nx3;
   int nmkji = pmbp->nmb_thispack*nk*nj*ni;
   auto &size = pmbp->pmb->mb_size;
-  auto &u0 = pmbp->phydro->u0;
+  auto &u0 = GasU0(pmbp);
   Real mgas = 0.0;
   Kokkos::parallel_reduce("gt_mgas", Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
   KOKKOS_LAMBDA(int idx, Real &lsum) {
@@ -164,18 +209,26 @@ Real TotalGasMass(MeshBlockPack *pmbp) {
 
 void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
-  if (pmbp->phydro == nullptr) {
+  const bool is_mhd = (pmbp->pmhd != nullptr);
+  if (!is_mhd && pmbp->phydro == nullptr) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "gravito_turb is hydro-only" << std::endl;
+              << "gravito_turb requires a <hydro> or an <mhd> block" << std::endl;
     exit(EXIT_FAILURE);
   }
-  if (pmbp->phydro->psbox_u == nullptr) {
+  if (is_mhd && pmbp->ppart != nullptr) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+              << "gravito_turb: dust particles are hydro-only" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  auto *psbox = is_mhd ? pmbp->pmhd->psbox_u : pmbp->phydro->psbox_u;
+  EOS_Data &eos = is_mhd ? pmbp->pmhd->peos->eos_data : pmbp->phydro->peos->eos_data;
+  if (psbox == nullptr) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
               << "gravito_turb requires a <shearing_box> block in the input file"
               << std::endl;
     exit(EXIT_FAILURE);
   }
-  if (!pmbp->phydro->psbox_u->is_stratified) {
+  if (!psbox->is_stratified) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
               << "gravito_turb requires <shearing_box> stratified = true" << std::endl;
     exit(EXIT_FAILURE);
@@ -194,13 +247,16 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   }
 
   auto &msize = pmy_mesh_->mesh_size;
-  gt_var.qshear = pmbp->phydro->psbox_u->qshear;
-  gt_var.omega0 = pmbp->phydro->psbox_u->omega0;
+  gt_var.qshear = psbox->qshear;
+  gt_var.omega0 = psbox->omega0;
   gt_var.four_pi_G = four_pi_G;
-  gt_var.gamma = pmbp->phydro->peos->eos_data.gamma;
+  gt_var.gamma = eos.gamma;
   gt_var.lx = msize.x1max - msize.x1min;
   gt_var.ly = msize.x2max - msize.x2min;
-  gt_var.orbital_advection = pmbp->phydro->psbox_u->orbital_advection;
+  gt_var.orbital_advection = psbox->orbital_advection;
+  gt_var.mhd = is_mhd;
+  gt_var.va_max = pin->GetOrAddReal("problem", "va_max", 0.0);
+  gt_var.dm_vafloor = 0.0;
   user_hist_func = GravitoTurbHistory;
 
   // Jeans-number refinement criterion (used by <amr_criterionN> method = user)
@@ -210,6 +266,9 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
       9.0*SQR(gt_var.omega0)/four_pi_G);
   gt_var.amr_cs_min = pin->GetOrAddReal("problem", "amr_cs_min", 0.0);
   gt_var.amr_tstart = pin->GetOrAddReal("problem", "amr_tstart", 0.0);
+  gt_var.amr_rho_hold = pin->GetOrAddReal("problem", "amr_rho_hold", 0.0);
+  gt_var.amr_hold_level = pin->GetOrAddInteger("problem", "amr_hold_level", 3);
+  gt_var.amr_buffer = pin->GetOrAddBoolean("problem", "amr_buffer", false);
   if (gt_var.amr_njeans_deref <= 2.0) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
               << "<problem>/amr_njeans_deref must exceed 2: derefining halves the Jeans "
@@ -225,10 +284,12 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   gt_var.dm_renorm = 0.0;
   gt_var.renorm_cycle = -1;
   gt_var.renorm_calls = 0;
-  if (gt_var.mass_renorm) {
+  if (gt_var.mass_renorm || (is_mhd && gt_var.va_max > 0.0)) {
     user_srcs = true;
-    user_srcs_func = GravitoTurbRenormalizeMass;
-    // the source term is called once per stage; act on the last one
+    user_srcs_func = GravitoTurbUserSrcs;
+  }
+  if (gt_var.mass_renorm) {
+    // the source term is called once per stage; renormalize on the last one
     std::string integ = pin->GetString("time", "integrator");
     if (integ == "rk1") {
       gt_var.nstages = 1;
@@ -286,7 +347,6 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   Real pert_zmax = pin->GetOrAddReal("problem", "pert_zmax", 2.0);
   int pert_seed = pin->GetOrAddInteger("problem", "pert_seed", 1);
 
-  EOS_Data &eos = pmbp->phydro->peos->eos_data;
   Real gamma = eos.gamma;
   Real gm1 = gamma - 1.0;
   if (!eos.is_ideal) {
@@ -356,7 +416,7 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   int js = indcs.js, je = indcs.je;
   int ks = indcs.ks, ke = indcs.ke;
   auto &size = pmbp->pmb->mb_size;
-  auto &u0 = pmbp->phydro->u0;
+  auto &u0 = GasU0(pmbp);
   Real dx1m = gt_var.lx/static_cast<Real>(pmy_mesh_->mesh_indcs.nx1);
   Real dx2m = gt_var.ly/static_cast<Real>(pmy_mesh_->mesh_indcs.nx2);
   Real dx3m = (msize.x3max - msize.x3min)/static_cast<Real>(pmy_mesh_->mesh_indcs.nx3);
@@ -402,6 +462,47 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
     u0(m,IM3,k,j,i) = den*vz;
     u0(m,IEN,k,j,i) = prs/gm1 + 0.5*den*(SQR(vx) + SQR(vy) + SQR(vz));
   });
+
+  // ---- magnetic field (MHD) ------------------------------------------------------------
+  if (is_mhd) {
+    std::string b_config = pin->GetOrAddString("problem", "b_config", "vertical");
+    Real plasma_beta = pin->GetOrAddReal("problem", "plasma_beta", 1.0e3);
+    int bcfg;
+    if (b_config == "none") {
+      bcfg = 0;
+    } else if (b_config == "vertical") {
+      bcfg = 1;
+    } else if (b_config == "vertical_znf") {
+      bcfg = 2;
+    } else {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "gravito_turb: unknown <problem>/b_config = " << b_config
+                << " (none | vertical | vertical_znf)" << std::endl;
+      exit(EXIT_FAILURE);
+    }
+    Real p0 = kpoly*std::pow(rho0, gamma);
+    Real b0amp = (bcfg == 0) ? 0.0 : std::sqrt(2.0*p0/plasma_beta);
+    Real kx = 2.0*M_PI/gt_var.lx;
+    if (global_variable::my_rank == 0) {
+      std::cout << "gravito_turb MHD: b_config = " << b_config << ", plasma_beta = "
+                << plasma_beta << ", B0 = " << b0amp << ", midplane v_A = "
+                << b0amp/std::sqrt(rho0) << ", va_max = " << gt_var.va_max << std::endl;
+    }
+    auto &b0 = pmbp->pmhd->b0;
+    par_for("gt_binit", DevExeSpace(), 0, (pmbp->nmb_thispack-1), ks, ke, js, je, is, ie,
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      Real &x1min = size.d_view(m).x1min, &x1max = size.d_view(m).x1max;
+      Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+      Real bz = (bcfg == 2) ? b0amp*sin(kx*x1v) : b0amp;
+      b0.x1f(m,k,j,i) = 0.0;
+      b0.x2f(m,k,j,i) = 0.0;
+      b0.x3f(m,k,j,i) = bz;
+      if (i == ie) b0.x1f(m,k,j,ie+1) = 0.0;
+      if (j == je) b0.x2f(m,k,je+1,i) = 0.0;
+      if (k == ke) b0.x3f(m,ke+1,j,i) = bz;
+      u0(m,IEN,k,j,i) += 0.5*SQR(bz);
+    });
+  }
   set_mass_target();
 
   // pilot runs: the particles go into the laminar state just built (see above)
@@ -656,9 +757,25 @@ void GravitoTurbHistory(HistoryData *pdata, Mesh *pm) {
     pdata->label[15] = "d_wrey";
     pdata->label[16] = "d_escaped";
   }
-  const int ndm = pdata->nhist;     // dm_renorm column, after the dust columns
+  const bool mhd = gv.mhd;
+  const int nmag = pdata->nhist;    // MHD columns, after the dust columns
+  if (mhd) {
+    pdata->label[nmag] = "rho_wmax";
+    pdata->label[nmag+1] = "wmax";
+    pdata->label[nmag+2] = "emag";
+    pdata->label[nmag+3] = "babs";
+    pdata->label[nmag+4] = "divb";
+    pdata->nhist += 5;
+  }
+  const int ndm = pdata->nhist;     // dm_renorm column
   if (gv.mass_renorm) {
     pdata->label[ndm] = "dm_renorm";
+    pdata->nhist += 1;
+  }
+  const int nvf = pdata->nhist;     // dm_vafloor column
+  const bool vafloor = mhd && (gv.va_max > 0.0);
+  if (vafloor) {
+    pdata->label[nvf] = "dm_vafloor";
     pdata->nhist += 1;
   }
 
@@ -669,7 +786,15 @@ void GravitoTurbHistory(HistoryData *pdata, Mesh *pm) {
   const int nmkji = (pm->pmb_pack->nmb_thispack)*nx3*nx2*nx1;
   const int nkji = nx3*nx2*nx1;
   const int nji = nx2*nx1;
-  auto &w0_ = pm->pmb_pack->phydro->w0;
+  auto &w0_ = GasW0(pm->pmb_pack);
+  DvceArray5D<Real> bcc_;
+  DvceArray4D<Real> bx1f_, bx2f_, bx3f_;
+  if (mhd) {
+    bcc_ = pm->pmb_pack->pmhd->bcc0;
+    bx1f_ = pm->pmb_pack->pmhd->b0.x1f;
+    bx2f_ = pm->pmb_pack->pmhd->b0.x2f;
+    bx3f_ = pm->pmb_pack->pmhd->b0.x3f;
+  }
   auto &phi_ = pm->pmb_pack->pgrav->phi;
   Real gamma = gv.gamma;
   Real gm1 = gamma - 1.0;
@@ -720,8 +845,19 @@ void GravitoTurbHistory(HistoryData *pdata, Mesh *pm) {
     hvars.the_array[7] = vol*den*cs*cs;
     hvars.the_array[8] = vol*den*dv2;
     hvars.the_array[9] = vol*prs/gm1;
-    for (int n=nhist_; n<NHISTORY_VARIABLES; ++n) {
+    for (int n=10; n<NHISTORY_VARIABLES; ++n) {
       hvars.the_array[n] = 0.0;
+    }
+    if (mhd) {
+      Real bx = bcc_(m,IBX,k,j,i), by = bcc_(m,IBY,k,j,i), bz = bcc_(m,IBZ,k,j,i);
+      hvars.the_array[nmag] = -vol*den*bx*by;
+      hvars.the_array[nmag+1] = -vol*bx*by;
+      hvars.the_array[nmag+2] = 0.5*vol*(bx*bx + by*by + bz*bz);
+      hvars.the_array[nmag+3] = vol*sqrt(bx*bx + by*by + bz*bz);
+      Real divb = (bx1f_(m,k,j,i+1) - bx1f_(m,k,j,i))/dx1 +
+                  (bx2f_(m,k,j+1,i) - bx2f_(m,k,j,i))/dx2 +
+                  (bx3f_(m,k+1,j,i) - bx3f_(m,k,j,i))/dx3;
+      hvars.the_array[nmag+4] = vol*fabs(divb)*fmin(dx1, fmin(dx2, dx3));
     }
     mb_sum += hvars;
   }, Kokkos::Sum<array_sum::GlobalSum>(sum_this_mb));
@@ -765,23 +901,85 @@ void GravitoTurbHistory(HistoryData *pdata, Mesh *pm) {
     pdata->hdata[ndm] = (global_variable::my_rank == 0) ? gt_var.dm_renorm : 0.0;
     gt_var.dm_renorm = 0.0;
   }
+  if (vafloor) {
+    // per rank: the history output sums the ranks
+    pdata->hdata[nvf] = gt_var.dm_vafloor;
+    gt_var.dm_vafloor = 0.0;
+  }
+  return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void GravitoTurbUserSrcs()
+//! \brief The user source term, called after each RK stage's update: the Alfven floor
+//! (every stage, MHD with va_max > 0) and then the mass renormalization (last stage).
+//! Ghost and coarse cells are refreshed by the boundary exchange and restriction that
+//! follow in the task list.
+
+void GravitoTurbUserSrcs(Mesh *pm, const Real bdt) {
+  if (gt_var.mhd && gt_var.va_max > 0.0) GravitoTurbAlfvenFloor(pm);
+  if (!gt_var.mass_renorm) return;
+  if (pm->ncycle != gt_var.renorm_cycle) {
+    gt_var.renorm_cycle = pm->ncycle;
+    gt_var.renorm_calls = 0;
+  }
+  gt_var.renorm_calls += 1;
+  if (gt_var.renorm_calls == gt_var.nstages) GravitoTurbRenormalizeMass(pm);
+  return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void GravitoTurbAlfvenFloor()
+//! \brief Raises the density of every active cell to at least B^2/va_max^2 (see the file
+//! header), keeping the velocity and the temperature.  The field is the cell-centred one
+//! of the last primitive recovery: the CT update of this stage comes after the source
+//! terms in the task list, so the ceiling lags the field by one stage.
+
+void GravitoTurbAlfvenFloor(Mesh *pm) {
+  MeshBlockPack *pmbp = pm->pmb_pack;
+  auto &indcs = pm->mb_indcs;
+  int is = indcs.is, js = indcs.js, ks = indcs.ks;
+  int ni = indcs.nx1, nj = indcs.nx2, nk = indcs.nx3;
+  int nmkji = pmbp->nmb_thispack*nk*nj*ni;
+  int nvar = pmbp->pmhd->nmhd + pmbp->pmhd->nscalars;
+  auto &size = pmbp->pmb->mb_size;
+  auto &u0 = pmbp->pmhd->u0;
+  auto &bcc = pmbp->pmhd->bcc0;
+  Real iva2 = 1.0/SQR(gt_var.va_max);
+  Real dm = 0.0;
+  Kokkos::parallel_reduce("gt_vafloor", Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
+  KOKKOS_LAMBDA(int idx, Real &lsum) {
+    int i = is + (idx % ni);
+    int j = js + ((idx/ni) % nj);
+    int k = ks + ((idx/(ni*nj)) % nk);
+    int m = idx/(ni*nj*nk);
+    Real b2 = SQR(bcc(m,IBX,k,j,i)) + SQR(bcc(m,IBY,k,j,i)) + SQR(bcc(m,IBZ,k,j,i));
+    Real dmin = b2*iva2;
+    Real den = u0(m,IDN,k,j,i);
+    if (den < dmin && den > 0.0) {
+      Real f = dmin/den;
+      Real emag = 0.5*b2;
+      for (int n=0; n<nvar; ++n) {
+        if (n == IEN) {
+          u0(m,IEN,k,j,i) = (u0(m,IEN,k,j,i) - emag)*f + emag;
+        } else {
+          u0(m,n,k,j,i) *= f;
+        }
+      }
+      lsum += (dmin - den)*size.d_view(m).dx1*size.d_view(m).dx2*size.d_view(m).dx3;
+    }
+  }, Kokkos::Sum<Real>(dm));
+  gt_var.dm_vafloor += dm;
   return;
 }
 
 //----------------------------------------------------------------------------------------
 //! \fn void GravitoTurbRenormalizeMass()
 //! \brief Multiplies every conserved variable in the active cells by M_target/M (see the
-//! file header).  Called as a user source term after each RK stage's update, but acts
-//! only at the last stage of each cycle; ghost and coarse cells are refreshed by the
-//! boundary exchange and restriction that follow in the task list.
+//! file header); with MHD the field and its energy are left alone.  Acts at the last RK
+//! stage of each cycle (GravitoTurbUserSrcs).
 
-void GravitoTurbRenormalizeMass(Mesh *pm, const Real bdt) {
-  if (pm->ncycle != gt_var.renorm_cycle) {
-    gt_var.renorm_cycle = pm->ncycle;
-    gt_var.renorm_calls = 0;
-  }
-  gt_var.renorm_calls += 1;
-  if (gt_var.renorm_calls != gt_var.nstages) return;
+void GravitoTurbRenormalizeMass(Mesh *pm) {
   MeshBlockPack *pmbp = pm->pmb_pack;
   Real mgas = TotalGasMass(pmbp);
   if (mgas <= 0.0) return;
@@ -792,13 +990,32 @@ void GravitoTurbRenormalizeMass(Mesh *pm, const Real bdt) {
   int is = indcs.is, ie = indcs.ie;
   int js = indcs.js, je = indcs.je;
   int ks = indcs.ks, ke = indcs.ke;
-  int nvar = pmbp->phydro->nhydro + pmbp->phydro->nscalars;
-  auto &u0 = pmbp->phydro->u0;
-  par_for("gt_renorm", DevExeSpace(), 0, (pmbp->nmb_thispack-1), 0, nvar-1,
-          ks, ke, js, je, is, ie,
-  KOKKOS_LAMBDA(int m, int n, int k, int j, int i) {
-    u0(m,n,k,j,i) *= fac;
-  });
+  if (!gt_var.mhd) {
+    int nvar = pmbp->phydro->nhydro + pmbp->phydro->nscalars;
+    auto &u0 = pmbp->phydro->u0;
+    par_for("gt_renorm", DevExeSpace(), 0, (pmbp->nmb_thispack-1), 0, nvar-1,
+            ks, ke, js, je, is, ie,
+    KOKKOS_LAMBDA(int m, int n, int k, int j, int i) {
+      u0(m,n,k,j,i) *= fac;
+    });
+  } else {
+    int nvar = pmbp->pmhd->nmhd + pmbp->pmhd->nscalars;
+    auto &u0 = pmbp->pmhd->u0;
+    auto &bcc = pmbp->pmhd->bcc0;
+    par_for("gt_renorm_mhd", DevExeSpace(), 0, (pmbp->nmb_thispack-1),
+            ks, ke, js, je, is, ie,
+    KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      Real emag = 0.5*(SQR(bcc(m,IBX,k,j,i)) + SQR(bcc(m,IBY,k,j,i)) +
+                       SQR(bcc(m,IBZ,k,j,i)));
+      for (int n=0; n<nvar; ++n) {
+        if (n == IEN) {
+          u0(m,IEN,k,j,i) = (u0(m,IEN,k,j,i) - emag)*fac + emag;
+        } else {
+          u0(m,n,k,j,i) *= fac;
+        }
+      }
+    });
+  }
   return;
 }
 
@@ -812,15 +1029,20 @@ void GravitoTurbRefinement(MeshBlockPack *pmbp) {
 
   int nmb = pmbp->nmb_thispack;
   auto &indcs = pmbp->pmesh->mb_indcs;
-  int &is = indcs.is, nx1 = indcs.nx1;
-  int &js = indcs.js, nx2 = indcs.nx2;
-  int &ks = indcs.ks, nx3 = indcs.nx3;
-  const int nkji = nx3*nx2*nx1;
-  const int nji  = nx2*nx1;
+  // cells examined: the active cells, or with amr_buffer the ghost zones as well
+  // (w0 is filled over the whole block, ghost zones included, by ConToPrim)
+  const int ng = gt_var.amr_buffer ? indcs.ng : 0;
+  const int il = indcs.is - ng, n1 = indcs.nx1 + 2*ng;
+  const int jl = indcs.js - ng, n2 = indcs.nx2 + 2*ng;
+  const int kl = indcs.ks - ng, n3 = indcs.nx3 + 2*ng;
+  const int nkji = n3*n2*n1;
+  const int nji  = n2*n1;
   int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
 
-  auto &w0 = pmbp->phydro->w0;
+  auto &w0 = GasW0(pmbp);
   auto &size = pmbp->pmb->mb_size;
+  auto &mblev = pmbp->pmb->mb_lev;
+  int root_level = pmbp->pmesh->root_level;
   Real gamma = gt_var.gamma;
   Real gm1 = gamma - 1.0;
   Real fpG = gt_var.four_pi_G;
@@ -828,6 +1050,8 @@ void GravitoTurbRefinement(MeshBlockPack *pmbp) {
   Real cs2_min = SQR(gt_var.amr_cs_min);
   Real njeans = gt_var.amr_njeans;
   Real nderef = gt_var.amr_njeans*gt_var.amr_njeans_deref;
+  Real rho_hold = gt_var.amr_rho_hold;
+  int hold_level = gt_var.amr_hold_level;
 
   par_for_outer("GravitoTurbAMR", DevExeSpace(), 0, 0, 0, (nmb-1),
   KOKKOS_LAMBDA(TeamMember_t tmember, const int m) {
@@ -836,25 +1060,45 @@ void GravitoTurbRefinement(MeshBlockPack *pmbp) {
     Kokkos::parallel_reduce(Kokkos::TeamThreadRange(tmember, nkji),
     [=](const int idx, Real &qmin) {
       int k = (idx)/nji;
-      int j = (idx - k*nji)/nx1;
-      int i = (idx - k*nji - j*nx1) + is;
-      j += js;
-      k += ks;
+      int j = (idx - k*nji)/n1;
+      int i = (idx - k*nji - j*n1) + il;
+      j += jl;
+      k += kl;
       Real rho = w0(m,IDN,k,j,i);
       if (rho > rho_min) {
         Real cs2 = fmax(gamma*gm1*w0(m,IEN,k,j,i)/rho, cs2_min);
         qmin = fmin(cs2/rho, qmin);
       }
     }, Kokkos::Min<Real>(team_qmin));
+    // densest gas in the same cells, for the hold
+    Real team_rmax = 0.0;
+    if (rho_hold > 0.0) {
+      Kokkos::parallel_reduce(Kokkos::TeamThreadRange(tmember, nkji),
+      [=](const int idx, Real &rmax) {
+        int k = (idx)/nji;
+        int j = (idx - k*nji)/n1;
+        int i = (idx - k*nji - j*n1) + il;
+        rmax = fmax(w0(m,IDN,k+kl,j+jl,i), rmax);
+      }, Kokkos::Max<Real>(team_rmax));
+    }
 
     // only derefine when flag has not been set by other criteria
     int &flag = refine_flag.d_view(m+mbs);
+    bool held = (rho_hold > 0.0) && (team_rmax > rho_hold);
     if (team_qmin < (FLT_MAX)) {
       Real nj = 2.0*M_PI*sqrt(team_qmin/fpG)/size.d_view(m).dx1;
       if (nj < njeans) {flag = 1;}
-      if ((nj > nderef) && (flag == 0)) {flag = -1;}
-    } else if (flag == 0) {
+      if ((nj > nderef) && (flag == 0) && !held) {flag = -1;}
+    } else if ((flag == 0) && !held) {
       flag = -1;
+    }
+    if (held) {
+      int rel = mblev.d_view(m) - root_level;
+      if (rel < hold_level) {
+        flag = 1;
+      } else if (rel == hold_level && flag < 0) {
+        flag = 0;
+      }
     }
   });
   refine_flag.modify_device();
