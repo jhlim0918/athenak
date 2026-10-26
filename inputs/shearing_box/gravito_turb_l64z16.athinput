@@ -96,6 +96,8 @@ show_defect = 0
 self_gravity = true
 beta_cooling = true
 bcool_beta   = 10.0   # beta = Omega*t_cool
+bcool_beta0  = 10.0   # beta at t = 0 of a linear ramp to bcool_beta ...
+bcool_t_ramp = 0.0    # ... reached at t = bcool_t_ramp (0 = constant beta)
 bcool_cs2_floor = 0.0 # irradiation floor: cool toward cs^2 = this, never below
 thermal_cooling = false
 tcool_b      = 200.0

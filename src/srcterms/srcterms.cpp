@@ -71,10 +71,21 @@ SourceTerms::SourceTerms(std::string block, MeshBlockPack *pp, ParameterInput *p
   // Omega defaults to the shearing box orbital frequency when that block exists.
   if (beta_cooling) {
     bcool_beta = pin->GetReal(block, "bcool_beta");
+    // optional linear ramp in time: beta = bcool_beta0 at t = 0, falling (or rising) to
+    // bcool_beta at t = bcool_t_ramp, constant after.  A gentle onset of the cooling
+    // replaces the cold-start burst of a constant beta.  bcool_t_ramp = 0 = off
+    bcool_t_ramp = pin->GetOrAddReal(block, "bcool_t_ramp", 0.0);
+    bcool_beta0 = pin->GetOrAddReal(block, "bcool_beta0", bcool_beta);
     // optional irradiation floor: cool toward the temperature cs^2 = bcool_cs2_floor
     // (Baehr, Zhu & Yang 2022: the background irradiation that keeps the gas from
     // dropping below its initial Q0); 0 = cool toward zero (SC14)
     bcool_cs2_floor = pin->GetOrAddReal(block, "bcool_cs2_floor", 0.0);
+    // optional first-core cutoff: the cooling rate is multiplied by
+    // 1/(1 + (rho/bcool_rho_cut)^4), so gas denser than ~bcool_rho_cut stops cooling and
+    // a collapsing fragment ends in an adiabatic core instead of contracting without limit
+    // (beta cooling has no opacity limit; cf. Szulagyi, Mayer & Quinn 2017, who switch
+    // cooling off in clump cores).  0 = off
+    bcool_rho_cut = pin->GetOrAddReal(block, "bcool_rho_cut", 0.0);
     if (pin->DoesBlockExist("shearing_box")) {
       bcool_omega0 = pin->GetOrAddReal(block, "bcool_omega0",
                                        pin->GetReal("shearing_box", "omega0"));
@@ -240,7 +251,9 @@ void SourceTerms::RelCooling(const DvceArray5D<Real> &w0, const EOS_Data &eos_da
 //! \fn void SourceTerms::BetaCooling()
 //! \brief Constant-beta cooling (Gammie 2001; Shi & Chiang 2014 eq. 7): the internal
 //! energy density U is drained on the constant cooling time t_cool = beta/Omega,
-//! i.e. dU/dt = -U*Omega/beta everywhere.
+//! i.e. dU/dt = -U*Omega/beta everywhere -- or, with bcool_rho_cut > 0, at the rate
+//! Omega/beta/(1 + (rho/bcool_rho_cut)^4) (first-core cutoff).  With bcool_t_ramp > 0,
+//! beta is the linear ramp BCoolBeta(t) evaluated at the middle of the step.
 //! NOTE source terms must be computed using primitive (w0) and NOT conserved (u0) vars
 
 void SourceTerms::BetaCooling(const DvceArray5D<Real> &w0, const EOS_Data &eos_data,
@@ -250,16 +263,19 @@ void SourceTerms::BetaCooling(const DvceArray5D<Real> &w0, const EOS_Data &eos_d
   int js = indcs.js, je = indcs.je;
   int ks = indcs.ks, ke = indcs.ke;
   int nmb1 = pmy_pack->nmb_thispack - 1;
-  Real oob = bcool_omega0/bcool_beta;
+  // a ramped beta is taken at the middle of the step (all stages): second order in dt
+  Real oob = bcool_omega0/BCoolBeta(pmy_pack->pmesh->time + 0.5*pmy_pack->pmesh->dt);
   // internal energy density at the floor temperature: P_floor = rho*cs2_floor/gamma
   Real efac = bcool_cs2_floor/(eos_data.gamma*(eos_data.gamma - 1.0));
+  Real irc = (bcool_rho_cut > 0.0) ? 1.0/bcool_rho_cut : 0.0;
 
   par_for("beta_cool", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
   KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
     // w0(IEN) is the internal energy density; cool only the excess over the floor
     Real efloor = efac*w0(m,IDN,k,j,i);
     Real de = w0(m,IEN,k,j,i) - efloor;
-    if (de > 0.0) {u0(m,IEN,k,j,i) -= bdt*oob*de;}
+    Real x2 = SQR(w0(m,IDN,k,j,i)*irc);
+    if (de > 0.0) {u0(m,IEN,k,j,i) -= bdt*oob*de/(1.0 + x2*x2);}
   });
 
   return;

@@ -53,8 +53,11 @@ class SourceTerms {
   Real cpower_rel;
 
   // data for constant-beta cooling (Gammie 2001): rho*L = U/t_cool, t_cool = beta/Omega
-  Real bcool_beta;      // beta = Omega*t_cool
+  Real bcool_beta;      // beta = Omega*t_cool (the final beta when ramped)
+  Real bcool_beta0;     // beta at t = 0 of a linear ramp (= bcool_beta: no ramp)
+  Real bcool_t_ramp = 0.0;     // ramp time: beta reaches bcool_beta at t = bcool_t_ramp
   Real bcool_cs2_floor = 0.0;  // irradiation floor of beta cooling (cs^2 units)
+  Real bcool_rho_cut = 0.0;    // first-core cutoff: cooling * 1/(1+(rho/rho_cut)^4), 0=off
   Real bcool_omega0;    // orbital frequency Omega
 
   // data for optically thin thermal cooling (Shi & Chiang 2014 eq. 8):
@@ -71,6 +74,12 @@ class SourceTerms {
   Real width, spread;     // spatial width of source region, spread in angles
 
   // functions
+  // beta of the beta cooling at time t: linear from bcool_beta0 at t = 0 to bcool_beta
+  // at t = bcool_t_ramp, then constant
+  Real BCoolBeta(const Real t) const {
+    if (bcool_t_ramp <= 0.0 || t >= bcool_t_ramp) return bcool_beta;
+    return bcool_beta0 + (bcool_beta - bcool_beta0)*fmax(t, 0.0)/bcool_t_ramp;
+  }
   void ApplySrcTerms(const DvceArray5D<Real> &w0, const EOS_Data &eos,
                      const Real bdt, DvceArray5D<Real> &u0);
   void ApplySrcTerms(DvceArray5D<Real> &i0, const Real bdt);

@@ -107,9 +107,10 @@ void SourceTerms::NewTimeStep(const DvceArray5D<Real> &w0, const EOS_Data &eos_d
     }, Kokkos::Min<Real>(dtnew));
   }
 
-  // constant-beta cooling: t_cool = beta/Omega is constant, dt <= cool_eps*t_cool
+  // beta cooling: t_cool = beta/Omega is uniform, dt <= cool_eps*t_cool (with a ramp,
+  // the smaller end of it; bcool_beta0 = bcool_beta without one)
   if (beta_cooling) {
-    dtnew = fmin(dtnew, cool_eps*bcool_beta/bcool_omega0);
+    dtnew = fmin(dtnew, cool_eps*fmin(bcool_beta0, bcool_beta)/bcool_omega0);
   }
 
   // optically thin thermal cooling: dt <= cool_eps*min(t_cool), t_cool = b*(rho/P)^3

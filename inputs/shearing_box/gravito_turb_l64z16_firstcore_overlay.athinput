@@ -1,0 +1,17 @@
+# AthenaK input file: OVERLAY for a gravito_turb_l64z16 morph (or restart) that switches on
+# the first-core cutoff of beta cooling (src/srcterms/srcterms.cpp, bcool_rho_cut): the
+# cooling rate is multiplied by 1/(1 + (rho/bcool_rho_cut)^4), so a collapsing fragment
+# ends in an adiabatic core instead of contracting without limit (beta cooling has no
+# opacity limit).  Needs a binary with the cutoff (NAS: build-firstcore).
+#
+# rho_cut = 1e5 for Jeans AMR capped at level 4 (64 cells/H, num_levels = 5), the same
+# cutoff and cap as the beta = 3 fragment-following run b3_renorm_clumpamr_fc.  Adiabatic
+# above the cutoff, a core's n_J falls only as rho^(-1/6), so it stays above Truelove's 4
+# at level 4 far beyond the densities reached.  (A level-3 cap would want ~1e4: the same
+# n_J at the cutoff one level coarser.)  The beta = 5 twin never exceeds rho ~ 20, so the
+# cutoff is idle until a fragment forms.
+#
+#   qsub -v ...,LEVELS=5,BUILD=build-firstcore,OVERLAY=<this file> gt_l64z16.pbs
+
+<hydro_srcterms>
+bcool_rho_cut = 1.0e5

@@ -134,6 +134,8 @@ show_defect = 0
 self_gravity = true
 beta_cooling = true
 bcool_beta   = 10.0   # beta = Omega*t_cool
+bcool_beta0  = 10.0   # beta at t = 0 of a linear ramp to bcool_beta ...
+bcool_t_ramp = 0.0    # ... reached at t = bcool_t_ramp (0 = constant beta)
 thermal_cooling = false  # SC14 "b" runs: t_cool = tcool_b*(rho/P)^3 (set
 tcool_b      = 200.0     # beta_cooling=false when enabling)
 cool_eps     = 0.02      # dt <= cool_eps*t_cool
