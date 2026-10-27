@@ -177,6 +177,12 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
   ugx_ = ugx; ugp_ = ugp; vnx_ = vnx; vnp_ = vnp; rhop0_ = eps*rho0;
   if (restart) return;
 
+  // optional impulse-response test (default off): add impulse_ugx to the gas x-velocity
+  // of the single cell [0,dx1) x [0,dx2) and/or displace the particle(s) of that cell by
+  // impulse_dx1 cell widths in x; use with all eigenvector amplitudes = 0
+  Real imp_ugx = pin->GetOrAddReal("problem","impulse_ugx",0.0);
+  Real imp_dx1 = pin->GetOrAddReal("problem","impulse_dx1",0.0);
+
   // initialize gas: NSH background + eigenmode at t=0
   auto &indcs = pmy_mesh_->mb_indcs;
   int is = indcs.is, ie = indcs.ie;
@@ -196,6 +202,9 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
     Real ux  = ugx  + (Uxr*ce - Uxi*se)*cz;
     Real up  = ugp  + (Upr*ce - Upi*se)*cz;
     Real uz  =      - (Uzr*se + Uzi*ce)*sz;
+    if (x > 0.0 && x < mbsize.d_view(m).dx1 && z > 0.0 && z < mbsize.d_view(m).dx2) {
+      ux += imp_ugx;
+    }
     u0(m,IDN,k,j,i) = rho;
     u0(m,IM1,k,j,i) = rho*ux;
     u0(m,IM2,k,j,i) = rho*uz;   // vertical (x2) component
@@ -312,6 +321,9 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
       // radial displacement imprinting drho_p = Apr*cos(kx x)*cos(kz z)
       pr(IPX,p) = x0 - (Apr/(kx*rhop0))*se*cz;
       pr(IPY,p) = z0;
+    }
+    if (x0 > 0.0 && x0 < dx1 && z0 > 0.0 && z0 < dx2) {
+      pr(IPX,p) += imp_dx1*dx1;
     }
     pr(IPZ,p) = 0.0;
     pi(PSP,p) = 0;
