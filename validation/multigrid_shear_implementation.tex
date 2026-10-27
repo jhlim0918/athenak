@@ -35,11 +35,12 @@
        in the AthenaK Shearing Box\\[0.4em]
        \large \textsc{Implementation Document}\\
        \large Phase 0 (refinement infrastructure), Phase 1 (shear-periodic\\
-       multigrid boundaries), Phase 2 (gravity on refined meshes)}
+       multigrid boundaries), Phase 2 (gravity on refined meshes),\\
+       Phase 3 (the stratified box), Phase 4 (ideal MHD with self-gravity)}
 \author{\code{athenak-multigrid} tree, branch \code{multigrid}\\
         \small commit range \code{cc4404ba..fef5c6c9} (plus the Phase-0a
         predecessors \code{e7ef37f2}, \code{cc4404ba})}
-\date{August 18, 2026}
+\date{August 18, 2026 (Phase 4: October 26--27, 2026)}
 
 \begin{document}
 \maketitle
@@ -1348,6 +1349,274 @@ energy --- from which $Q$ (eq.~16), $\alpha$ (eq.~19), $\alpha'$ (eq.~20) and rm
 $\delta v$ are formed in post-processing. A short small-box run reproduces SC14's
 transient phenomenology: cooling contraction ($Q: 0.9 \to 0.6$), gravitational
 instability onset, rebound toward $Q \sim 1$ with $\delta v \sim c_s$.
+
+%=========================================================================================
+\section{Phase 4: ideal MHD with self-gravity}
+\label{sec:phase4}
+
+Phase 4 couples a magnetic field to the self-gravitating shearing box: first as a
+gravito-turbulent disk threaded by a field (the eventual target: collapse in the outer
+disk with ambipolar diffusion), and first of all on test problems with an analytic answer.
+Two pieces of code carry it. The SC14 problem generator \file{pgen/fluids/gravito\_turb.cpp}
+now runs with an \code{<mhd>} block as well as \code{<hydro>} (commit \code{2a0287f3}), and
+the Jeans-wave problem generator \file{pgen/tests/jeans\_wave.cpp} gained a
+\emph{magneto-Jeans} mode in which the field is oblique to the wave. Everything the MHD
+fluid needs from the rest of the code --- constrained transport, HLLD, orbital advection of
+face fields, the multigrid source terms --- already existed; the work is in the problem
+generators, the vertical boundary, and the floors.
+
+\subsection{Phase 4a: the gravito-turbulent box with a field}
+\label{sec:phase4a}
+
+\paragraph{Either fluid.} Every access to the gas goes through two helpers,
+\fn{GasU0} and \fn{GasW0}, which return the \code{<mhd>} arrays when that fluid exists and
+the \code{<hydro>} arrays otherwise; the shearing box and the equation of state are taken
+from whichever fluid exists. Dust particles with MHD stop with a fatal error (the particle
+insertion and drag are hydro-only).
+
+\paragraph{Initial field.} The hydrostatic profile is unchanged; a field uniform in $z$
+does not enter it. \code{<problem> b\_config} selects
+\begin{center}\begin{tabular}{ll}\toprule
+\code{vertical} & $B_z = B_0$: net vertical flux \\
+\code{vertical\_znf} & $B_z = B_0\sin(2\pi x/L_x)$: zero net flux \\
+\code{none} & $B = 0$ \\ \bottomrule
+\end{tabular}\end{center}
+with $B_0 = \sqrt{2P_0/\beta_p}$ from the midplane plasma beta \code{plasma\_beta}
+$=\beta_p$ and $P_0 = K\rho_0^{\gamma}$ (Heaviside--Lorentz units, magnetic pressure
+$B^2/2$). Only $x_3$ faces are set, so $\nabla\!\cdot\!B = 0$ holds exactly on the faces;
+the magnetic energy is added to $E$ from the cell-centred field. The MRI wavelength
+$\lambda = 2\pi v_A/\Om$ makes the resolution requirement explicit: at $4$ cells per $H$ a
+net-flux MRI is resolved only for $\beta_p \lesssim 100$ ($\lambda = 0.46H$ at
+$\beta_p = 10^3$).
+
+\paragraph{The Alfv\'en ceiling.} The halo is tenuous ($\rho$ down to the floor,
+$10^{-4}\rho_0$), so field that reaches it drives $v_A$, and with it the time step, to
+arbitrary values: a uniform $B_z$ at $\beta_p = 10$ gives $v_A = 74$ at the floor and
+$\Delta t = 10^{-3}$, ten times below the hydro step. \code{<problem> va\_max} $>0$ imposes
+a ceiling as a density floor,
+\begin{equation}
+  \rho \;\ge\; B^2/v_{A,\max}^2 ,
+\end{equation}
+applied in \fn{GravitoTurbAlfvenFloor} to every active cell after every stage (as a user
+source term). Where it acts, density, momenta and passive scalars are multiplied by
+$f = \rho_{\rm floor}/\rho$, and the non-magnetic energy is multiplied by $f$ with the
+magnetic energy left alone, $E \to (E - B^2/2)f + B^2/2$: velocity and temperature are
+kept, the field is untouched. The field used is the cell-centred one of the last primitive
+recovery, because the CT update of the stage comes after the source terms in the task
+list; the ceiling therefore lags the field by one stage. The mass added is accumulated per
+rank and written as the history column \code{dm\_vafloor} (the history output sums ranks).
+The default input sets $v_{A,\max} = 20$: the saturated hydro run's CFL step at $4$ cells
+per $H$ ($\Delta t \approx 3.5\times10^{-3}$) corresponds to a signal speed of about $21$,
+so the ceiling holds the MHD step near the hydro one.
+
+\paragraph{Mass renormalization with a field.} The Booth \& Clarke rescaling
+(\S\ref{sec:phase3}) multiplies the conserved variables by $M_{\rm target}/M$ once per step.
+With MHD the field is not rescaled --- the net flux is a conserved parameter of the box ---
+and the energy is rescaled as above, $E \to (E - B^2/2)f + B^2/2$.
+
+\paragraph{History.} With MHD five columns follow the hydro (and dust) ones:
+\code{rho\_wmax} $=\int\rho(-B_xB_y)\,dV$ and \code{wmax} $=\int -B_xB_y\,dV$ (the Maxwell
+stress, to be added to \code{wgrv}$+$\code{wrey} in $\alpha'$),
+\code{emag} $=\int B^2/2\,dV$, \code{babs} $=\int|B|\,dV$, and
+\code{divb} $=\int|\nabla\!\cdot\!B|\,\Delta x_{\min}\,dV$ with $\nabla\!\cdot\!B$ from the
+face fields; \code{divb}/\code{babs} is the mean relative divergence.
+
+\paragraph{The hydrostatic vertical boundary with a field.} \code{hse\_outflow}
+(\S\ref{sec:phase3}) rebuilds the ghost energy from the edge cell's temperature
+$a^2 = (\gamma-1)(E - E_k)/\rho$, which with MHD would count the magnetic energy as
+heat: a halo cell at $\rho = 10^{-4}$ in a field of $\beta_p = 10$ would get
+$a^2$ larger by $B^2/2\rho \approx 2700$. It had been made fatal for MHD; it is now
+supported. The field boundary (\file{bfield\_bcs.cpp}) treats \code{hse\_outflow} as
+\code{outflow}, copying the edge faces into the ghosts. Because the CT update and the
+field exchange precede the physical boundaries in the task list, the ghost's
+cell-centred field is known in \fn{BCHelperHydro} from the active faces alone: $B_x, B_y$
+as in the edge cell, $B_z$ equal to the boundary face. The helper takes the face arrays of
+the fine or coarse level (a new \code{coarse} argument) and uses
+\begin{equation}
+  a^2 = (\gamma-1)\,\frac{E - E_k - B_{\rm edge}^2/2}{\rho},
+  \qquad
+  E_{\rm ghost} = \frac{\rho_g a^2}{\gamma - 1} + E_{k,g} + \frac{B_{\rm ghost}^2}{2}.
+\end{equation}
+
+\paragraph{Cooling for the MHD runs.} \code{BetaCooling} reads the internal energy from
+the primitives and subtracts from $u_0$'s total energy, so it applies to MHD unchanged.
+Two options added for the fragmentation study apply to both fluids (commit
+\code{29246ce6}): \code{bcool\_rho\_cut}, which multiplies the cooling rate by
+$1/(1 + (\rho/\rho_{\rm cut})^4)$ (a first-core cutoff), and a linear ramp of $\beta$ from
+\code{bcool\_beta0} at $t = 0$ to \code{bcool\_beta} at \code{bcool\_t\_ramp}, evaluated at
+the middle of each step.
+
+\paragraph{Running it.} \file{inputs/shearing\_box/gravito\_turb\_l64z16\_mhd.athinput}
+is the $64H\times64H\times16H$ box at $4$ cells per $H$ with HLLD, FOFC, net vertical flux,
+$\beta_p = 10^3$ and $v_{A,\max} = 20$. The NAS runner \file{scripts/cluster/gt\_l64z16.pbs}
+takes it through \code{INPUT=} with an MHD build (\code{BUILD=build-mhd}); it checks that
+the binary carries the MHD problem generator, and a chained resubmission keeps the input
+and the node count. MHD runs start cold: there is as yet no way to add a field to a
+saturated hydro restart.
+
+\subsection{Phase 4b: the magneto-Jeans problem generator}
+\label{sec:phase4b}
+
+\paragraph{The mode.} With MHD and \code{<problem> b\_angle} given,
+\fn{ProblemGenerator::SelfGravity} sets up a uniform field
+$\mathbf{B}_0 = B_0(\cos\theta\,\hat{\mathbf k} + \sin\theta\,\hat{\mathbf e}_\perp)$,
+$\theta$ = \code{b\_angle}, $\hat{\mathbf e}_\perp = (-\sin a_3, \cos a_3, 0)$ the unit
+vector perpendicular to $\hat{\mathbf k}$ in the plane of $\mathbf B_0$ ($a_2, a_3$ the
+wave's angles). Linearising ideal (or isothermal) MHD with self-gravity about this state,
+a compressive wave with its perturbed field along $\hat{\mathbf e}_\perp$ obeys
+(Chandrasekhar 1961, ch.~XIII)
+\begin{equation}
+  \bigl(\omega^2 - \Omega_J^2\bigr)\bigl(\omega^2 - k^2 v_A^2\cos^2\theta\bigr)
+  = k^2 v_A^2 \sin^2\theta\,\omega^2,
+  \qquad \Omega_J^2 = k^2 c_s^2 - 4\pi G\rho_0,\quad v_A^2 = B_0^2/\rho_0 .
+  \label{eq:mjdisp}
+\end{equation}
+\code{mode = slow | fast} selects the smaller or larger root. At $\theta = 0$ and $90^\circ$
+one root carries no density (the transverse $k^2v_A^2$ wave, and a static mode) and the
+compressive root is taken whatever \code{mode} says: $\omega^2 = \Omega_J^2$ and
+$\omega^2 = k^2(c_s^2 + v_A^2) - 4\pi G\rho_0$ respectively.
+
+\paragraph{The eigenmode.} With $\xi = \hat{\mathbf k}\cdot\mathbf x$ and $\delta\rho =
+\rho_0 A\sin k\xi$, the perturbed field is $\delta B_\perp = C\,\delta\rho$ with
+\begin{equation}
+  C = \frac{B_\perp\,\omega^2}{\rho_0\,(\omega^2 - k^2 v_{A\parallel}^2)},
+\end{equation}
+and the pressure perturbation is isentropic, $\delta p = c_s^2\delta\rho$. A stable mode
+($\omega^2 > 0$) is started with no velocity, which is a standing wave
+$\delta\rho \propto \cos\omega t$; an unstable one ($\omega^2 = -s^2$) gets
+$\delta v_\parallel = (s/k)A\cos k\xi$ and $\delta v_\perp = B_\parallel C A (k/s)\cos k\xi$,
+which is pure growth $\propto e^{st}$. The perturbed field is built from a vector potential
+$\mathbf A = a(\xi)\,\hat{\mathbf n}$, $a = -(\delta B/k)\cos k\xi$,
+$\hat{\mathbf n} = \hat{\mathbf e}_\perp\times\hat{\mathbf k}$ (so that
+$\nabla\times\mathbf A = \delta B\,\hat{\mathbf e}_\perp\sin k\xi$), evaluated on the cell
+edges (\fn{JWVecPot}) and differenced onto the faces, so $\nabla\!\cdot\!B$ vanishes to
+round-off on the grid.
+
+\paragraph{Geometry and diagnostics.} \code{wave\_dir = x1} puts $\mathbf k$ along $x_1$
+with $\lambda = L_1$, so a thin three-dimensional box is a cheap one-dimensional test; the
+default (\code{oblique}) keeps the original box-diagonal wave. The user history
+(\fn{JeansWaveHistory}, \code{<problem> user\_hist = true}) projects the solution onto the
+mode, $(2/V)\int(\cdot)\{\sin,\cos\}k\xi\,dV$: \code{a\_sin}, \code{a\_cos} (density),
+\code{bp\_sin} ($\delta B_\perp$), \code{vpar\_cos}, \code{vperp\_cos} (velocities), then
+\code{divb} $=\int|\nabla\!\cdot\!B|\,\Delta x_{\min}\,dV$ from the face fields,
+\code{babs} $=\int|B|\,dV$ and \code{nmb}, the number of MeshBlocks.
+\fn{JeansWaveErrors} uses the stored unstable flag rather than $\lambda/\lambda_J > 1$, since
+a field across $\mathbf k$ can stabilise a hydro-unstable wavelength. Inputs without
+\code{b\_angle} behave as before (field along $x_1$).
+\file{inputs/tests/magneto\_jeans.athinput} is the quasi-one-dimensional setup
+($64\times8\times8$ cells, HLLD, PPM4, RK3, multigrid with eight V-cycles after full
+multigrid), and \file{validation/run/magneto\_jeans/magneto\_jeans.py} runs and fits the
+suite. The gas is adiabatic, $\gamma = 5/3$ and $p_0 = 0.6$, so that $c_s = 1$; the
+eigenmode is isentropic and eq.~(\ref{eq:mjdisp}) holds with $c_s^2 = \gamma p_0/\rho_0$.
+It was first isothermal, and AthenaK's isothermal HLLD turned out to amplify grid-scale noise
+at $\beta \lesssim 1$ (\S\ref{sec:phase4limits}).
+
+\paragraph{Refined meshes.} \code{<problem> amr\_mode} selects the refinement criterion:
+\code{jeans} (the default; cells per Jeans length) or \code{window}, enrolled as
+\fn{JeansWaveWindowRefinement}: every MeshBlock whose $x_1$ extent overlaps
+$|x_1 - x_c(t)| < $ \code{win\_hwidth} (periodically) is flagged for refinement and every
+other one for derefinement, with $x_c(t) = $ \code{win\_x0} $+$ \code{win\_speed}$\,t$
+wrapped into the box. A slab of refinement is swept through the wave, so MeshBlocks are
+created and destroyed while it propagates. \file{inputs/tests/magneto\_jeans\_smr.athinput}
+(a static level-1 slab, $x_1\in[0.25, 0.5)$) and \file{magneto\_jeans\_amr.athinput} (the
+moving window) are the refined inputs, and
+\file{validation/run/magneto\_jeans\_amr/magneto\_jeans\_amr.py} runs that suite, adding a
+nested level-2 region or a 3-D central block by patched copies of the input.
+
+\paragraph{A noise seed.} \code{<problem> noise\_amp} $>0$ adds a white-noise velocity
+$\delta v_i = $ \code{noise\_amp}$\,(r - \tfrac12)$ to every cell, $r$ a hash of the cell
+position (identical on any mesh and decomposition). The quasi-one-dimensional runs are
+otherwise exactly one-dimensional to the last bit, so without a seed no transverse
+numerical mode can be measured; the seed was added to isolate the isothermal HLLD
+instability. The 42-case suite (validation document, Phase 4) reproduces
+eq.~(\ref{eq:mjdisp}) to a relative error in $\omega$ of at most $4.8\times10^{-3}$ at 64
+cells per wavelength and converges at second order.
+
+\subsection{Phase 4c: the swing problem generator with a field}
+\label{sec:phase4c}
+
+\file{pgen/tests/swing.cpp} (\S\ref{sec:phase2a}) now runs with an \code{<mhd>} block. The
+field is uniform and azimuthal, $\mathbf B = $ \code{b0}$\,\hat{\mathbf y}$, set on the
+$x_2$ faces, which keeps $\nabla\!\cdot\!B = 0$ exactly, and for an ideal-gas equation of
+state the density wave carries the isentropic pressure perturbation
+$\delta p = \gamma p_0\,\delta\rho/\rho_0$ and the field's energy $B_0^2/2$ (the hydro path
+is unchanged bit for bit: uniform pressure). With $k_z = 0$ and the wave
+$\delta\rho/\rho_0 = \delta\cos(\mathbf k\cdot\mathbf x)$,
+$\delta\mathbf v = \mathbf w\sin(\mathbf k\cdot\mathbf x)$,
+$\delta\mathbf B = \mathbf c\cos(\mathbf k\cdot\mathbf x)$, linearised ideal MHD with
+self-gravity in the shearing sheet gives (Kim \& Ostriker 2001 for the thin-disc analogue)
+\begin{equation}
+\begin{aligned}
+  \delta' &= -(k_x w_x + k_y w_y), &
+  w_x' &= 2\Omega w_y + k_x\Psi\delta - \frac{B_0}{\rho_0}(k_y c_x - k_x c_y),\\
+  w_y' &= -(2-q)\Omega w_x + k_y\Psi\delta, &
+  c_x' &= k_y B_0 w_x, \qquad c_y' = -k_x B_0 w_x - q\Omega c_x,
+\end{aligned}
+\end{equation}
+with $k_x(t) = k_{x0} + q\Omega k_y t$ and $\Psi = c_s^2 + 4\pi G\rho_0/D$, $D$ the discrete
+Laplacian eigenvalue. The magnetic tension acts only on $w_x$ (the $y$ component of
+$(\mathbf B_0\!\cdot\!\nabla)\delta\mathbf B - \nabla(\mathbf B_0\!\cdot\!\delta\mathbf B)$
+vanishes), and $k_x c_x + k_y c_y = 0$ is conserved. The history gains \code{bx\_cos},
+\code{by\_cos} ($c_x$, $c_y$), \code{divb}, \code{babs} and \code{nmb}.
+\file{inputs/tests/swing\_mhd.athinput} sets $B_0 = 0.5$, $\gamma = 5/3$, $p_0 = 0.6$, and
+\file{validation/run/swing\_mhd/} holds the linear integrator (\file{swing\_ode.py}) and the
+runner. Because MHD with orbital advection cannot refine, the refined runs integrate the
+full shear flow (\code{orbital\_advection = false}), for which the problem generator puts
+$v_y = -q\Omega x$ in the initial state. An optional uniform radial field \code{<problem> bx0} is wound up exactly,
+$B_y = $ \code{b0} $- q\Omega\,$\code{bx0}$\,t$ (with \code{amp = 0}), a kinematic check of the
+field's shear term.
+
+\paragraph{Reproducer inputs (2026-10-27).} \file{inputs/tests/swing\_mhd\_repro.athinput} is
+the minimal case of the refined-mesh field error (validation document, Phase 4): a thin 3-D
+box ($64\times64\times4$, $8\times8\times4$ MeshBlocks), $B_0 = 1$, no gravity, no orbital
+advection, a static ring $|x| < \pi/4$; it carries \code{prolong\_primitives} and
+\code{iso\_sound\_speed} keys so that both can be switched from the command line, and
+\file{validation/run/swing\_mhd\_repro/repro.py} runs its variants.
+\file{inputs/tests/linear\_wave\_mhd\_tflow\_smr.athinput} (with
+\file{validation/run/tflow\_smr/tflow\_smr.py}) is the control without a shearing box: a 2-D
+MHD linear wave across a static slab with a uniform flow and field along the slab faces,
+set in the wave frame of \file{pgen/tests/linear\_wave.cpp} so that both point along $x_2$ on
+the grid.
+
+\subsection{Phase 4: what is not there yet}
+\label{sec:phase4limits}
+\begin{itemize}\itemsep2pt
+\item \textbf{MHD with orbital advection on a refined mesh} is still fatal
+      (\file{mhd/mhd.cpp}; limitation~2 of \S\ref{sec:limits}). The gravito-turbulent box
+      with a field can therefore not use AMR until the face-field remap at fine/coarse
+      interfaces is written; problems without a shearing box (the magneto-Jeans wave) can.
+\item \textbf{Seeding a field into a saturated hydro run}: a restart cannot add the
+      \code{<mhd>} fluid; a converter or a restart-time insertion is needed.
+\item \textbf{Ambipolar diffusion} exists in AthenaK only with a constant coefficient,
+      $\eta_A = \code{eta\_ad}\,B^2$ (so $Am \propto 1/\rho$, the wrong trend for collapsing
+      gas), and only explicitly (\code{sts} refuses it).
+\item The Jeans-number refinement criterion of \code{gravito\_turb} ignores magnetic support.
+\item \textbf{MHD shearing boxes on refined meshes without orbital advection} carry a
+      $10$--$20\%$ error in the field perturbation of the magnetized swing test that barely
+      converges with resolution and needs the field, the refinement and the velocity shear
+      together (validation document, Phase 4); gravity and $\nabla\!\cdot\!B$ are fine. The
+      fine/coarse EMF correction (\fn{RecvAndUnpackFluxFC}) is exact; the error is already in
+      the fine block's own interface EMFs, which it builds from ghost cells prolongated from
+      the coarse level. Next: the prolongation of face fields and cell-centred variables
+      (\file{bvals/prolongation.cpp}) in a sheared flow.
+\item \textbf{Conserved-variable prolongation in an adiabatic shear flow.} The ghost-cell
+      total energy carries $\tfrac12\rho v_y^2$, quadratic in $x$; linear prolongation of the
+      conserved variables gives a wrong ghost pressure, and the background shear flow
+      develops a spurious $v_x$ at the interfaces (hydro and MHD, without orbital advection).
+      \code{<mesh\_refinement> prolong\_primitives = true} keeps it exact; it is not on by
+      default.
+\item \textbf{2-D shearing boxes are $x$--$z$ only.} \code{shearing\_box\_r\_phi} is not
+      implemented, and a 2-D $x$--$y$ input runs silently with plain periodic $x_1$
+      boundaries; a guard would make it fatal.
+\item \textbf{AthenaK's isothermal HLLD amplifies grid-scale noise in strong fields.} In a
+      uniform medium at rest ($c_s = 1$, $v_A = 1.5$, $\beta = 0.89$, $128\times8\times8$
+      cells, no gravity) a $10^{-8}$ velocity seed grows at $s \approx 15$ in amplitude,
+      with PLM or PPM4 and CFL $0.3$ or $0.1$; at $\beta = 8$ it does not grow, and the
+      isothermal HLLE and LLF solvers and the adiabatic HLLD ($\gamma = 5/3$,
+      $\beta = 0.53$) are stable. The isothermal branch of \file{mhd/rsolvers/hlld\_mhd.hpp}
+      follows Mignone (2007) on reading; the cause is not found. The production box is
+      adiabatic; isothermal strong-field runs should use HLLE until it is.
+\end{itemize}
 
 %=========================================================================================
 \section{Rank-consistent integer shifts}

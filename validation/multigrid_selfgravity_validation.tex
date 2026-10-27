@@ -14,14 +14,16 @@
 \newcommand{\code}[1]{\texttt{#1}}
 \newcommand{\file}[1]{\texttt{#1}}
 \newcommand{\Om}{\Omega}
+\newcommand{\fn}[1]{\texttt{#1}}
 
 \title{Multigrid Self-Gravity in the AthenaK Shearing Box:\\
        I.\ Mesh-Refinement Infrastructure (Phase 0),\\
        Shear-Periodic Boundary Conditions (Phase 1),\\
        Gravity on Refined Meshes (Phase 2),\\
-       and the Stratified Box with Open-$z$ Boundaries (Phase 3)}
+       the Stratified Box with Open-$z$ Boundaries (Phase 3),\\
+       and Ideal MHD with Self-Gravity (Phase 4)}
 \author{\code{athenak-multigrid} tree, branch \code{multigrid}}
-\date{August 14, 2026 (addendum September 15)}
+\date{August 14, 2026 (addenda September 15, October 26--27)}
 
 \begin{document}
 \maketitle
@@ -95,6 +97,21 @@ printed digit. The companion document
 \code{fft\_selfgravity\_validation.pdf} covers the FFT solver used as the
 machine-precision oracle throughout this program; a Julia notebook
 (\code{multigrid\_validation\_tests.ipynb}) reproduces every test here.
+Phase 4 (\S\ref{sec:phase4}) adds a magnetic field: on the magneto-Jeans wave, ideal MHD
+(constrained transport, HLLD) with multigrid gravity reproduces the dispersion relation of a
+magnetized self-gravitating medium at every field angle and on both branches, to a relative
+error in $\omega$ of at most $4.8\times10^{-3}$ at 64 cells per wavelength, converging at
+second order; a perpendicular field stabilises a hydro-unstable wavelength at the predicted
+Alfv\'en speed, and the perturbed field matches the eigenvector to a median $4\times10^{-4}$.
+On static and adaptive meshes the magneto-Jeans runs lie between the uniform runs at their
+root and finest resolution (one 3-D case $5\%$ above), with $\nabla\!\cdot\!B$ at round-off through thousands of
+MeshBlocks created and destroyed. The suite exposed a strong-field instability of AthenaK's
+\emph{isothermal} HLLD solver (independent of gravity), so the MHD tests are adiabatic.
+Magnetized swing amplification follows linear theory to a few per cent on the uniform
+shearing box; on refined shearing boxes integrated without orbital advection gravity is
+right but the field perturbation carries a $10$--$20\%$ error that needs the field, the
+refinement and the shear flow together; a minimal reproducer shows the fine/coarse EMF
+correction to be exact and places the error in the fine side's interface EMFs.
 \end{abstract}
 
 \tableofcontents
@@ -2099,6 +2116,537 @@ should be.
       $4\%$, $\alpha'$ within $5\%$ of the eq.-21 energy balance --- and the
       half-width twin isolates a clean box-width lesson (quasi-periodic
       box-scale bursts) for future economy runs.
+\end{itemize}
+
+%=======================================================================
+\section{Phase 4: ideal MHD with self-gravity}
+\label{sec:phase4}
+
+Phase 4 adds a magnetic field to the self-gravitating gas. The code pieces (the
+magneto-Jeans mode of \file{pgen/tests/jeans\_wave.cpp}, and the gravito-turbulent box run
+with an \code{<mhd>} block) are described in Phase 4 of the implementation document; this
+section validates them, with two linear problems that have exact answers. The magneto-Jeans
+wave asks whether the MHD integrator (constrained transport, HLLD) coupled to the multigrid
+gravity source terms reproduces the linear theory of a magnetized, self-gravitating medium;
+on a uniform grid it does, for every field angle, both branches, stable and unstable
+wavelengths, and a field strong enough to stabilise a hydro-unstable wave
+(\S\S\ref{sec:mj_test}--\ref{sec:mj_res}), and on statically and adaptively refined meshes it
+does to within the bracket of the uniform runs at the root and the refined resolution
+(\S\ref{sec:mj_amr}). The first pass of that suite found a numerical instability of AthenaK's
+\emph{isothermal} HLLD solver in strong fields (\S\ref{sec:isohlld}); the suites were rerun
+adiabatic. Magnetized swing amplification (\S\ref{sec:swing_mhd}) then puts the field,
+self-gravity and the shear together, on uniform and refined shearing boxes.
+
+\subsection{The magneto-Jeans test}
+\label{sec:mj_test}
+
+A uniform medium of density $\rho_0$, sound speed $c_s$, and field
+$\mathbf B_0$ at angle $\theta$ to the wavevector $\mathbf k$ carries compressive waves
+with the perturbed field along $\hat{\mathbf e}_\perp$ (in the plane of $\mathbf k$ and
+$\mathbf B_0$, perpendicular to $\mathbf k$). Their dispersion relation
+(Chandrasekhar 1961, ch.~XIII) is
+\begin{equation}
+  \bigl(\omega^2 - \Omega_J^2\bigr)\bigl(\omega^2 - k^2 v_A^2\cos^2\theta\bigr)
+  = k^2 v_A^2 \sin^2\theta\,\omega^2,
+  \qquad \Omega_J^2 = k^2 c_s^2 - 4\pi G\rho_0,\quad v_A^2 = B_0^2/\rho_0 ,
+  \label{eq:mjval}
+\end{equation}
+with a slow (smaller $\omega^2$) and a fast root. At $\theta = 0$ the compressive root is the
+hydro Jeans wave, $\omega^2 = \Omega_J^2$, the field playing no part; at $\theta = 90^\circ$ it
+is the magnetosonic Jeans wave, $\omega^2 = k^2(c_s^2 + v_A^2) - 4\pi G\rho_0$, so a
+perpendicular field stabilises a wavelength $\lambda = n\lambda_J$ once
+$v_A > c_s\sqrt{n^2 - 1}$. At oblique angles the slow branch goes unstable at
+$\lambda > \lambda_J$, exactly as in hydro (the field along $\mathbf k$ cannot resist
+compression along it), while the fast branch stays stable.
+
+For an ideal gas $c_s^2 = \gamma p_0/\rho_0$ and the eigenmode is isentropic,
+$\delta p = c_s^2\,\delta\rho$; eq.~(\ref{eq:mjval}) is then the same as for an isothermal
+gas. Units are $c_s = \rho_0 = 1$ and $\lambda = 1$ ($k = 2\pi$); $n = \lambda/\lambda_J$ fixes
+$4\pi G = k^2 n^2$ and \code{b0} $= v_A$. The mode is set up as an exact eigenvector, with
+$\delta\rho = 10^{-4}\rho_0\sin k\xi$ and $\delta B_\perp = C\,\delta\rho$,
+\begin{equation}
+  C = \frac{B_\perp\,\omega^2}{\rho_0\,(\omega^2 - k^2 v_{A\parallel}^2)},
+  \label{eq:mjC}
+\end{equation}
+the field built from a vector potential so that $\nabla\!\cdot\!B = 0$ to round-off: a
+standing wave from rest if $\omega^2 > 0$, pure growth $e^{st}$ (with the matching
+velocities) if $\omega^2 = -s^2 < 0$.
+
+\paragraph{Setup.} \file{inputs/tests/magneto\_jeans.athinput}: $\mathbf k$ along $x_1$ in a
+$1\times\frac18\times\frac18$ periodic box of $64\times8\times8$ cells (64 cells per
+wavelength) in $8^3$ MeshBlocks, so the multigrid hierarchy spans eight blocks along the
+wave; adiabatic MHD ($\gamma = 5/3$, $p_0 = 0.6$, so $c_s = 1$), HLLD, PPM4, RK3, CFL
+$0.3$. (The first pass was isothermal; \S\ref{sec:isohlld} explains the change. The
+isothermal and adiabatic results agree to two or three digits wherever the isothermal run
+was not corrupted.) The gravity solve uses full multigrid and
+then a fixed eight V-cycles (\code{threshold} $= -1$): a fixed defect tolerance failed at
+$128$ cells and in 3-D, because the round-off floor of the defect grows with the cell count
+and with $4\pi G$, and no single absolute value fits the whole suite; eight cycles reach
+the floor everywhere. Three runs instead put $\mathbf k$ along the diagonal of a
+$1\times\frac12\times\frac12$ box ($64\times32\times32$ cells, $\mathbf k = 2\pi(1,2,2)$,
+$\lambda = 1/3$, i.e.\ about $21$ grid spacings per wavelength), which exercises
+multi-dimensional constrained transport and a fully 3-D gravity solve.
+
+\paragraph{Measurement.} The user history projects the density onto the mode,
+$a(t) = (2/V)\int\delta\rho\,\sin k\xi\,dV$, and $\delta B_\perp$ likewise. A growing mode is
+fitted with a straight line in $\ln|a|$ over the last $90\%$ of three e-folds; a stable one with
+$a/a_0 = \cos(\omega t)\,e^{-\gamma t}$ over two periods. One case needs more care. A
+stable \emph{fast} mode at a wavelength where the \emph{slow} branch is unstable
+($\theta = 30, 60^\circ$, $n > 1$) is not alone: the discretisation error of the initial
+state projects onto the slow eigenvector at the $10^{-4}$ level, and that component grows as
+$e^{st}$ until it swamps the oscillation. These runs are fitted with
+$a/a_0 = A\cos\omega t + B e^{st} + C' e^{-st}$, $\omega$ and $s$ both free, and stopped
+after six slow e-folds. The eigenvector check is the median of $\delta B_\perp/\delta\rho$
+over the run (over the first quarter period in the mixed case) against eq.~(\ref{eq:mjC}).
+\file{validation/run/magneto\_jeans/magneto\_jeans.py} runs the 42 cases and writes the fits;
+\file{validation/figures/plot\_magneto\_jeans.jl} makes Fig.~\ref{fig:mj}. The suite takes
+23 minutes on one laptop core.
+
+\subsection{Uniform-grid results}
+\label{sec:mj_res}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/magneto_jeans.png}
+\caption{The magneto-Jeans test. (a) Measured $\omega^2$ (points) against
+eq.~(\ref{eq:mjval}) (lines) at $v_A = c_s$ and 64 cells per wavelength, for
+$\theta = 0, 30, 60, 90^\circ$ (dashed: slow branch); open diamonds are the 3-D runs along
+the box diagonal, each at its own $k$ and $\lambda/\lambda_J$, on the thin
+$\theta = 45^\circ$ curves or the $90^\circ$ one. (b) $\theta = 90^\circ$,
+$\lambda/\lambda_J = 1.5$: the field stabilises the hydro-unstable wave above
+$v_A = c_s\sqrt{n^2-1} = 1.12\,c_s$. (c) Relative error in $\omega$ against resolution at
+$\theta = 60^\circ$ for a growing slow mode and an oscillating fast one. (d) Measured
+$\delta B_\perp/\delta\rho$ against the eigenvector $C$ for every case with a field
+perturbation.}
+\label{fig:mj}
+\end{figure}
+
+\paragraph{Dispersion relation.} Over the 30 quasi-one-dimensional cases at $v_A = c_s$
+(Fig.~\ref{fig:mj}a) the relative error in $\omega$ (or $s$) lies between
+$9\times10^{-5}$ and $4.8\times10^{-3}$, median $6.6\times10^{-4}$; the 19 stable cases
+stay below $1.8\times10^{-3}$. The largest errors sit near marginal stability, where
+$|\omega|$ is small: at $\theta = 90^\circ$, $n = 1.5$, $\omega^2 = -9.87$ is measured as
+$-9.78$. The absolute error there, $|\Delta\omega^2| = 0.09$, is like that of the other
+cases ($\theta = 0$, $n = 1.5$: $0.07$), so the method is not worse there; the quantity is
+smaller. The slow and fast branches are both reproduced at $\theta = 30$ and $60^\circ$,
+including the slow branch's sign change at $\lambda = \lambda_J$, which the field does not
+move. The three oblique 3-D runs give $2.1\times10^{-3}$ (slow, $\theta = 45^\circ$,
+$n = 2$), $1.5\times10^{-3}$ (fast, $\theta = 45^\circ$, $n = 0.8$), and $1.4\times10^{-2}$
+($\theta = 90^\circ$, $n = 1.5$). The last is the near-marginal case again, now at about 21
+grid spacings per wavelength: its absolute error, $|\Delta\omega^2|/k^2 = 6.7\times10^{-3}$, is
+$2.8$ times the 1-D run's ($2.4\times10^{-3}$) at a third of the resolution. (The run length
+of the 3-D cases is set from their own $k = 6\pi$; a first pass that used $k = 2\pi$ ran the
+growing cases nine e-folds, to $\delta\rho/\rho \sim 1$, and its fits are discarded.)
+
+\paragraph{Magnetic support.} At $\theta = 90^\circ$ and $\lambda/\lambda_J = 1.5$
+(Fig.~\ref{fig:mj}b) the hydro wave is unstable. With $v_A/c_s = 0.5, 1.0$ the measured
+$\omega^2 = -39.40, -9.78$ (theory $-39.48, -9.87$); with $v_A/c_s = 1.5, 2.0$ the wave
+oscillates, $\omega^2 = 39.61, 108.76$ ($39.48, 108.57$). The threshold falls between, at
+$v_A = 1.12\,c_s$, as predicted: magnetic pressure enters the Jeans criterion with the
+coupling between the field, the gas and the multigrid potential right.
+
+\paragraph{Convergence.} At $\theta = 60^\circ$ (Fig.~\ref{fig:mj}c) the error falls from
+$1.9\times10^{-2}$ at 16 cells per wavelength to $1.6\times10^{-4}$ at 128 for the growing
+slow mode ($n = 2$; local orders $2.6, 2.3, 2.0$), and from $1.3\times10^{-2}$ to
+$7.2\times10^{-5}$ for the oscillating fast mode ($n = 0.5$; orders $2.2, 2.6, 2.7$): second
+order or better, as expected from PPM4 reconstruction with the second-order multigrid
+Laplacian. The damping rate fitted to the standing waves converges with it,
+$\gamma = 7.8\times10^{-2}$, $7.4\times10^{-3}$, $8.0\times10^{-4}$, $1.0\times10^{-4}$ at
+16--128 cells for the fast mode ($\gamma/\omega \approx 10^{-4}$ at 64 cells); at 64 cells per
+wavelength no stable case exceeds $\gamma = 1.9\times10^{-3}$ (the 3-D diagonal fast wave, at
+about 21 spacings per wavelength, gives $8.7\times10^{-3}$, $\gamma/\omega = 4\times10^{-4}$).
+
+\paragraph{Eigenvector.} The measured $\delta B_\perp/\delta\rho$ matches $C$ of
+eq.~(\ref{eq:mjC}) in every case (Fig.~\ref{fig:mj}d): across the 37 cases with
+$|C| > 0.05$ the relative difference has median $4\times10^{-4}$ and maximum
+$4.9\times10^{-3}$ (the 16-cell run). This checks the field and the gas moving together,
+which a frequency alone does not: $C$ changes sign between the branches ($C < 0$ on stable
+slow modes, $C > 0$ on fast and on growing slow modes) and reaches $7.6$ for the fast mode
+at $\theta = 30^\circ$, $n = 2$, where nearly all the restoring force is magnetic.
+
+\paragraph{The seeded slow mode.} In the six mixed fits the free slow growth rate
+reproduces theory to $4\%$ or better ($s = 3.61, 6.55, 10.60$ against $3.77, 6.59, 10.52$ at
+$\theta = 30^\circ$; $2.39, 5.24, 9.44$ against $2.47, 5.25, 9.58$ at $60^\circ$), with a
+seed amplitude of $0.7$--$4\times10^{-4}$ of the fast mode's: the contamination is the
+expected slow eigenmode, excited by truncation error, not a defect of the coupling.
+
+\subsection{An instability of the isothermal HLLD solver}
+\label{sec:isohlld}
+
+The first pass of the refined-mesh suite (\S\ref{sec:mj_amr}) was isothermal, like the
+uniform one, and one mode failed: the magnetically supported wave at $\theta = 90^\circ$,
+$\lambda/\lambda_J = 1.5$, $v_A = 1.5\,c_s$ ($\beta = 2c_s^2/v_A^2 = 0.89$) gave
+$\omega^2 = 23$--$25$ against $39.48$ on the uniform 128-cell run and on both static
+refinements, while uniform 64 and the moving refinements were right. The failure was not
+the refinement. The standing wave followed theory until $t \approx 1.1$; then grid-scale
+structure with $k_y, k_z \neq 0$ (Fourier peaks at $k_x$ of 30--100 out of 128) grew out of
+round-off at $s \approx 17$, faster than any physical rate in the problem
+($\sqrt{4\pi G\rho_0} = 9.4$), and swamped it.
+
+Seeding a uniform medium at rest with $10^{-8}$ white-noise velocity (\code{noise\_amp}; the
+quasi-one-dimensional runs are otherwise one-dimensional to the last bit) isolates it
+($128\times8\times8$ cells, $c_s = 1$, $\mathbf B = 1.5\,\hat{\mathbf y}$ unless noted; growth
+rate of the transverse kinetic-energy amplitude between $t = 1$ and $1.5$):
+\begin{center}
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+Configuration & $s$ \\
+\midrule
+isothermal HLLD, PPM4, no gravity & 14.8 \\
+\quad the same with multigrid gravity / FFT gravity & 15.4 / 15.5 \\
+\quad PLM reconstruction & 14.7 \\
+\quad CFL $0.1$ & 15.5 \\
+\quad field along $x_1$ ($\theta = 0$) & 12.7 \\
+\quad $v_A = 0.5$ ($\beta = 8$) & stable \\
+isothermal HLLE / LLF & stable / stable \\
+adiabatic HLLD ($\gamma = 5/3$, $p_0 = 0.6$, $\beta = 0.53$) & stable \\
+\bottomrule
+\end{tabular}
+\end{center}
+So the instability belongs to the isothermal HLLD solver in a strong field, independent of
+the reconstruction, the time step and self-gravity; gravity seemed involved at first only
+because, without the seed, multigrid round-off is what breaks the one-dimensional symmetry.
+It grows faster at finer resolution ($s \approx 7$ at 64 cells, from the multigrid seed),
+which is why the 64-cell runs of \S\ref{sec:mj_res} escaped it within their two periods, and
+it did not show on the moving refinements, presumably because repeated restriction and
+prolongation damp grid-scale noise. The isothermal branch of
+\file{mhd/rsolvers/hlld\_mhd.hpp} follows Mignone (2007) as written in Athena++ on reading;
+the cause is not yet found. Both magneto-Jeans suites were rerun adiabatic, which is also
+the equation of state of the production box; isothermal strong-field runs should use HLLE
+until the solver is fixed.
+
+\subsection{The magneto-Jeans wave on refined meshes}
+\label{sec:mj_amr}
+
+\paragraph{Setup.} The eigenmodes of \S\ref{sec:mj_test} on six meshes, all with a
+64-cell root: uniform at 64 and 128 cells per wavelength (the bracket); a static level-1
+slab, $x_1\in[0.25, 0.5)$, two root blocks wide (\file{inputs/tests/magneto\_jeans\_smr.athinput});
+the same with a level-2 slab $x_1\in[0.3125, 0.4375)$ inside it; and a slab of the same
+width at level 1 or level 2 that moves through the box twice per run
+(\code{amr\_mode = window}, \file{magneto\_jeans\_amr.athinput}; at level 2 the 2:1 rule adds
+a level-1 rim). The wave crosses two (or four) fine/coarse interfaces normal to
+$\mathbf k$. Four quasi-one-dimensional modes are run: the growing slow mode at
+$\theta = 60^\circ$, $n = 2$; the oscillating fast mode at $\theta = 60^\circ$, $n = 0.5$; the
+magnetically supported mode at $\theta = 90^\circ$, $n = 1.5$, $v_A = 1.5$; and the
+field-carried fast mode at $\theta = 30^\circ$, $n = 2$ ($C = 7.6$, slow branch unstable).
+The 3-D diagonal waves (slow $n = 2$ and fast $n = 0.8$ at $\theta = 45^\circ$) are run on
+the uniform 64 mesh, a static level-1 central block ($x_1\in[0.25, 0.75)$,
+$x_{2,3}\in[0.125, 0.375)$; interfaces oblique to $\mathbf k$ on all six faces) and the
+moving slab. \file{validation/run/magneto\_jeans\_amr/magneto\_jeans\_amr.py} runs the 30
+cases (25 minutes, five at a time) with the fits of \S\ref{sec:mj_test}.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Relative error in $\omega$ & uniform 64 & uniform 128 & static L1 & static L2 & moving L1 & moving L2 \\
+\midrule
+$\theta = 60^\circ$ slow, $n = 2$   & $6.5\times10^{-4}$ & $1.6\times10^{-4}$ & $5.2\times10^{-4}$ & $5.0\times10^{-4}$ & $4.6\times10^{-4}$ & $3.8\times10^{-4}$ \\
+$\theta = 60^\circ$ fast, $n = 0.5$ & $4.6\times10^{-4}$ & $7.2\times10^{-5}$ & $3.6\times10^{-4}$ & $3.7\times10^{-4}$ & $3.0\times10^{-4}$ & $1.6\times10^{-4}$ \\
+$\theta = 90^\circ$, $v_A = 1.5$    & $1.7\times10^{-3}$ & $3.6\times10^{-4}$ & $1.4\times10^{-3}$ & $1.3\times10^{-3}$ & $1.2\times10^{-3}$ & $8.6\times10^{-4}$ \\
+$\theta = 30^\circ$ fast, $n = 2$   & $5.8\times10^{-4}$ & $7.7\times10^{-5}$ & $4.5\times10^{-4}$ & $4.5\times10^{-4}$ & $4.0\times10^{-4}$ & $3.1\times10^{-4}$ \\
+3-D $\theta = 45^\circ$ slow        & $2.1\times10^{-3}$ & --- & $2.2\times10^{-3}$ & --- & $2.0\times10^{-3}$ & --- \\
+3-D $\theta = 45^\circ$ fast        & $1.5\times10^{-3}$ & --- & $1.4\times10^{-3}$ & --- & $1.2\times10^{-3}$ & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/magneto_jeans_amr.png}
+\caption{The magneto-Jeans test on refined meshes (root 64 cells per wavelength; colours and
+symbols as in the legend of panel a). (a) Relative error in the frequency or growth rate per
+mode and mesh. (b) The spurious $\cos k\xi$ density component, zero by symmetry on a uniform
+1-D grid: reflection and phase error at the level interfaces. (c) The largest relative
+divergence of $\mathbf B$ over each run. (d) Measured minus theoretical density amplitude
+of the oscillating fast mode on each mesh (solid), and the MeshBlock count of the moving
+runs (dotted, right axis).}
+\label{fig:mjamr}
+\end{figure}
+
+\paragraph{Results.} Every refined run lies inside the bracket of the uniform runs at its
+root and finest resolutions, apart from the 3-D slow mode on the central block, which is
+$5\%$ above uniform 64 (Fig.~\ref{fig:mjamr}a). The static slabs cover a quarter of the
+wavelength and cut the error by $20$--$25\%$; the moving slab, which sweeps the whole wave,
+cuts it most. The level interfaces show up where they must, in the
+$\cos k\xi$ density that a uniform grid keeps at round-off (Fig.~\ref{fig:mjamr}b): $6\times
+10^{-5}$ to $1.3\times10^{-3}$ of the mode on the refined meshes. The one large value,
+$1$--$7\times10^{-2}$ for the $\theta = 30^\circ$ mode, is physical: the refined initial state
+projects on the unstable slow branch at about $2\times10^{-4}$ of the amplitude, and that
+$\cos k\xi$ component then grows at $s = 10.25$ against the slow rate $10.52$. (The 3-D fast wave's $3.5\times10^{-3}$
+on the uniform mesh is also physical: the $1\times\frac12\times\frac12$ box holds longer,
+Jeans-unstable modes, $\lambda = 1 > \lambda_J = 0.42$, which grow from round-off and couple
+to the projection nonlinearly.) The divergence of $\mathbf B$ stays at round-off,
+$\le 6\times10^{-15}$, through 1148 MeshBlocks created and 1008 destroyed in the 1-D level-2
+runs and 2016/1792 in the 3-D moving runs (Fig.~\ref{fig:mjamr}c): the face-field
+prolongation and restriction keep $\nabla\!\cdot\!B = 0$ on adaptive meshes. The eigenvector
+$\delta B_\perp/\delta\rho$ matches $C$ to a median $1.5\times10^{-4}$ (maximum
+$3.4\times10^{-3}$). The phase error of the standing wave (Fig.~\ref{fig:mjamr}d) is ordered
+as the resolution: uniform 64 largest, uniform 128 smallest, the refined runs between.
+
+\subsection{Magnetized swing amplification}
+\label{sec:swing_mhd}
+
+\paragraph{The test.} The swing test of \S\ref{sec:phase2a} --- a leading shearing wave,
+$k_{x0} = -6$, $k_y = 1$, $k_z = 0$, in a $2\pi\times2\pi\times\pi/4$ box with
+$\kappa = k_y = 1$ and $4\pi G\rho_0 = 1.9$, swinging through $k_x = 0$ at $t = 4$ --- threaded
+by a uniform azimuthal field $B_0\hat{\mathbf y}$ (the geometry of Kim \& Ostriker 2001), the
+gas adiabatic with $c_s = 1$. The linear system (implementation document, Phase 4c) couples
+the wave to the field through magnetic tension in $w_x$ and the shear of $\delta B_x$ into
+$\delta B_y$; \file{validation/run/swing\_mhd/swing\_ode.py} integrates it with the 7-point
+Laplacian eigenvalue at each run's root resolution. Its $B_0 = 0$ limit gives the hydro peak
+$3.609$ at $t = 7.81$ of \S\ref{sec:phase2a} (documented there as $3.605$). With $B_0 = 0.5$
+($\beta = 4.8$) and $1.0$ ($\beta = 1.2$) the trajectory changes completely
+(Fig.~\ref{fig:swingmhd}a): the field-carried oscillation replaces the single swing peak, and
+the azimuthal field perturbation reaches $c_y \approx 2$--$4$ times the initial density
+amplitude (panel b). \file{inputs/tests/swing\_mhd.athinput}: $128^2\times16$ cells in $16^3$
+MeshBlocks, HLLD, PLM, RK2, CFL $0.3$, multigrid with full multigrid and ten V-cycles,
+$A = 10^{-4}$, $t \le 10$. MHD with orbital advection cannot refine, so the refined runs, and
+their uniform twins, integrate the full shear flow (\code{orbital\_advection = false}). The
+refined meshes are a static level-1 ring over the central two of eight block columns
+($|x| < \pi/4$) and the moving level-1 ring of \S\ref{sec:phase2c} (centre $(\pi/4)\sin t$,
+half-width $\pi/16$; 448 MeshBlocks created and 392 destroyed). (The six-column ring of the
+hydro test puts refined cells where the shear flow is $3.5\,c_s$; without orbital advection
+that costs about five hours per run on a laptop.) The deviations quoted are
+$\max|\text{measured} - \text{reference}|/\max|\text{reference}|$ over the swing ($t \le 6$,
+$|k_x| \le 3$) and to $t = 8$; later, the wave is wound to $|k_x| \approx 9$, 14 cells per
+wavelength, and amplitude damping dominates every run (23--30\% to $t = 10$ at $128^2$, 7\% at
+$256^2$). \file{validation/run/swing\_mhd/swing\_mhd.py} runs the 19 cases and
+\file{validation/figures/plot\_swing\_mhd.jl} makes Fig.~\ref{fig:swingmhd}.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/swing_mhd.png}
+\caption{Magnetized swing amplification. (a) Density amplitude $\delta/A$ on the uniform
+$128^2$ mesh with orbital advection (points) against linear theory (lines), for
+$B_0 = 0, 0.5, 1.0$ and for $B_0 = 0.5$ without self-gravity; dotted: the swing at $t = 4$.
+(b) The azimuthal field perturbation $c_y/A$ for $B_0 = 0.5$ and $1.0$, and $B_0 = 0.5$ at
+$256^2$ (dashed theory). (c) $B_0 = 1.0$ without orbital advection: $c_y/A$ on the uniform
+mesh, the static ring and the moving ring; the shaded interval is the swing, where the refined
+runs fall short of theory and of the uniform run. (d) The relative divergence of $\mathbf B$
+and (dotted, right axis) the MeshBlock count of the moving-ring runs.}
+\label{fig:swingmhd}
+\end{figure}
+
+\paragraph{Uniform grid.} Deviation from linear theory:
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Case (uniform) & $\delta$, $t \le 6$ & $c_y$, $t \le 6$ & $\delta$, $t \le 8$ \\
+\midrule
+$B_0 = 0$, orbital advection            & 0.020 & --- & 0.024 \\
+$B_0 = 0.5$, orbital advection          & 0.093 & 0.049 & 0.122 \\
+\quad the same at $256^2$               & 0.031 & 0.016 & 0.041 \\
+\quad the same without self-gravity     & 0.016 & 0.012 & 0.048 \\
+$B_0 = 1.0$, orbital advection          & 0.041 & 0.040 & 0.079 \\
+$B_0 = 0.5$, full shear flow            & 0.060 & 0.029 & 0.079 \\
+$B_0 = 1.0$, full shear flow            & 0.030 & 0.030 & 0.078 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Ideal MHD with multigrid self-gravity in the shearing box follows linear theory through the
+swing to a few per cent, and the error converges: the largest one, $9.3\%$ in $\delta$ for
+$B_0 = 0.5$ with gravity (where the trajectory has a long, nearly cancelling plateau before
+the swing), falls to $3.1\%$ at $256^2$. The two frames agree with each other (orbital
+advection against the full shear flow, $B_0 = 0.5$: $3.5\%$ in $\delta$, $2.4\%$ in $c_y$ to
+$t = 6$), and $\nabla\!\cdot\!B$ stays at round-off, $\le 9\times10^{-15}$, in every run
+(panel d).
+
+\paragraph{Refined meshes.} Deviation of each refined run from its uniform twin (same field,
+same gravity, full shear flow) to $t = 6$:
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{static ring} & \multicolumn{2}{c}{moving ring} \\
+Case & $\delta$ & $c_y$ & $\delta$ & $c_y$ \\
+\midrule
+$B_0 = 0$                                  & 0.018 & ---   & 0.030 & ---   \\
+$B_0 = 0.5$                                & 0.025 & 0.071 & 0.019 & 0.087 \\
+$B_0 = 1.0$                                & 0.039 & 0.133 & 0.040 & 0.150 \\
+$B_0 = 1.0$, no self-gravity               & 0.043 & 0.163 & 0.033 & 0.173 \\
+$B_0 = 1.0$, no self-gravity, 64-cell root & 0.057 & 0.224 & ---   & ---   \\
+\bottomrule
+\end{tabular}
+\end{center}
+Without a field the refined runs match their twins as in the hydro tests ($1.8\%$ and
+$3.0\%$), so gravity on the refined, sheared mesh is right with the MHD integrator too. With
+a field they do not: the field perturbation of the refined runs is off by $7$--$9\%$ at
+$B_0 = 0.5$ and $13$--$17\%$ at $B_0 = 1.0$, against $3\%$ for the uniform twins against
+theory, and the density follows at a few per cent (panel c: the refined runs undershoot the
+swing's $c_y$ minimum, $-1.7$ against $-2.0$). Three controls locate it.
+\begin{itemize}\itemsep2pt
+\item \emph{Not gravity}: without self-gravity the deviation is the same ($16$--$17\%$).
+\item \emph{Barely convergent}: from a 64-cell to a 128-cell root the static ring's field
+      deviation falls only from $22\%$ to $16\%$, while the uniform twin's own error falls
+      from $7.3\%$ to $1.7\%$; a truncation error at the level interfaces would fall at
+      least twofold.
+\item \emph{The shear flow}: with $q = 0$ (rotation, no shear flow; $B_0 = 1.0$, no gravity,
+      to $t = 8$) the static ring is \emph{closer} to theory than the uniform mesh, $19\%$
+      against $25\%$ in $c_y$ (both dominated by phase error over eleven periods at 21 cells
+      per wavelength), as refinement should be.
+\end{itemize}
+So the error needs a field, mesh refinement and the background shear flow carried across the
+level interfaces (here $|v_y| \le 1.2$ at the ring edge); the divergence of $\mathbf B$ stays
+at round-off throughout, so it is not a loss of the constrained-transport constraint. It does
+not affect the production configuration, which uses orbital advection and, with MHD, cannot
+refine at all yet; but MHD shearing-box runs on refined meshes without orbital advection are
+\emph{not} validated. \S\ref{sec:swing_repro} narrows it down.
+
+\subsection{Narrowing the refined-mesh field error}
+\label{sec:swing_repro}
+
+\paragraph{A minimal reproducer.} \file{inputs/tests/swing\_mhd\_repro.athinput} keeps only
+what the error needs: a thin 3-D shearing box ($64\times64\times4$ cells, $8\times8\times4$
+MeshBlocks), ideal MHD, $B_0 = 1$ along $y$, the leading shearing wave, no self-gravity, no
+orbital advection, and the static level-1 ring $|x| < \pi/4$. Run as a pair --- as is, and
+with \code{mesh\_refinement/refinement = none} --- it takes about three minutes on one core,
+and the ring's $c_y$ is $22.6\%$ off linear theory over $t \le 6$ against $7.5\%$ for the
+uniform run, the error of the full-size runs at the same root resolution.
+\file{validation/run/swing\_mhd\_repro/repro.py} runs variants of the pair:
+\begin{center}
+\small
+\begin{tabular}{@{}lccl@{}}
+\toprule
+Variant & \multicolumn{2}{c}{$c_y$ against theory} & \\
+ & uniform & ring & \\
+\midrule
+HLLD, PLM, RK2 (base)                   & 0.075 & 0.226 & the defect \\
+$B_0 = 0.5$                             & 0.041 & 0.142 & scales with $B_0$ \\
+PPM4                                    & 0.039 & 0.222 & not the reconstruction \\
+HLLE / LLF                              & 0.27 / 0.27 & 0.36 / 0.34 & not the Riemann solver \\
+RK3; CFL 0.1                            & \multicolumn{2}{c}{ring vs uniform 0.22, 0.22} & not the integrator \\
+$\Omega = 0.01$, $q = 150$ (pure shear) & 0.10 & 0.18 & rotation not needed \\
+wave amplitude $10^{-5}$, $10^{-3}$     & \multicolumn{2}{c}{ring vs uniform 0.215, 0.224} & linear in the wave \\
+primitive prolongation                  & 0.075 & 0.216 & not the energy prolongation \\
+\bottomrule
+\end{tabular}
+\end{center}
+The error is linear in the wave (the same fraction at amplitudes $10^{-5}$ to $10^{-3}$, and
+round-off at zero amplitude), independent of the solver, the reconstruction, the
+integrator and the rotation, and needs the field and the velocity \emph{shear}. Two simpler
+candidates do not reproduce it:
+\begin{itemize}\itemsep2pt
+\item \emph{A uniform flow along the interface.} A 2-D MHD linear wave (slow, Alfv\'en, fast)
+      crossing a level-1 slab with the flow ($V = 0, 1, 2$) and the field along the slab faces,
+      or the flow across them, without a shearing box (input
+      \file{linear\_wave\_mhd\_tflow\_smr.athinput}, runner in
+      \file{validation/run/tflow\_smr/}): the slab's error is $0.8\times$ the uniform-64 one in
+      every case, as it should be.
+\item \emph{Winding of a uniform radial field.} With no wave and $B_x = 0.1$
+      (\code{<problem> bx0}), $B_y = 1 - q\Omega B_x t$ exactly. The uniform mesh keeps it to the
+      last digit; the ring has an interface error of $4.3\times10^{-4}$, $1.1\times10^{-4}$,
+      $2.6\times10^{-5}$ at 64-, 128- and 256-cell roots: an ordinary second-order error.
+\end{itemize}
+
+\paragraph{The edge EMFs at the interface.} A temporary dump (not committed) wrote the $E_z$
+edge EMFs on every MeshBlock $x_1$ face, before and after the fine/coarse correction of
+\file{bvals/flux\_correct\_fc.cpp}, for the ring, uniform 64 and uniform 128 runs; the wave
+part is the difference from a zero-amplitude run, compared with the linear-theory EMF
+$E_z = -q\Omega x\,A c_x\cos\psi - A w_x B_0\sin\psi$.
+\begin{itemize}\itemsep2pt
+\item \emph{The correction is right.} After it, every coarse edge on the interface equals the
+      mean of its two fine edges to $10^{-20}$, and the fine EMFs are unchanged.
+\item \emph{The fine side's own interface EMFs are not.} At $t = 0.5$ they are $14\%$ off theory,
+      against $5.7\%$ for uniform 64 at the same face and about $1\%$ for uniform 128; the
+      correction then imposes them on the coarse side, and by $t = 5$ the error fills the box
+      ($12$--$15\%$ outside the ring). The fine block builds these EMFs from ghost cells
+      prolongated from the coarse level, so the prolongation of the face fields and
+      cell-centred variables in a sheared flow (\file{bvals/prolongation.cpp}) is the next
+      suspect; not yet examined.
+\end{itemize}
+
+\paragraph{A second defect: the background shear flow.} With no wave, the fine cells next to
+the interface develop a spurious radial velocity, $|v_x| = 2.8\times10^{-4}$ by $t = 0.03$,
+growing by about $7\times10^{-5}$ per step --- also in pure hydro. The ghost-cell total energy
+carries the shear flow's kinetic energy $\tfrac12\rho v_y^2$, quadratic in $x$ and large here
+(up to 11 against a thermal energy of 0.9), and linear prolongation of the \emph{conserved}
+variables recovers the wrong ghost pressure. Prolongating primitives
+(\code{<mesh\_refinement> prolong\_primitives = true}) or an isothermal gas keeps the
+background exact ($|v_x| \sim 10^{-16}$). This error does not project on the wave and does not
+explain the field error (primitive prolongation leaves it unchanged), but adiabatic shearing
+boxes refined without orbital advection should prolongate primitives.
+
+\paragraph{A caveat.} AthenaK's 2-D shearing box is the $x$--$z$ one only
+(\code{shearing\_box\_r\_phi} is ``not yet implemented''); a 2-D $x$--$y$ input runs without
+complaint with plain periodic $x_1$ boundaries, which without orbital advection leaves a
+velocity jump of $q\Omega L_x$ at the boundary. All the tests here are 3-D.
+
+
+\subsection{The gravito-turbulent box with a field: consistency checks}
+
+The SC14 box with an \code{<mhd>} block is not a test with an analytic answer; these checks
+establish only that the MHD path reproduces the hydro one where it must and keeps the field
+solenoidal.
+\begin{itemize}\itemsep2pt
+\item With $B = 0$ (\code{b\_config = none}) the MHD build reproduces the hydro run.
+\item A uniform vertical field at $\beta_p = 10$ with no Alfv\'en ceiling, laminar from the
+      SC14 initial state on the $16H$-wide box at 4 cells per $H$, tracks the hydro run
+      (mass to $0.08\%$, internal energy to $1\%$). This is the test of the
+      \code{hse\_outflow} boundary with a field: without excluding $B^2/2$ from the edge
+      temperature the halo heats by $B^2/2\rho \sim 10^3$.
+\item The Alfv\'en ceiling $v_{A,\max} = 20$ is too aggressive at $\beta_p = 10$: its density
+      floor $B^2/v_{A,\max}^2$ exceeds the halo density, and the run gained $\sim0.8$ box masses
+      through the floor by $t = 10/\Omega$ (most of it leaving through $z$). At the planned
+      $\beta_p = 10^3$ the floor, $1.4\times10^{-5}$, starts below \code{dfloor}
+      $= 10^{-4}$ and is inactive.
+\item Under constrained transport the history column \code{divb}/\code{babs}, the mean of
+      $|\nabla\!\cdot\!B|\,\Delta x/|B|$, stays at $\sim8\times10^{-16}$.
+\item On 512 NAS ranks the MHD step costs $1.12\times$ the hydro one at $\beta_p = 10^3$,
+      and adding constant-coefficient ambipolar diffusion ($\eta_A = B^2$) $1.13\times$.
+\end{itemize}
+
+\subsection{Not yet validated}
+\begin{itemize}\itemsep2pt
+\item \textbf{MHD shearing boxes on refined meshes.} Without orbital advection the field
+      perturbation carries a $10$--$20\%$, barely convergent error that needs a field,
+      refinement and the shear flow together (\S\ref{sec:swing_mhd}). It enters through the
+      fine block's interface EMFs, built from prolongated ghost cells; the EMF correction is
+      right (\S\ref{sec:swing_repro}). With orbital advection
+      MHD cannot refine until the face-field remap at fine/coarse interfaces exists
+      (implementation document, Phase 4). The clump-following AMR of the gravito-turbulent
+      box with a field depends on both.
+\item \textbf{The isothermal HLLD solver} at $\beta \lesssim 1$ (\S\ref{sec:isohlld}).
+\item \textbf{Conserved-variable prolongation in an adiabatic shear flow} does not keep the
+      background equilibrium (\S\ref{sec:swing_repro}); \code{prolong\_primitives = true}
+      does.
+\item \textbf{Ambipolar diffusion} with a density-dependent coefficient and
+      super-time-stepping, which do not yet exist.
+\end{itemize}
+
+\subsection{Summary}
+\begin{itemize}\itemsep2pt
+\item Ideal MHD with multigrid self-gravity reproduces the magneto-Jeans dispersion relation
+      on a uniform grid at every angle, on both branches, stable and unstable: relative
+      error in $\omega$ $\le 4.8\times10^{-3}$ (median $6.6\times10^{-4}$) at 64 cells per
+      wavelength; $1.5$--$2\times10^{-3}$ for 3-D waves along the box diagonal at about 21
+      spacings per wavelength ($1.4\times10^{-2}$ for the near-marginal one). The error
+      converges at second order or better; a perpendicular field stabilises a
+      hydro-unstable wavelength at the predicted $v_A = c_s\sqrt{n^2-1}$; and the perturbed
+      field matches the eigenvector to a median $4\times10^{-4}$.
+\item On static and adaptive meshes (one and two levels, slabs normal to $\mathbf k$ and a
+      3-D block oblique to it) every magneto-Jeans run lies inside the bracket of the
+      uniform runs at its root and finest resolution (the 3-D slow wave on a central block
+      $5\%$ above it), the interfaces reflect
+      $\lesssim 10^{-3}$ of the mode, and $\nabla\!\cdot\!B$ stays at round-off through
+      thousands of MeshBlocks created and destroyed.
+\item AthenaK's isothermal HLLD solver amplifies grid-scale noise at $\beta \lesssim 1$
+      (no gravity needed; adiabatic HLLD, HLLE and LLF are stable); the MHD tests are
+      therefore adiabatic, like the production box.
+\item Magnetized swing amplification on the uniform shearing box follows linear theory
+      through the swing to a few per cent, converging with resolution, with or without
+      orbital advection. On refined shearing boxes (without orbital advection) gravity is
+      right ($B_0 = 0$ twins within $2$--$3\%$), but the field perturbation is not
+      ($7$--$17\%$, barely convergent, caused by the field, the refinement and the shear
+      flow together): an open problem for refined MHD shearing boxes. A three-minute
+      reproducer isolates it; the fine/coarse EMF correction is verified, and the error
+      enters through the fine side's interface EMFs. Conserved-variable prolongation also
+      breaks the adiabatic background shear flow at the interfaces; primitive prolongation
+      fixes that.
+\item The gravito-turbulent box runs with a field, its vertical boundary is correct with
+      MHD, and the field stays solenoidal to round-off.
 \end{itemize}
 
 \end{document}
