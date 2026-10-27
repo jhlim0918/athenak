@@ -137,13 +137,14 @@ void DustGasDrag::ApplyCoupledOperatorImpl(DvceArray5D<Real> &field,
   auto &mbsize = pmy_pack->pmb->mb_size;
   auto gids = pmy_pack->gids;
   int scheme = static_cast<int>(deposit);
+  int npw = PMWidth(scheme);   // stencil width: 3 (ngp/cic/tsc) or 4 (pcs)
   auto &field_ = field;
   auto &result_ = result;
 
   par_for("dust_applya_gtsg",DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m = pi(PGID,p) - gids;
     int ip, jp, kp;
-    Real wx[3], wy[3], wz[3];
+    Real wx[4], wy[4], wz[4];
     PMWeights(pr(IPX,p), mbsize.d_view(m).x1min, mbsize.d_view(m).x1max, nx1, is,
               scheme, ip, wx);
     PMWeights(pr(IPY,p), mbsize.d_view(m).x2min, mbsize.d_view(m).x2max, nx2, js,
@@ -153,16 +154,16 @@ void DustGasDrag::ApplyCoupledOperatorImpl(DvceArray5D<Real> &field,
                 scheme, kp, wz);
     } else {
       kp = ks;
-      wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0;
+      wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0; wz[3] = 0.0;
     }
 
     Real gathered[3] = {0.0, 0.0, 0.0};
-    int clo = three_d ? 0 : 1, chi = three_d ? 2 : 1;
+    int clo = three_d ? 0 : 1, chi = three_d ? npw-1 : 1;
     for (int c=clo; c<=chi; ++c) {
-      for (int b=0; b<3; ++b) {
+      for (int b=0; b<npw; ++b) {
         Real wcb = wz[c]*wy[b];
         if (wcb == 0.0) continue;
-        for (int a=0; a<3; ++a) {
+        for (int a=0; a<npw; ++a) {
           Real w = wcb*wx[a];
           int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
           gathered[0] += w*field_(m,0,kk,jj,ii);
@@ -177,10 +178,10 @@ void DustGasDrag::ApplyCoupledOperatorImpl(DvceArray5D<Real> &field,
     Real cj = a_dt/(pr(IPTS,p) + a_dt);
     Real fac = pr(IPM,p)*cj/vol;
     for (int c=clo; c<=chi; ++c) {
-      for (int b=0; b<3; ++b) {
+      for (int b=0; b<npw; ++b) {
         Real wcb = wz[c]*wy[b]*fac;
         if (wcb == 0.0) continue;
-        for (int a=0; a<3; ++a) {
+        for (int a=0; a<npw; ++a) {
           Real w = wcb*wx[a];
           int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
           DepositAdd(&result_(m,0,kk,jj,ii), w*gathered[0]);
@@ -530,12 +531,13 @@ Real DustGasDrag::AdaptiveErrorBound(Real a_dt, Real residual_norm, Real &state_
 
   auto gids=pmy_pack->gids;
   int scheme=static_cast<int>(deposit);
+  int npw=PMWidth(scheme);
   Real particle_state_local=0.0;
   Kokkos::parallel_reduce("dust_adapt_particle_state",
   Kokkos::RangePolicy<>(DevExeSpace(),0,npart),KOKKOS_LAMBDA(const int p,Real &sum) {
     int m=pi(PGID,p)-gids;
     int ip,jp,kp;
-    Real wx[3],wy[3],wz[3];
+    Real wx[4],wy[4],wz[4];
     PMWeights(pr(IPX,p),mbsize.d_view(m).x1min,mbsize.d_view(m).x1max,nx1,is,
               scheme,ip,wx);
     PMWeights(pr(IPY,p),mbsize.d_view(m).x2min,mbsize.d_view(m).x2max,nx2,js,
@@ -544,11 +546,11 @@ Real DustGasDrag::AdaptiveErrorBound(Real a_dt, Real residual_norm, Real &state_
       PMWeights(pr(IPZ,p),mbsize.d_view(m).x3min,mbsize.d_view(m).x3max,nx3,ks,
                 scheme,kp,wz);
     } else {
-      kp=ks; wz[0]=0.0; wz[1]=1.0; wz[2]=0.0;
+      kp=ks; wz[0]=0.0; wz[1]=1.0; wz[2]=0.0; wz[3]=0.0;
     }
     Real gu[3]={0.0,0.0,0.0};
-    int clo=three_d?0:1,chi=three_d?2:1;
-    for (int c=clo;c<=chi;++c) for (int b=0;b<3;++b) for (int a=0;a<3;++a) {
+    int clo=three_d?0:1,chi=three_d?npw-1:1;
+    for (int c=clo;c<=chi;++c) for (int b=0;b<npw;++b) for (int a=0;a<npw;++a) {
       Real w=wz[c]*wy[b]*wx[a];
       int kk=kp+c-1,jj=jp+b-1,ii=ip+a-1;
       gu[0]+=w*x(m,0,kk,jj,ii);

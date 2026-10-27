@@ -36,7 +36,7 @@ class MeshBlockPack;
 class ShearingBoxCC;
 
 // constants that enumerate particle-mesh deposit schemes
-enum class DustDeposit {ngp=0, cic=1, tsc=2};
+enum class DustDeposit {ngp=0, cic=1, tsc=2, pcs=3};
 
 // contract for per-particle stopping times.  The default species_fixed mode keeps the
 // configured species table authoritative; particle_static permits arbitrary positive
@@ -136,12 +136,32 @@ void DepositAdd(Real *destination, const Real value) {
   }
 }
 
-// Shared NGP/CIC/TSC stencil for deposits, matrix-free gathers, and the final kick.
+// Shared NGP/CIC/TSC/PCS stencil for deposits, matrix-free gathers, and the final kick.
 // One helper is used everywhere so the coupled operator and conservative commit cannot
 // silently acquire different particle-mesh weights.
+//
+// The stencil covers cells ip-1 .. ip-1+PMWidth(scheme)-1 with weights w[0..].  NGP/CIC/TSC
+// use 3 cells centred on the particle's cell (ip = that cell, w[3] = 0).  PCS (cubic
+// B-spline, support |d| < 2 cells) uses 4 cells; ip is shifted down by one when the
+// particle lies in the left half of its cell, so the stencil is always ip-1 .. ip+2.  On a
+// strained 1-ppc lattice the deposit error is ~e (CIC), ~e^2/2 (TSC), ~(2/3)e^3 (PCS).
+
+KOKKOS_INLINE_FUNCTION
+int PMWidth(const int scheme) {
+  return (scheme == 3) ? 4 : 3;
+}
+
+KOKKOS_INLINE_FUNCTION
+Real PMCubicBSpline(const Real d) {
+  Real a = fabs(d);
+  if (a < 1.0) return 2.0/3.0 - a*a + 0.5*a*a*a;
+  if (a < 2.0) return (2.0 - a)*(2.0 - a)*(2.0 - a)/6.0;
+  return 0.0;
+}
+
 KOKKOS_INLINE_FUNCTION
 void PMWeights(const Real x, const Real xmin, const Real xmax, const int nx,
-               const int is, const int scheme, int &ip, Real w[3]) {
+               const int is, const int scheme, int &ip, Real w[4]) {
   // Express the particle position directly in cell coordinates.  Besides being the
   // same uniform-grid geometry as CellCenterX, this uses one division rather than
   // forming dx and then dividing by it twice.
@@ -149,6 +169,7 @@ void PMWeights(const Real x, const Real xmin, const Real xmax, const int nx,
   int ig = static_cast<int>(cell + 1.0) - 1;
   Real del = cell - (static_cast<Real>(ig) + 0.5);
   ip = ig + is;
+  w[3] = 0.0;
   if (scheme == 0) {
     w[0] = 0.0;
     w[1] = 1.0;
@@ -157,10 +178,20 @@ void PMWeights(const Real x, const Real xmin, const Real xmax, const int nx,
     w[0] = fmax(0.0, -del);
     w[1] = 1.0 - fabs(del);
     w[2] = fmax(0.0, del);
-  } else {
+  } else if (scheme == 2) {
     w[0] = 0.5*SQR(0.5 - del);
     w[1] = 0.75 - SQR(del);
     w[2] = 0.5*SQR(0.5 + del);
+  } else {
+    // stencil cells ig-1..ig+2 (del >= 0) or ig-2..ig+1 (del < 0); d = distance from the
+    // particle to the centre of stencil cell a, in cells
+    int s = (del < 0.0) ? 1 : 0;
+    ip -= s;
+    Real d0 = del + 1.0 + static_cast<Real>(s);   // stencil cell a=0
+    w[0] = PMCubicBSpline(d0);
+    w[1] = PMCubicBSpline(d0 - 1.0);
+    w[2] = PMCubicBSpline(d0 - 2.0);
+    w[3] = PMCubicBSpline(d0 - 3.0);
   }
 }
 
@@ -191,7 +222,7 @@ class DustGasDrag {
   Real taus_min;             // smallest stopping time over all species
   Real dust_to_gas;          // total dust/gas mass ratio for default mass normalization
   DualArray1D<Real> taus;    // per-species stopping times
-  DustDeposit deposit;       // particle-mesh deposit scheme (tsc default)
+  DustDeposit deposit;       // particle-mesh deposit scheme (tsc default; ngp/cic/tsc/pcs)
   ReconstructionMethod shear_remap;  // y-remap of the shear-periodic deposit fold (plm)
   bool shear_fold;           // false = diagnostic: skip the fold (unsheared x1 deposits)
   bool gas_ideal;            // ideal-gas EOS: drag kicks carry an energy update

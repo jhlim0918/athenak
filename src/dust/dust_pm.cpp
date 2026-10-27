@@ -65,6 +65,7 @@ TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
     auto &mbsize = pmy_pack->pmb->mb_size;
     auto gids = pmy_pack->gids;
     int scheme = static_cast<int>(deposit);
+    int npw = PMWidth(scheme);   // stencil width: 3 (ngp/cic/tsc) or 4 (pcs)
     Real dt = pmy_pack->pmesh->dt;
     auto &uold = pmy_pack->phydro->u1;
     auto &qdep_ = qdep;
@@ -73,7 +74,7 @@ TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
     KOKKOS_LAMBDA(const int p) {
       int m = pi(PGID,p) - gids;
       int ip, jp, kp;
-      Real wx[3], wy[3], wz[3];
+      Real wx[4], wy[4], wz[4];
       PMWeights(pr(IPX,p), mbsize.d_view(m).x1min, mbsize.d_view(m).x1max, nx1, is,
                 scheme, ip, wx);
       PMWeights(pr(IPY,p), mbsize.d_view(m).x2min, mbsize.d_view(m).x2max, nx2, js,
@@ -83,15 +84,15 @@ TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
                   scheme, kp, wz);
       } else {
         kp = ks;
-        wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0;
+        wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0; wz[3] = 0.0;
       }
       Real ugx = 0.0, ugy = 0.0, ugz = 0.0;
-      int clo = three_d ? 0 : 1, chi = three_d ? 2 : 1;
+      int clo = three_d ? 0 : 1, chi = three_d ? npw-1 : 1;
       for (int c=clo; c<=chi; ++c) {
-        for (int b=0; b<3; ++b) {
+        for (int b=0; b<npw; ++b) {
           Real wcb = wz[c]*wy[b];
           if (wcb == 0.0) continue;
-          for (int a=0; a<3; ++a) {
+          for (int a=0; a<npw; ++a) {
             Real w = wcb*wx[a];
             int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
             Real invrho = 1.0/uold(m,IDN,kk,jj,ii);
@@ -108,10 +109,10 @@ TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
       Real gy = -dt*rate*(ugy-pr(IPVY,p));
       Real gz = -dt*rate*(ugz-pr(IPVZ,p));
       for (int c=clo; c<=chi; ++c) {
-        for (int b=0; b<3; ++b) {
+        for (int b=0; b<npw; ++b) {
           Real wcb = wz[c]*wy[b];
           if (wcb == 0.0) continue;
-          for (int a=0; a<3; ++a) {
+          for (int a=0; a<npw; ++a) {
             Real w = wcb*wx[a];
             int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
             DepositAdd(&qdep_(m,1,kk,jj,ii), w*gx);
@@ -139,13 +140,14 @@ TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
   auto &mbsize = pmy_pack->pmb->mb_size;
   auto gids = pmy_pack->gids;
   int scheme = static_cast<int>(deposit);
+  int npw = PMWidth(scheme);   // stencil width: 3 (ngp/cic/tsc) or 4 (pcs)
   Real a_dt = DragStep(pdrive);
   auto &qdep_ = qdep;
 
   par_for("dust_scatter",DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m = pi(PGID,p) - gids;
     int ip, jp, kp;
-    Real wx[3], wy[3], wz[3];
+    Real wx[4], wy[4], wz[4];
     PMWeights(pr(IPX,p), mbsize.d_view(m).x1min, mbsize.d_view(m).x1max, nx1, is,
               scheme, ip, wx);
     PMWeights(pr(IPY,p), mbsize.d_view(m).x2min, mbsize.d_view(m).x2max, nx2, js,
@@ -155,11 +157,14 @@ TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
                 scheme, kp, wz);
     } else {
       kp = ks;
-      wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0;
+      wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0; wz[3] = 0.0;
     }
     // guard against particles that escaped migration (indicates an upstream bug)
-    if (ip < (is-1) || ip > (is+nx1) || jp < (js-1) || jp > (js+nx2) ||
-        (three_d && (kp < (ks-1) || kp > (ks+nx3)))) {
+    // (the stencil ip-1 .. ip+npw-2 must stay within npw-1 ghost layers: ip in
+    // [is+2-npw, ie+1], i.e. [is-1, ie+1] for TSC; PCS shifts ip down by one in the left
+    // half of a cell, so a particle one cell outside the block still passes)
+    if (ip < (is+2-npw) || ip > (is+nx1) || jp < (js+2-npw) || jp > (js+nx2) ||
+        (three_d && (kp < (ks+2-npw) || kp > (ks+nx3)))) {
       Kokkos::printf("DustGasDrag halo violation: p=%d gid=%d x=(%.6e %.6e %.6e) "
                      "block x1=[%.4e,%.4e] x2=[%.4e,%.4e] x3=[%.4e,%.4e] "
                      "ip,jp,kp=(%d %d %d)\n", p, pi(PGID,p),
@@ -176,12 +181,12 @@ TaskStatus DustGasDrag::DepositDrag(Driver *pdrive, int stage) {
     Real muc = pr(IPM,p)*cj/vol;
     Real vx = pr(IPVX,p), vy = pr(IPVY,p), vz = pr(IPVZ,p);
 
-    int clo = three_d ? 0 : 1, chi = three_d ? 2 : 1;
+    int clo = three_d ? 0 : 1, chi = three_d ? npw-1 : 1;
     for (int c=clo; c<=chi; ++c) {
-      for (int b=0; b<3; ++b) {
+      for (int b=0; b<npw; ++b) {
         Real wcb = wz[c]*wy[b]*muc;
         if (wcb == 0.0) continue;
-        for (int a=0; a<3; ++a) {
+        for (int a=0; a<npw; ++a) {
           Real w = wcb*wx[a];
           int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
           DepositAdd(&qdep_(m,0,kk,jj,ii), w);
@@ -345,6 +350,7 @@ TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
   auto &mbsize = pmy_pack->pmb->mb_size;
   auto gids = pmy_pack->gids;
   int scheme = static_cast<int>(deposit);
+  int npw = PMWidth(scheme);   // stencil width: 3 (ngp/cic/tsc) or 4 (pcs)
   Real a_dt = DragStep(pdrive);
   Real dt = pmy_pack->pmesh->dt;
   bool split_be = (coupling == DustCoupling::hybrid);
@@ -357,7 +363,7 @@ TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
   par_for("dust_gather",DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m = pi(PGID,p) - gids;
     int ip, jp, kp;
-    Real wx[3], wy[3], wz[3];
+    Real wx[4], wy[4], wz[4];
     PMWeights(pr(IPX,p), mbsize.d_view(m).x1min, mbsize.d_view(m).x1max, nx1, is,
               scheme, ip, wx);
     PMWeights(pr(IPY,p), mbsize.d_view(m).x2min, mbsize.d_view(m).x2max, nx2, js,
@@ -367,17 +373,17 @@ TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
                 scheme, kp, wz);
     } else {
       kp = ks;
-      wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0;
+      wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0; wz[3] = 0.0;
     }
 
     // gather provisional gas velocity at particle position
     Real ux = 0.0, uy = 0.0, uz = 0.0;
-    int clo = three_d ? 0 : 1, chi = three_d ? 2 : 1;
+    int clo = three_d ? 0 : 1, chi = three_d ? npw-1 : 1;
     for (int c=clo; c<=chi; ++c) {
-      for (int b=0; b<3; ++b) {
+      for (int b=0; b<npw; ++b) {
         Real wcb = wz[c]*wy[b];
         if (wcb == 0.0) continue;
-        for (int a=0; a<3; ++a) {
+        for (int a=0; a<npw; ++a) {
           Real w = wcb*wx[a];
           int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
           ux += w*ustar_(m,0,kk,jj,ii);
@@ -423,11 +429,11 @@ TaskStatus DustGasDrag::GatherKickPMBR(Driver *pdrive, int stage) {
         qheat = pr(IPM,p)*cj*(1.0 - 0.5*cj)*du2/vol;
       }
       for (int c=clo; c<=chi; ++c) {
-        for (int b=0; b<3; ++b) {
+        for (int b=0; b<npw; ++b) {
           Real wcb = wz[c]*wy[b]*fac;
           if (wcb == 0.0) continue;
           Real wcbq = wz[c]*wy[b]*qheat;
-          for (int a=0; a<3; ++a) {
+          for (int a=0; a<npw; ++a) {
             Real w = wcb*wx[a];
             int kk = kp+c-1, jj = jp+b-1, ii = ip+a-1;
             DepositAdd(&dmom_(m,0,kk,jj,ii), w*dvx);

@@ -73,7 +73,7 @@ bool DustGasDrag::GravityStage(Driver *pdrive, int stage) const {
 //! \fn DustGasDrag::DepositMass
 //! \brief rho_dust = sum_p m_p W(x_p)/V on the active zone plus the deposit halo.  The
 //! particles sit inside their owning MeshBlocks (last stage's migration), so the TSC
-//! stencil reaches at most one ghost layer.
+//! stencil reaches at most one ghost layer (PCS: two).
 
 void DustGasDrag::DepositMass() {
   Kokkos::deep_copy(DevExeSpace(), rho_dust, 0.0);
@@ -91,12 +91,13 @@ void DustGasDrag::DepositMass() {
   auto &mbsize = pmy_pack->pmb->mb_size;
   auto gids = pmy_pack->gids;
   int scheme = static_cast<int>(deposit);
+  int npw = PMWidth(scheme);   // stencil width: 3 (ngp/cic/tsc) or 4 (pcs)
   auto &rho = rho_dust;
 
   par_for("dust_grav_deposit",DevExeSpace(),0,(npart-1), KOKKOS_LAMBDA(const int p) {
     int m = pi(PGID,p) - gids;
     int ip, jp, kp;
-    Real wx[3], wy[3], wz[3];
+    Real wx[4], wy[4], wz[4];
     PMWeights(pr(IPX,p), mbsize.d_view(m).x1min, mbsize.d_view(m).x1max, nx1, is,
               scheme, ip, wx);
     PMWeights(pr(IPY,p), mbsize.d_view(m).x2min, mbsize.d_view(m).x2max, nx2, js,
@@ -106,17 +107,17 @@ void DustGasDrag::DepositMass() {
                 scheme, kp, wz);
     } else {
       kp = ks;
-      wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0;
+      wz[0] = 0.0; wz[1] = 1.0; wz[2] = 0.0; wz[3] = 0.0;
     }
     Real vol = mbsize.d_view(m).dx1*mbsize.d_view(m).dx2;
     if (three_d) {vol *= mbsize.d_view(m).dx3;}
     Real minv = pr(IPM,p)/vol;
-    int clo = three_d ? 0 : 1, chi = three_d ? 2 : 1;
+    int clo = three_d ? 0 : 1, chi = three_d ? npw-1 : 1;
     for (int c=clo; c<=chi; ++c) {
-      for (int b=0; b<3; ++b) {
+      for (int b=0; b<npw; ++b) {
         Real wcb = wz[c]*wy[b]*minv;
         if (wcb == 0.0) continue;
-        for (int a=0; a<3; ++a) {
+        for (int a=0; a<npw; ++a) {
           DepositAdd(&rho(m,0,kp+c-1,jp+b-1,ip+a-1), wcb*wx[a]);
         }
       }

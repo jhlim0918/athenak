@@ -364,10 +364,20 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
       deposit = DustDeposit::cic;
     } else if (dep.compare("tsc") == 0) {
       deposit = DustDeposit::tsc;
+    } else if (dep.compare("pcs") == 0) {
+      deposit = DustDeposit::pcs;
     } else {
       std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
                 << std::endl << "<dust>/deposit = '" << dep << "' not recognized "
-                << "(must be ngp, cic, or tsc)" << std::endl;
+                << "(must be ngp, cic, tsc, or pcs)" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    // the 4-cell PCS stencil of a particle one cell outside its block (mid-stage
+    // positions) reaches three ghost layers
+    if (deposit == DustDeposit::pcs && pmy_pack->pmesh->mb_indcs.ng < 3) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "<dust>/deposit = pcs requires at least 3 ghost zones, "
+                << "but <mesh>/nghost = " << pmy_pack->pmesh->mb_indcs.ng << std::endl;
       std::exit(EXIT_FAILURE);
     }
   }
