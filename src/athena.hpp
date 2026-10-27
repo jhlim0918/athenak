@@ -79,7 +79,7 @@ enum ParticlesIndex {PGID=0, PTAG=1, PSP=2,
                      IPRX=12, IPRY=13, IPRZ=14, IPTS=15, IPM=16};
 
 // integer constants to specify spatial reconstruction methods
-enum ReconstructionMethod {dc, plm, ppm4, ppmx, wenoz, teno};
+enum ReconstructionMethod {dc, plm, ppm4, ppmx, wenoz, teno, wenoz_mc};
 
 // constants that enumerate time evolution options
 enum TimeEvolution {tstatic, kinematic, dynamic};

@@ -81,4 +81,33 @@ void WENOZ(const Real &q_im2, const Real &q_im1, const Real &q_i, const Real &q_
 
   return;
 }
+
+//----------------------------------------------------------------------------------------
+//! \fn WENOZ_MC()
+//! \brief WENO-Z face values constrained by the monotonized-central (MC) limiter.
+//! MC limits the slope as minmod(2 dq_-, 2 dq_+, s), with s the centred slope; here s is
+//! replaced by the one-sided slope WENO-Z implies at each face, 2 (q_face - q_i), so each
+//! face deviation becomes minmod(q_face - q_i, dq_-, dq_+).  In smooth monotone regions
+//! the WENO-Z value passes unchanged (|q_face - q_i| ~ |dq|/2); at extrema (dq_- dq_+ <= 0)
+//! both faces drop to q_i, as with MC.
+
+KOKKOS_INLINE_FUNCTION
+Real MinMod3(const Real a, const Real b, const Real c) noexcept {
+  if (a > 0.0 && b > 0.0 && c > 0.0) return fmin(a, fmin(b, c));
+  if (a < 0.0 && b < 0.0 && c < 0.0) return fmax(a, fmax(b, c));
+  return 0.0;
+}
+
+KOKKOS_INLINE_FUNCTION
+void WENOZ_MC(const Real &q_im2, const Real &q_im1, const Real &q_i, const Real &q_ip1,
+              const Real &q_ip2, Real &ql_ip1, Real &qr_i) noexcept  {
+  WENOZ(q_im2, q_im1, q_i, q_ip1, q_ip2, ql_ip1, qr_i);
+  const Real dqm = q_i - q_im1;
+  const Real dqp = q_ip1 - q_i;
+  const Real dr = ql_ip1 - q_i;   // right-face deviation (half slope, +x sense)
+  const Real dl = q_i - qr_i;     // left-face deviation (half slope, +x sense)
+  ql_ip1 = q_i + MinMod3(dr, dqm, dqp);
+  qr_i   = q_i - MinMod3(dl, dqm, dqp);
+  return;
+}
 #endif // RECONSTRUCT_WENOZ_HPP_

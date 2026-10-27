@@ -7,7 +7,7 @@
 //========================================================================================
 //! \file recon.hpp
 //! \brief Per-cell reconstruction supporting every reconstruction method (DC, PLM, PPM4,
-//! PPMX, WENOZ).  Each cell produces ql at its right face and qr at its left face,
+//! PPMX, WENOZ, WENOZ_MC, TENO).  Each cell produces ql at its right face and qr at its left face,
 //! written to the global per-face L/R buffers.  Templated on direction
 //! (ivx = IVX|IVY|IVZ); the method is selected at runtime via a grid-uniform branch
 //! (coherent across threads, so effectively branch-free on GPU).
@@ -94,6 +94,19 @@ void ReconCellT(const EOS_Data &eos, const bool apply_floors,
         ql_val = fmax(ql_val, efloor); qr_val = fmax(qr_val, efloor);
       }
     }
+  } else if constexpr (recon == ReconstructionMethod::wenoz_mc) {
+    WENOZ_MC(q(m, n, k - 2*dk, j - 2*dj, i - 2*di),
+             q(m, n, k -   dk, j -   dj, i -   di),
+             q(m, n, k,        j,        i),
+             q(m, n, k +   dk, j +   dj, i +   di),
+             q(m, n, k + 2*dk, j + 2*dj, i + 2*di),
+             ql_val, qr_val);
+    if (apply_floors) {
+      if (n == IDN) { ql_val = fmax(ql_val, dfloor); qr_val = fmax(qr_val, dfloor); }
+      if (eos.is_ideal && n == IEN) {
+        ql_val = fmax(ql_val, efloor); qr_val = fmax(qr_val, efloor);
+      }
+    }
   } else if constexpr (recon == ReconstructionMethod::teno) {
     TENO(q(m, n, k - 2*dk, j - 2*dj, i - 2*di),
           q(m, n, k -   dk, j -   dj, i -   di),
@@ -163,6 +176,13 @@ inline void ReconDispatch(ReconstructionMethod recon, const char *name, int nmb1
       par_for(name, DevExeSpace(), 0, nmb1, 0, nvars-1, kl, ku, jl, ju, il, iu,
         KOKKOS_LAMBDA(int m, int n, int k, int j, int i) {
           ReconCellT<ReconstructionMethod::wenoz, ivx>(
+              eos, apply_floors, m, n, k, j, i, q, ql, qr);
+        });
+      break;
+    case ReconstructionMethod::wenoz_mc:
+      par_for(name, DevExeSpace(), 0, nmb1, 0, nvars-1, kl, ku, jl, ju, il, iu,
+        KOKKOS_LAMBDA(int m, int n, int k, int j, int i) {
+          ReconCellT<ReconstructionMethod::wenoz_mc, ivx>(
               eos, apply_floors, m, n, k, j, i, q, ql, qr);
         });
       break;
