@@ -39,6 +39,18 @@
 //!     wy'    = -(2-q) Omega wx + ky (cs^2 + 4 pi G rho0 / D) delta
 //! with D the discrete Laplacian eigenvalue (-> -k^2 in the continuum), which the
 //! companion Julia notebook integrates for comparison.
+//!
+//! MHD (an <mhd> block instead of <hydro>; 2026-10-26): a uniform azimuthal field
+//! B = <problem>/b0 y_hat (Kim & Ostriker 2001 geometry, kz = 0), and optionally a uniform
+//! radial field <problem>/bx0, which the shear winds up exactly, By = b0 - q Omega bx0 t (a
+//! kinematic check of the field's shear term; amp = 0 for the pure test). The perturbation is
+//! isentropic for an ideal-gas EOS (dp = cs^2 drho, cs^2 = gamma p0/rho0). The history adds
+//!     bx_cos, by_cos = (2/V) Int dB_{x,y} cos(k.x) dV   -> cx, cy
+//!     divb = Int |div B| dx_min dV,  babs = Int |B| dV,  nmb = number of MeshBlocks
+//! and the linear system gains the field (Heaviside-Lorentz units, vA = B0/sqrt(rho0)):
+//!     wx' += -(B0/rho0)(ky cx - kx cy),   cx' = ky B0 wx,   cy' = -kx B0 wx - q Omega cx
+//! (validation/run/swing_mhd/swing_ode.py). MHD with orbital advection cannot refine, so
+//! refined MHD runs use orbital_advection = false (the full shear flow in the state).
 
 #include <cmath>
 #include <iostream>
@@ -69,7 +81,7 @@ void SwingMovingRingRefine(MeshBlockPack *pmbp);
 
 namespace {
 struct SwingTestVariables {
-  Real kx0, ky, phase0, qshear, omega0, rho0, inv_vol;
+  Real kx0, ky, phase0, qshear, omega0, rho0, inv_vol, b0;
 };
 SwingTestVariables swing_var;
 
@@ -86,12 +98,9 @@ SwingRingVariables swing_ring_var;
 
 void ProblemGenerator::SwingAmplification(ParameterInput *pin, const bool restart) {
   MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
-  if (pmbp->pmhd != nullptr) {
-    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "swing test is hydro-only" << std::endl;
-    exit(EXIT_FAILURE);
-  }
-  if (pmbp->phydro->psbox_u == nullptr) {
+  const bool mhd = (pmbp->pmhd != nullptr);
+  ShearingBoxCC *psbox = mhd ? pmbp->pmhd->psbox_u : pmbp->phydro->psbox_u;
+  if (psbox == nullptr) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
               << "swing test requires a <shearing_box> block in the input file"
               << std::endl;
@@ -138,9 +147,12 @@ void ProblemGenerator::SwingAmplification(ParameterInput *pin, const bool restar
   Real phase2 = pin->GetOrAddReal("problem", "phase2", 0.0);
   Real kx2 = 2.0*M_PI*static_cast<Real>(nwx2)/lx;
   Real ky2 = 2.0*M_PI*static_cast<Real>(nwy2)/ly;
-  swing_var.qshear = pmbp->phydro->psbox_u->qshear;
-  swing_var.omega0 = pmbp->phydro->psbox_u->omega0;
+  swing_var.qshear = psbox->qshear;
+  swing_var.omega0 = psbox->omega0;
   swing_var.rho0 = rho0;
+  swing_var.b0 = pin->GetOrAddReal("problem", "b0", 0.0);   // MHD: uniform B along x2
+  // MHD: optional uniform radial field (the shear winds it into By = b0 - q Omega bx0 t)
+  Real bx0 = pin->GetOrAddReal("problem", "bx0", 0.0);
   swing_var.inv_vol = 1.0/(lx*ly*lz);
   user_hist_func = SwingHistory;
 
@@ -155,7 +167,7 @@ void ProblemGenerator::SwingAmplification(ParameterInput *pin, const bool restar
 
   if (restart) return;
 
-  EOS_Data &eos = pmbp->phydro->peos->eos_data;
+  EOS_Data &eos = mhd ? pmbp->pmhd->peos->eos_data : pmbp->phydro->peos->eos_data;
   Real gm1 = eos.gamma - 1.0;
   Real p0 = pin->GetOrAddReal("problem", "p0", 1.0);
   // in non-FARGO mode (orbital_advection=false) the background shear flow
@@ -166,8 +178,12 @@ void ProblemGenerator::SwingAmplification(ParameterInput *pin, const bool restar
   int js = indcs.js, je = indcs.je;
   int ks = indcs.ks, ke = indcs.ke;
   auto &size = pmbp->pmb->mb_size;
-  auto &u0 = pmbp->phydro->u0;
+  auto &u0 = mhd ? pmbp->pmhd->u0 : pmbp->phydro->u0;
   auto sv = swing_var;
+  // MHD: isentropic perturbation (dp = cs^2 drho) and the field's energy; the hydro path
+  // keeps its uniform pressure (bitwise as before)
+  Real pfac = mhd ? eos.gamma : 0.0;
+  Real eb = mhd ? 0.5*(SQR(sv.b0) + SQR(bx0)) : 0.0;
 
   // leading shearing wave in density; velocity fluctuations zero
   par_for("swing_init", DevExeSpace(), 0, (pmbp->nmb_thispack-1), ks, ke, js, je, is, ie,
@@ -184,9 +200,29 @@ void ProblemGenerator::SwingAmplification(ParameterInput *pin, const bool restar
     u0(m,IM2,k,j,i) = den*vy0;
     u0(m,IM3,k,j,i) = 0.0;
     if (eos.is_ideal) {
-      u0(m,IEN,k,j,i) = p0/gm1 + 0.5*den*SQR(vy0);
+      Real dfrac = amp*cos(sv.kx0*x1v + sv.ky*x2v + sv.phase0)
+                 + amp2*cos(kx2*x1v + ky2*x2v + phase2);
+      u0(m,IEN,k,j,i) = p0*(1.0 + pfac*dfrac)/gm1 + 0.5*den*SQR(vy0) + eb;
     }
   });
+  if (mhd) {
+    auto &b0 = pmbp->pmhd->b0;
+    auto &bcc0 = pmbp->pmhd->bcc0;
+    Real by0 = sv.b0;
+    Real bxu = bx0;
+    par_for("swing_bfield", DevExeSpace(), 0, (pmbp->nmb_thispack-1), ks, ke, js, je, is,
+    ie, KOKKOS_LAMBDA(int m, int k, int j, int i) {
+      b0.x1f(m,k,j,i) = bxu;
+      b0.x2f(m,k,j,i) = by0;
+      b0.x3f(m,k,j,i) = 0.0;
+      if (i == ie) b0.x1f(m,k,j,i+1) = bxu;
+      if (j == je) b0.x2f(m,k,j+1,i) = by0;
+      if (k == ke) b0.x3f(m,k+1,j,i) = 0.0;
+      bcc0(m,IBX,k,j,i) = bxu;
+      bcc0(m,IBY,k,j,i) = by0;
+      bcc0(m,IBZ,k,j,i) = 0.0;
+    });
+  }
   return;
 }
 
@@ -200,12 +236,20 @@ void SwingHistory(HistoryData *pdata, Mesh *pm) {
   auto sv = swing_var;
   Real kx = sv.kx0 + (sv.qshear)*(sv.omega0)*(pm->time)*(sv.ky);
 
-  pdata->nhist = 5;
+  const bool mhd = (pm->pmb_pack->pmhd != nullptr);
+  pdata->nhist = mhd ? 10 : 5;
   pdata->label[0] = "d_cos";
   pdata->label[1] = "d_sin";
   pdata->label[2] = "vx_sin";
   pdata->label[3] = "vy_sin";
   pdata->label[4] = "kx_ky";
+  if (mhd) {
+    pdata->label[5] = "bx_cos";
+    pdata->label[6] = "by_cos";
+    pdata->label[7] = "divb";
+    pdata->label[8] = "babs";
+    pdata->label[9] = "nmb";
+  }
 
   auto &indcs = pm->pmb_pack->pmesh->mb_indcs;
   int is = indcs.is, nx1 = indcs.nx1;
@@ -214,7 +258,12 @@ void SwingHistory(HistoryData *pdata, Mesh *pm) {
   const int nmkji = (pm->pmb_pack->nmb_thispack)*nx3*nx2*nx1;
   const int nkji = nx3*nx2*nx1;
   const int nji = nx2*nx1;
-  auto &w0_ = pm->pmb_pack->phydro->w0;
+  auto &w0_ = mhd ? pm->pmb_pack->pmhd->w0 : pm->pmb_pack->phydro->w0;
+  DvceArray5D<Real> bcc_;
+  DvceFaceFld4D<Real> *pb0 = nullptr;
+  if (mhd) {bcc_ = pm->pmb_pack->pmhd->bcc0; pb0 = &(pm->pmb_pack->pmhd->b0);}
+  DvceArray4D<Real> bx1f, bx2f, bx3f;
+  if (mhd) {bx1f = pb0->x1f; bx2f = pb0->x2f; bx3f = pb0->x3f;}
   array_sum::GlobalSum sum_this_mb;
 
   Kokkos::parallel_reduce("SwingHist", Kokkos::RangePolicy<>(DevExeSpace(), 0, nmkji),
@@ -240,6 +289,16 @@ void SwingHistory(HistoryData *pdata, Mesh *pm) {
     hvars.the_array[2] = vol*w0_(m,IVX,k,j,i)*sn_;
     hvars.the_array[3] = vol*w0_(m,IVY,k,j,i)*sn_;
     hvars.the_array[4] = vol*kx/sv.ky;   // vol-weighted so it survives the MPI sum
+    if (mhd) {
+      Real dx1 = size.d_view(m).dx1, dx2 = size.d_view(m).dx2, dx3 = size.d_view(m).dx3;
+      hvars.the_array[5] = vol*bcc_(m,IBX,k,j,i)*cs_;
+      hvars.the_array[6] = vol*(bcc_(m,IBY,k,j,i) - sv.b0)*cs_;
+      Real divb = (bx1f(m,k,j,i+1) - bx1f(m,k,j,i))/dx1 + (bx2f(m,k,j+1,i) - bx2f(m,k,j,i))/dx2
+                + (bx3f(m,k+1,j,i) - bx3f(m,k,j,i))/dx3;
+      hvars.the_array[7] = vol*fabs(divb)*fmin(dx1, fmin(dx2, dx3));
+      hvars.the_array[8] = vol*sqrt(SQR(bcc_(m,IBX,k,j,i)) + SQR(bcc_(m,IBY,k,j,i))
+                                    + SQR(bcc_(m,IBZ,k,j,i)));
+    }
     for (int n=nhist_; n<NHISTORY_VARIABLES; ++n) {
       hvars.the_array[n] = 0.0;
     }
@@ -252,6 +311,13 @@ void SwingHistory(HistoryData *pdata, Mesh *pm) {
     pdata->hdata[n] = 2.0*sum_this_mb.the_array[n]*sv.inv_vol;
   }
   pdata->hdata[4] = sum_this_mb.the_array[4]*sv.inv_vol;
+  if (mhd) {
+    pdata->hdata[5] = 2.0*sum_this_mb.the_array[5]*sv.inv_vol;
+    pdata->hdata[6] = 2.0*sum_this_mb.the_array[6]*sv.inv_vol;
+    pdata->hdata[7] = sum_this_mb.the_array[7];     // divb, babs: integrals (ratio)
+    pdata->hdata[8] = sum_this_mb.the_array[8];
+    pdata->hdata[9] = static_cast<Real>(pm->pmb_pack->nmb_thispack);   // ranks summed
+  }
   for (int n=pdata->nhist; n<NHISTORY_VARIABLES; ++n) {
     pdata->hdata[n] = 0.0;
   }

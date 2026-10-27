@@ -1,0 +1,85 @@
+# AthenaK input file: magneto-Jeans test (ideal MHD + multigrid self-gravity), 2026-10-26.
+# A linear compressive wave in a uniform, magnetized, self-gravitating medium (pgen
+# "gravity", src/pgen/tests/jeans_wave.cpp, magneto-Jeans mode): the field B0 makes an
+# angle b_angle with k, and the slow or fast branch of
+#     (w^2 - W_J^2)(w^2 - k^2 vA^2 cos^2 theta) = k^2 vA^2 sin^2 theta w^2,
+#     W_J^2 = k^2 cs^2 - 4 pi G rho0
+# is excited as an eigenmode (a standing wave if stable, pure growth if not).  The user
+# history projects density, dB_perp and the velocities onto the mode; the growth rate or
+# frequency is fitted from it (validation/run/magneto_jeans/magneto_jeans.py).
+# Quasi-1-D: k along x1 (wave_dir = x1) in a 1 x 1/8 x 1/8 box, 64 x 8 x 8 cells, 8^3
+# MeshBlocks (8 along x1).  Adiabatic, gamma = 5/3, p0 = 0.6 so that cs = 1, rho0 = 1
+# (isentropic eigenmode; the dispersion relation is the isothermal one with cs^2 = gamma
+# p0/rho0).  Not isothermal: AthenaK's isothermal HLLD amplifies grid noise at
+# beta <~ 1 (2026-10-26).  n_jeans = lambda/lambda_J sets
+# 4 pi G = (2 pi n_jeans cs / lambda)^2 rho0^-1; b0 = vA (rho0 = 1).
+
+<comment>
+problem   = magneto-Jeans wave (MHD + self-gravity)
+
+<job>
+basename  = MagJeans
+
+<mesh>
+nghost    = 4
+nx1       = 64
+x1min     = 0.0
+x1max     = 1.0
+ix1_bc    = periodic
+ox1_bc    = periodic
+nx2       = 8
+x2min     = 0.0
+x2max     = 0.125
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 8
+x3min     = 0.0
+x3max     = 0.125
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 8
+nx2       = 8
+nx3       = 8
+
+<time>
+evolution  = dynamic
+integrator = rk3
+cfl_number = 0.3
+nlim       = -1
+tlim       = 1.0
+ndiag      = 100
+
+<mhd>
+eos         = ideal       # adiabatic: AthenaK's isothermal HLLD is unstable at
+gamma       = 1.6666666666666667   # beta <~ 1 (grid noise grows; 2026-10-26)
+reconstruct = ppm4
+rsolver     = hlld
+
+<gravity>
+solver    = multigrid
+four_pi_G = 1.0       # replaced from n_jeans
+threshold = -1        # fixed V-cycles: the defect's round-off floor grows with
+niteration = 8        # resolution and 4 pi G, so no one absolute tolerance fits the suite
+full_multigrid = true
+show_defect = 0
+
+<mhd_srcterms>
+self_gravity = true
+
+<problem>
+pgen_name = gravity
+user_hist = true
+rho0      = 1.0
+p0        = 0.6       # cs^2 = gamma p0/rho0 = 1
+amp       = 1.0e-4    # linear: second-order terms ~1e-8
+n_jeans   = 2.0       # lambda / lambda_Jeans (> 1: hydro-unstable)
+wave_dir  = x1
+b0        = 1.0       # vA = b0/sqrt(rho0)
+b_angle   = 90.0      # angle between B0 and k (degrees)
+mode      = fast      # slow | fast
+
+<output1>
+file_type  = hst
+dt         = 0.01

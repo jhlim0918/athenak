@@ -1,0 +1,94 @@
+# AthenaK input file: magnetized swing amplification with multigrid self-gravity in the
+# shearing box (ideal MHD + gravity + shear), 2026-10-26.
+#
+# The swing test of swing_selfgrav.athinput (a single leading shearing wave, nwx = -6,
+# nwy = 1, kz = 0, Lx = Ly = 2 pi, kappa = ky = 1, 4 pi G rho0 = 1.9; kx(t) = kx0 + q Omega
+# ky t crosses zero at t = 4) threaded by a uniform azimuthal field B0 = b0 y_hat
+# (Kim & Ostriker 2001 geometry). Magnetic tension couples the wave to the field:
+#     wx' += -(B0/rho0)(ky cx - kx cy),  cx' = ky B0 wx,  cy' = -kx B0 wx - q Omega cx
+# for the field perturbation dB = c cos(k.x); validation/run/swing_mhd/swing_ode.py
+# integrates the linear system (with the 7-point Laplacian eigenvalue) for comparison.
+# Adiabatic (gamma = 5/3, p0 = 0.6, so cs = 1, beta = 2 p0/b0^2 = 4.8 at b0 = 0.5): AthenaK's
+# isothermal HLLD amplifies grid noise at beta <~ 1 (2026-10-26); the perturbation is
+# isentropic, so the linear theory is the isothermal one with cs^2 = gamma p0/rho0.
+# Uniform grid with orbital advection here; refined meshes need orbital_advection =
+# false (MHD + orbital advection + refinement is not supported): the runner
+# (validation/run/swing_mhd/swing_mhd.py) adds the refined_region / AMR blocks.
+# Gravity-off control: mhd_srcterms/self_gravity = false (and 4 pi G = 0 in the ODE).
+
+<comment>
+problem   = Magnetized swing amplification with self-gravity
+
+<job>
+basename  = SwingMHD
+
+<mesh>
+nghost    = 4
+nx1       = 128
+x1min     = -3.14159265358979
+x1max     =  3.14159265358979
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+nx2       = 128
+x2min     = -3.14159265358979
+x2max     =  3.14159265358979
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 16
+x3min     = -0.39269908169872
+x3max     =  0.39269908169872
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 10.0       # swing at t = 4; the field-carried oscillation runs past t = 8
+ndiag      = 100
+
+<mhd>
+eos         = ideal
+gamma       = 1.6666666666666667
+reconstruct = plm
+rsolver     = hlld
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true  # false = non-FARGO: integrate the full shear flow
+
+<gravity>
+solver    = multigrid
+four_pi_G = 1.9
+vert_bc   = periodic
+threshold = -1        # fixed V-cycle count (as in the refined hydro swing tests)
+niteration = 10
+full_multigrid = true
+fmg_ncycle = 1
+mg_remap  = ppmx
+
+<mhd_srcterms>
+self_gravity = true
+
+<problem>
+pgen_name = swing
+rho0      = 1.0
+p0        = 0.6         # cs^2 = gamma p0/rho0 = 1
+b0        = 0.5         # uniform B along x2: vA = 0.5, beta = 4.8
+amp       = 1.0e-4      # small enough to stay linear through the amplification
+nwx       = -6          # leading wave (kx0 < 0)
+nwy       = 1
+user_hist = true
+
+<output1>
+file_type      = hst
+dt             = 0.02
+data_format    = %14.7e
+user_hist_only = true

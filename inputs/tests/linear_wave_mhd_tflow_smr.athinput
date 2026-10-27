@@ -1,0 +1,98 @@
+# AthenaK input file: MHD linear wave across a static refinement slab with a background flow
+# and field TANGENTIAL to the fine/coarse interfaces (minimal reproducer, 2026-10-27).
+#
+# Why: the magnetized swing test (validation PDF, Phase 4, sec. "Magnetized swing
+# amplification") showed a 10-20%, barely convergent error in the field perturbation on
+# refined shearing boxes integrated without orbital advection, absent without a field and
+# absent without the shear flow. This input strips the shearing box and gravity away and
+# keeps the three ingredients: a magnetic field, mesh refinement, and a flow along the
+# refinement boundary.
+#
+# A linear MHD wave (pgen linear_wave, right-going: wave_flag 4 slow / 5 Alfven / 6 fast)
+# with k along the diagonal of a 2 x 1 box, k ~ (1, 2)/sqrt(5) (angle a3 = atan 2), lambda =
+# 2/sqrt(5). The background state is given in the wave frame (vx0, bx0 along k; vy0, by0
+# across it); the runner validation/run/tflow_smr/tflow_smr.py sets
+#     vx0 = V sin a3, vy0 = V cos a3   ->  grid flow  (0, V)   (tangential to the slab faces)
+#     bx0 = B sin a3, by0 = B cos a3   ->  grid field (0, B)
+# (or the flow normal to the faces, (V, 0), as a contrast). A uniform flow across the
+# wavefronts only Doppler-shifts the wave, and the pattern is invariant along the fronts,
+# so after tlim wave periods the exact solution is the initial state again and the
+# L1 errors (LinWave-errs.dat, volume-weighted) measure the scheme. Refined slab x1 in
+# [0.5, 1.0) at level 1 spanning x2: two interfaces normal to x1.
+# Adiabatic gamma = 5/3, pgas = 0.6: cs = 1. HLLD + PLM + RK2 as in the swing test.
+
+<comment>
+problem   = MHD linear wave, tangential flow across a refinement slab
+
+<job>
+basename  = LinWave
+
+<mesh>
+nghost    = 4
+nx1       = 128
+x1min     = 0.0
+x1max     = 2.0
+ix1_bc    = periodic
+ox1_bc    = periodic
+nx2       = 64
+x2min     = 0.0
+x2max     = 1.0
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 1
+x3min     = -0.5
+x3max     = 0.5
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 1
+
+<mesh_refinement>
+refinement = static
+max_nmb_per_rank = 2048
+
+<refined_region1>
+level = 1
+x1min = 0.51
+x1max = 0.99
+x2min = 0.0
+x2max = 1.0
+x3min = -0.5
+x3max = 0.5
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 2.0        # number of wave periods (the pgen converts it)
+ndiag      = 100
+
+<mhd>
+eos         = ideal
+gamma       = 1.6666666666666667
+reconstruct = plm
+rsolver     = hlld
+
+<problem>
+pgen_name = linear_wave
+wave_flag = 6           # 4 slow, 5 Alfven, 6 fast (right-going)
+amp       = 1.0e-6
+dens      = 1.0
+pgas      = 0.6
+vx0       = 0.0         # set by the runner (wave frame)
+vy0       = 0.0
+vz0       = 0.0
+bx0       = 0.0
+by0       = 0.0
+bz0       = 0.0
+along_x1  = false
+along_x2  = false
+along_x3  = false
+
+<output1>
+file_type   = hst
+dt          = 0.01
