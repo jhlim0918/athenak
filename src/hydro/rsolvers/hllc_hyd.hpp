@@ -7,16 +7,77 @@
 //========================================================================================
 //! \file hllc_hyd.hpp
 //! \brief HLLC Riemann solver for hydrodynamics.  Reads L/R primitives from the global
-//! per-face buffers and writes a single flux entry.  Ideal gas EOS only.
+//! per-face buffers and writes a single flux entry.  Ideal gas: HLLC of Toro et al.;
+//! isothermal: HLLC_Isothermal (ported from athenak-dust amrSG_dev c6cdd22d, R. Li).
 
 #include <cmath>
 
 namespace hydro {
 
 //----------------------------------------------------------------------------------------
+//! \fn HLLC_Isothermal<ivx>()
+//! \brief HLLC for isothermal hydrodynamics.  With p = cs^2 rho the middle wave cannot
+//! carry a density jump; it is the shear (contact) wave of the transverse velocities.
+//! This is the B = 0 limit of the isothermal HLLD solver (Mignone 2007, JCP 225, 1427):
+//! density and normal momentum take the HLL flux, and the transverse momentum fluxes are
+//! the HLL mass flux times the transverse velocity upwinded by the contact speed
+//! S* = m_hll/rho_hll.  The outer wave speeds are those of HLLE (Einfeldt, Roe-averaged),
+//! so the only difference from HLLE is the transverse-momentum flux: its dissipation is
+//! |S*| rho dv_t/2 (as Roe) instead of the HLLE value ~ cs rho dv_t/2.
+template <int ivx>
+KOKKOS_INLINE_FUNCTION
+void HLLC_Isothermal(const EOS_Data &eos,
+                     const int m, const int k, const int j, const int i,
+                     const DvceArray5D<Real> &wl,
+                     const DvceArray5D<Real> &wr,
+                     const DvceArray5D<Real> &flx) {
+  constexpr int ivy = IVX + ((ivx - IVX) + 1) % 3;
+  constexpr int ivz = IVX + ((ivx - IVX) + 2) % 3;
+  const Real iso_cs = eos.iso_cs;
+  const Real cs2 = iso_cs*iso_cs;
+
+  Real dl = wl(m, IDN, k, j, i), ul = wl(m, ivx, k, j, i);
+  Real vl = wl(m, ivy, k, j, i), zl = wl(m, ivz, k, j, i);
+  Real dr = wr(m, IDN, k, j, i), ur = wr(m, ivx, k, j, i);
+  Real vr = wr(m, ivy, k, j, i), zr = wr(m, ivz, k, j, i);
+
+  // outer wave speeds as in HLLE (Roe-averaged normal velocity)
+  Real sqrtdl = sqrt(dl), sqrtdr = sqrt(dr);
+  Real uroe = (sqrtdl*ul + sqrtdr*ur)/(sqrtdl + sqrtdr);
+  Real al = fmin(uroe - iso_cs, ul - iso_cs);
+  Real ar = fmax(uroe + iso_cs, ur + iso_cs);
+
+  // L/R fluxes of density and normal momentum
+  Real fdl = dl*ul, fdr = dr*ur;
+  Real fml = dl*ul*ul + cs2*dl, fmr = dr*ur*ur + cs2*dr;
+
+  Real fd, fm;
+  if (al >= 0.0) {
+    fd = fdl; fm = fml;
+  } else if (ar <= 0.0) {
+    fd = fdr; fm = fmr;
+  } else {
+    Real idenom = 1.0/(ar - al);
+    fd = (ar*fdl - al*fdr + al*ar*(dr - dl))*idenom;
+    fm = (ar*fml - al*fmr + al*ar*(dr*ur - dl*ul))*idenom;
+  }
+  // contact speed S* = m_hll/rho_hll (only its sign is needed)
+  Real dhll = (ar*dr - al*dl - (fdr - fdl))/(ar - al);
+  Real mhll = (ar*dr*ur - al*dl*ul - (fmr - fml))/(ar - al);
+  Real sstar = (al >= 0.0) ? ul : ((ar <= 0.0) ? ur : mhll/dhll);
+  Real vt = (sstar > 0.0) ? vl : ((sstar < 0.0) ? vr : 0.5*(vl + vr));
+  Real zt = (sstar > 0.0) ? zl : ((sstar < 0.0) ? zr : 0.5*(zl + zr));
+
+  flx(m, IDN, k, j, i) = fd;
+  flx(m, ivx, k, j, i) = fm;
+  flx(m, ivy, k, j, i) = fd*vt;
+  flx(m, ivz, k, j, i) = fd*zt;
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn HLLC<ivx>()
-//! \brief Compute the HLLC flux at face (m,k,j,i) for direction ivx.  Only valid for
-//! ideal gas EOS (caller responsibility).
+//! \brief Compute the HLLC flux at face (m,k,j,i) for direction ivx.  Isothermal EOS is
+//! handled by HLLC_Isothermal above.
 template <int ivx>
 KOKKOS_INLINE_FUNCTION
 void HLLC(const EOS_Data &eos,
@@ -27,6 +88,10 @@ void HLLC(const EOS_Data &eos,
           const DvceArray5D<Real> &flx) {
   constexpr int ivy = IVX + ((ivx - IVX) + 1) % 3;
   constexpr int ivz = IVX + ((ivx - IVX) + 2) % 3;
+  if (!eos.is_ideal) {
+    HLLC_Isothermal<ivx>(eos, m, k, j, i, wl, wr, flx);
+    return;
+  }
 
   const Real gm1   = eos.gamma - 1.0;
   const Real igm1  = 1.0 / gm1;
