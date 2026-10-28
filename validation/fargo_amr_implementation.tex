@@ -48,11 +48,10 @@ resolution before the remap. The remap is rewritten in flux form, and an orbital
 flux correction makes it exactly conservative across the level jump. A timestep limit
 keeps the shift within the immediate neighbor. The ring policy becomes an option. Uniform
 and ring-refined runs are bit-identical to the parent code. For MHD (branch
-\code{fargo-amr-mhd}) orbital advection now runs on refined meshes whose refinement comes
-in complete $x_2$ rings: the effective EMFs of the face-field remap are corrected at level
-jumps like the stage EMFs, which keeps the two copies of every face shared by a fine and a
-coarse block equal. Face fields across $x_2$ level jumps (MHD with partial-$x_2$
-refinement) are the next stage.
+\code{fargo-amr-mhd}) the same holds: the face-field remap brings the neighbour's $B_1$,
+$B_3$ rows to each block's resolution, and its effective EMFs are corrected at level jumps
+like the stage EMFs, which keeps the two copies of every face shared by a fine and a coarse
+block equal.
 The tests are in the companion \file{fargo\_amr\_validation.pdf}.
 \end{abstract}
 
@@ -106,7 +105,9 @@ remap (\fn{SendEMF\_OA}, \fn{RecvEMFAndUpdateB\_OA}, \fn{UpdateB}); buffer depth
 \file{src/mhd/mhd\{.cpp,.hpp,\_tasks.cpp\}} & Guard relaxed to rings; tasks
 \fn{SendE\_OA}, \fn{RecvE\_OA}, \fn{SendFlx\_OA}, \fn{RecvFlx\_OA} \\
 \file{src/pgen/tests/swing.cpp} & History columns \code{bmis}, \code{bnrm}: shared-face
-consistency \\
+consistency; optional $x_2$ window of the moving-ring criterion \\
+\file{src/shearing\_box/orbital\_advection\_fc.cpp} (second step) & $B_1$, $B_3$ rows across
+$x_2$ level jumps: per-sub-face buffers, area-averaged and interpolated messages \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -449,8 +450,10 @@ refined only if it overlaps both the $x_1$ interval and the $x_2$ window (or one
 periodic images): a box that moves in $x_1$ and drifts through $x_2$.
 
 %=========================================================================================
-\section{Magnetic fields: MHD on rings}
+\section{Magnetic fields: MHD}
 \label{sec:mhd}
+This was done in two steps: first refinement in complete $x_2$ rings (the first five subsections),
+then $x_2$ level jumps (\S\ref{sec:mhdB}).
 
 \subsection{How the face-field remap works}
 \fn{OrbitalAdvectionFC} (\file{orbital\_advection\_fc.cpp}) shifts the face-centred field
@@ -522,11 +525,10 @@ Two further changes in the class:
 \end{itemize}
 
 \subsection{Policy}
-\fn{MHD::MHD} accepts orbital advection on a refined mesh when
-\code{<shearing\_box> oa\_annular = true}, which makes \fn{Mesh::CheckShearingBoxRefinement}
-require complete $x_2$ rings and synchronizes AMR flags ring-wise. Without it the error
-names the option. The cell-centred flux tasks (\fn{SendFlx\_OA}, \fn{RecvFlx\_OA}) are in
-the MHD task list as well; on rings they do nothing.
+In the first step \fn{MHD::MHD} accepted orbital advection on a refined mesh only with
+\code{<shearing\_box> oa\_annular = true}. Since the second step (\S\ref{sec:mhdB}) the
+policy is that of hydro: \code{oa\_annular} is optional. The cell-centred flux tasks
+(\fn{SendFlx\_OA}, \fn{RecvFlx\_OA}) are in the MHD task list too.
 
 \subsection{A diagnostic: shared-face consistency}
 The swing problem generator's history has two more columns with MHD. After the boundary
@@ -535,6 +537,53 @@ they share; \code{bmis} $= \sum |B_n^{\rm coarse} - \langle B_n^{\rm fine}\rangl
 \,\Delta A$ over the six faces of every fine block with a coarser neighbour, and
 \code{bnrm} $= \sum |B_n|\,\Delta A$ over the same faces. Their ratio is round-off when the
 copies agree.
+
+\subsection{Across \texorpdfstring{$x_2$}{x2} level jumps}
+\label{sec:mhdB}
+The face-field remap reads $B_3$ (on $x_3$ faces) and $B_1$ (on $x_1$ faces) beyond the
+block's $x_2$ faces. The exchange now mirrors the cell-centred one
+(\S\ref{sec:design}): flat buffers per (MeshBlock, face) (\code{sbufb}, \code{rbufb}),
+sub-face $q$ at $q\cdot 2\,s$, component $c$ ($0$: $B_3$, $1$: $B_1$) at $c\,s$, one
+footprint $(n_{x3}{+}1)\times\text{rows}\times(n_{x1}{+}1)$ for both components (the unused
+$B_3$ at $i_e{+}1$ and $B_1$ at $k_e{+}1$ are carried along), MPI requests per sub-face.
+
+\begin{center}
+\small
+\begin{tabular}{@{}lp{11cm}@{}}
+\toprule
+Neighbour & Rows the receiver gets \\
+\midrule
+same level & \code{nrowb} rows of $B_3$, $B_1$, copied \\
+finer      & per quadrant, $\code{nrowb\_fc} = \min(\code{nrowb}, n_{x2}/2)$ coarse rows:
+             each coarse face value the mean of the $2\times2$ fine faces it covers
+             (area average; $B_3$ over $x_1, x_2$, $B_1$ over $x_2, x_3$) \\
+coarser    & a coarse box over the block's quadrant, one extra layer on every side,
+             $\code{nrowb}/2 + 2$ rows; interpolated by the receiver \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The interpolation from the coarse box treats each component on its own lattice. Along the
+component's normal direction a fine face either coincides with a coarse face (value taken
+there) or lies midway between two (mean of the two). In the two transverse directions the
+minmod-limited slopes of \fn{ProlongCC} move the value to the fine position ($\pm\frac14$
+of a coarse cell, with the $\frac18[\operatorname{sgn}+\operatorname{sgn}]\min$ form).
+This is not the divergence-preserving prolongation of AthenaK's ghost zones, and need not
+be: the buffer rows only feed the remap's EMFs, and CT keeps $\nabla\!\cdot\!B$ unchanged for
+any EMFs. A face on a quadrant boundary of a coarse receiver is read from the upper
+quadrant (both fine copies are equal).
+
+The EMFs on the $x_2$ faces and edges at level jumps are corrected by the same private
+\fn{MeshBoundaryValuesFC} instance as those on $x_1$, $x_3$ faces: it handles every face
+and edge neighbour, so nothing was added there. \code{nrowb} is rounded up to even on
+multilevel meshes and is at least the cell-centred \code{nrow}, so the cell-centred
+timestep limit and guard (\S\ref{sec:shiftlimit}) cover the face fields too. The same-level
+path is unchanged: uniform runs and the ring runs of the first step are bit-identical.
+
+The swing problem generator's moving-ring criterion takes the same optional $x_2$ window
+as the shwave one (\code{ring\_yc0}, \code{ring\_yamp}, \code{ring\_yfreq},
+\code{ring\_yvel}, \code{ring\_yhwidth}).
 
 %=========================================================================================
 \section{Input-file interface}
@@ -600,8 +649,7 @@ Location & Condition & Protects \\
   \code{oa\_annular = true} & The optional annular policy \\
 \fn{Mesh::CheckShearingBox\-Refinement} & $x_1$-face blocks on more than one level & I1
   (unchanged) \\
-\fn{MHD::MHD} & orbital advection $+$ refinement without \code{oa\_annular = true} &
-  Face fields across $x_2$ level jumps (not implemented yet) \\
+\fn{MHD::MHD} & (removed) & MHD $+$ orbital advection $+$ refinement is allowed \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -610,10 +658,12 @@ Location & Condition & Protects \\
 \section{Limitations and next steps}
 \label{sec:limits}
 \begin{enumerate}\itemsep4pt
-\item \textbf{MHD across $x_2$ level jumps.} Rings work (\S\ref{sec:mhd}). With
-      partial-$x_2$ refinement the face-field remap also needs the neighbour's $B_1$, $B_3$
-      at the block's resolution (restriction from finer, divergence-preserving
-      prolongation from coarser) and the EMF correction on $x_2$ faces and edges.
+\item \textbf{$\nabla\!\cdot\!B$ at AMR derefinement next to fine $x_2$ neighbours.}
+      Not part of this work, found by it: when a refined \emph{box} (bounded in $x_1$ and
+      $x_2$) is partly derefined, $|\nabla\!\cdot\!B|/|B|$ jumps by $10^{-13}$--$10^{-12}$
+      per event, with or without orbital advection and with $q = 0$; a moving ring does
+      not. AthenaK's AMR face-field handling (likely \fn{RepairAMRFC} or the face
+      ownership at $x_2$ faces and $x_1x_2$ edges) is the suspect (validation document).
 \item \textbf{One neighbor deep.} All upstream data come from the immediate $x_2$
       neighbor; the timestep limit enforces it. Reaching through two neighbors would lift
       the limit on small blocks far from $x = 0$.

@@ -46,11 +46,13 @@ coarse-grid results, with no visible artifact at the level jumps. Swing amplific
 with multigrid self-gravity on a patch moves the peak $0.60\%$ toward linear theory, and a
 gravity-off control shows that gravity adds no deviation of its own. A timestep limit
 lets a run proceed where the shift would otherwise exceed the neighbor's rows. For MHD
-(branch \code{fargo-amr-mhd}) orbital advection now runs on ring-refined meshes: the
-remap's EMFs are corrected at level jumps, which keeps the two copies of every shared face
-equal to round-off ($10^{-2}$ apart without it), and the refined-mesh field error of the
-magnetized swing (13--22\% without orbital advection) is gone: refined runs follow their
-uniform twins to 1--3\% and linear theory better than the uniform runs. The production test
+(branch \code{fargo-amr-mhd}) orbital advection now runs on refined meshes, rings and
+partial-$x_2$ patches alike: the remap's EMFs are corrected at level jumps, which keeps the
+two copies of every shared face equal to round-off ($10^{-2}$ apart without it), and the
+refined-mesh field error of the magnetized swing (13--22\% without orbital advection) is
+gone: refined runs follow their uniform twins to 1--3\% and linear theory better than the
+uniform runs. A pre-existing $\nabla\!\cdot\!B$ defect of AthenaK's AMR derefinement
+($10^{-13}$--$10^{-12}$ per event next to fine $x_2$ neighbours) is documented. The production test
 --- SC14 clump-following AMR with and without rings --- is still to be run.
 \end{abstract}
 
@@ -82,6 +84,8 @@ Swing with gravity (\S\ref{sec:swing}) & multigrid at $x_2$ level jumps & $+0.60
   toward theory \\
 Timestep limit (\S\ref{sec:dtlimit}) & large shifts & runs, conserves \\
 MHD on rings (\S\ref{sec:mhd}) & orbital EMF correction, field error &
+  faces to $10^{-15}$; 1--3\% \\
+MHD across $x_2$ jumps (\S\ref{sec:mhdB}) & $B_1$, $B_3$ rows across levels &
   faces to $10^{-15}$; 1--3\% \\
 SC14 production (\S\ref{sec:open}) & cost & not yet run \\
 \bottomrule
@@ -303,10 +307,12 @@ $0.999\,(6-2)\,\Delta x_2/(q\Om\max|x|) = 0.0416$, exactly the predicted value; 
 reaches $t = 8$ (193 steps) and conserves mass to $8\times10^{-14}$.
 
 %=========================================================================================
-\section{MHD with orbital advection on rings}
+\section{MHD with orbital advection on refined meshes}
 \label{sec:mhd}
-Branch \code{fargo-amr-mhd}: MHD with orbital advection runs on refined meshes whose
-refinement comes in complete $x_2$ rings (\code{oa\_annular = true}); the effective EMFs of
+Branch \code{fargo-amr-mhd}, in two steps. First, MHD with orbital advection on refined
+meshes whose refinement comes in complete $x_2$ rings (\code{oa\_annular = true}; the
+subsections up to the magnetized swing); then across $x_2$ level jumps
+(\S\ref{sec:mhdB}). The effective EMFs of
 the face-field remap are corrected at level jumps like the stage EMFs (implementation
 document, section ``Magnetic fields: MHD on rings''). Before this, MHD $+$ orbital advection $+$ refinement was a
 fatal error, and the refined MHD shearing boxes of \file{multigrid\_sb\_validation.pdf}
@@ -423,13 +429,91 @@ $3.2\%$ and $2.7\%$ on the static rings ($B_0 = 0.5$, $1.0$) and $2.9\%$ on the 
 against $4.9\%$ and $4.0\%$ for the uniform runs. The shared faces stay consistent to
 round-off (copy mismatch $\le 10^{-12}$ of $|B_n|$) and $\max|\nabla\!\cdot\!B|/|B| \le
 7\times10^{-15}$. The static rings (176 MeshBlocks) ran to $t = 10$; to $t \le 8$ their
-$c_y$ deviation is $1.7\%$ and $2.6\%$. The moving ring (64--176 MeshBlocks) is evaluated over
-$t \le 6$. All on 3 MPI ranks; inputs and runs in
+$c_y$ deviation is $1.7\%$ and $2.6\%$. The moving ring (64--176 MeshBlocks; 448 created,
+392 destroyed) also ran to $t = 10$: $1.9\%$ and $2.3\%$ to $t \le 8$, with
+$\nabla\!\cdot\!B \le 5\times10^{-15}$ throughout. All on 3 MPI ranks; inputs and runs in
 \file{validation/run/fargo\_amr/mhd/swing/}.
 
 So with orbital advection, refined MHD shearing boxes are validated on rings, with and
 without self-gravity; the refined-mesh field error of Phase 4 remains a property of the
 full-shear-flow frame.
+
+\subsection{Across \texorpdfstring{$x_2$}{x2} level jumps}
+\label{sec:mhdB}
+In the second step the face-field remap takes $x_2$ neighbours one level coarser or finer
+(implementation document), and MHD with orbital advection follows the hydro policy:
+\code{oa\_annular} is optional.
+
+\paragraph{Regression.} Uniform MHD with orbital advection is still bit-identical to the
+parent code, and the ring, $x_3$-jump and moving-ring reproducer runs of the first step are
+bit-identical to their first-step results: the same-level path is unchanged.
+
+\paragraph{Reproducer on a patch.} The reproducer with the ring cut to four of eight block
+rows in $y$ ($|x| < \pi/4$, $|y| < \pi/2$; 120 MeshBlocks), and with a moving box under AMR
+(the moving ring of the first step with an $x_2$ window $y_c = \sin t + 0.5\,t$, half-width
+0.6; 64--106 MeshBlocks, 147 created, 126 destroyed):
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{vs uniform twin} & copy mismatch $/\,|B_n|$ & \\
+mesh & $\delta$ & $c_y$ & correction on / off & $\max|\nabla\!\cdot\!B|/|B|$ \\
+\midrule
+ring (first step)            & 0.030 & 0.033 & $10^{-15}$ / $10^{-2}$ & $4\times10^{-15}$ \\
+static patch ($x_2$ jumps)   & 0.025 & 0.026 & $2\times10^{-15}$ / $6\times10^{-7}$ & $4\times10^{-15}$ \\
+moving box, AMR              & 0.023 & 0.023 & $10^{-15}$ / $2\times10^{-7}$ & $4\times10^{-12}$ (see below) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+On the patch the field perturbation follows its uniform twin as closely as on the ring, and
+every shared face, now including the $x_2$ faces, stays consistent to round-off. (Without the
+correction the normalized mismatch is smaller than on the ring only because the $x_2$ faces
+add their normal field $B_y \approx B_0 = 1$ to the normalization; the absolute mismatch is
+of the same order.) On 4 MPI ranks every field dump of both runs is bit-identical to the
+serial run.
+
+\paragraph{A pre-existing $\nabla\!\cdot\!B$ defect at AMR derefinement.} In the moving-box run
+$|\nabla\!\cdot\!B|/|B|$ grows in steps, $10^{-13}$ to $5\times10^{-12}$, at the regrid events
+where blocks are \emph{derefined}, and stays constant in between (so the remap and its
+correction conserve it). Two controls place it outside this work: the same moving box with
+$q = 0$ (the remap then shifts nothing) and with $q = 0$ and orbital advection off give the
+same jumps at the same events ($3.9\times10^{-13}$ at $t = 0.28$, $7.1\times10^{-12}$ by
+$t = 3$). The moving ring of the first step derefines too (392 blocks destroyed in the full
+swing run) and stays at $5\times10^{-15}$; a box adds fine neighbours across $x_2$ faces and
+$x_1x_2$ edges to a derefined block. The suspect is AthenaK's post-AMR face-field handling
+(\fn{MeshRefinement::RepairAMRFC}, which recomputes the interior faces of created \emph{and}
+derefined blocks, or the face ownership of the receives at those neighbours). It is small
+now but accumulates with every derefinement; it is left for a separate fix.
+
+\paragraph{Magnetized swing with gravity on a patch.} The full test of
+\S\ref{sec:mhd} (multigrid gravity, $128^2\times16$, 3 MPI ranks) with the two-column ring cut
+to half the azimuth ($|y| < \pi/2$):
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{vs uniform twin, $t \le 6$} & vs theory, $t \le 6$ & \\
+case & $\delta$ & $c_y$ & $c_y$ & $\max|\nabla\!\cdot\!B|/|B|$ \\
+\midrule
+patch, $B_0 = 0.5$ & 0.030 & 0.015 & 0.035 & $5\times10^{-15}$ \\
+patch, $B_0 = 1.0$ & 0.012 & 0.011 & 0.030 & $6\times10^{-15}$ \\
+ring, $B_0 = 0.5$ (above) & 0.035 & 0.017 & 0.032 & $6\times10^{-15}$ \\
+ring, $B_0 = 1.0$ (above) & 0.014 & 0.014 & 0.027 & $7\times10^{-15}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The patch (120 MeshBlocks) follows its uniform twin as closely as the ring, $1$--$3\%$ in
+$\delta$ and $c_y$, also to $t \le 8$ ($1.4\%$, $1.7\%$ at $B_0 = 1.0$), and linear theory
+better than the uniform runs ($c_y$: $3.5\%$ and $3.0\%$ against $4.9\%$ and $4.0\%$). Shared
+faces agree to $5\times10^{-15}$ of $|B_n|$, and $\nabla\!\cdot\!B$ stays at round-off. Runs in
+\file{validation/run/fargo\_amr/mhd/swing/} (\code{ypF\_b*}, input \file{ypatch.athinput}) and
+\file{mhd/stepB/} (reproducer).
 
 %=========================================================================================
 \section{Not yet validated}
@@ -441,8 +525,10 @@ full-shear-flow frame.
       block count, cost per cycle and whether the timestep limit binds. Needs a cluster.
 \item \textbf{GPU.} The kernels follow the existing team-scratch pattern but have run
       only on the CPU (serial and MPI).
-\item \textbf{MHD across $x_2$ level jumps.} MHD with orbital advection needs
-      \code{oa\_annular = true}; face fields across $x_2$ level jumps are the next stage.
+\item \textbf{$\nabla\!\cdot\!B$ at AMR derefinement} next to fine $x_2$ neighbours
+      (\S\ref{sec:mhdB}): pre-existing in AthenaK, $10^{-13}$--$10^{-12}$ per event,
+      to be fixed separately. Production MHD runs with box-shaped AMR should watch the
+      history's \code{divb}.
 \item \textbf{Non-FARGO refinement with $x_2$ level jumps} fails in the parent code
       (\S\ref{sec:shwave}); not addressed here.
 \end{itemize}

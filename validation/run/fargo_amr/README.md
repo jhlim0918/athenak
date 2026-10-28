@@ -64,3 +64,10 @@ Full magnetized swing with gravity, directory mhd/swing (3 MPI ranks):
 Twins: the uniform runs uF_b0.5, uF_b1.0 of validation/run/swing_mhd/runs (uniform MHD with
 orbital advection is bit-identical between the two branches). Figure:
 julia figures/plot_fargo_amr_mhd.jl
+Across x2 level jumps (second step), directory mhd/stepB (inputs ypatch/ybox in it,
+oa_annular = false): yp/yp_nofc static patch |x|<pi/4, |y|<pi/2; yb/yb_nofc moving box
+(ring_y* window); yps/ypm, ybs/ybm serial vs 4 ranks (*_bin inputs); f_ring, z3, amr:
+first-step runs repeated with the second-step binary (histories bit-identical);
+yb_q0 (qshear=0) and yb_q0_nf (qshear=0, orbital_advection=false): the div(B) jumps at
+derefinement are pre-existing. Full swing on the patch: mhd/swing/ypF_b0.5, ypF_b1.0
+    mpirun -np 3 $ATH -i ypatch.athinput shearing_box/orbital_advection=true problem/b0=...
