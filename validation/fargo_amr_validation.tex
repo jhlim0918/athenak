@@ -45,9 +45,13 @@ Vortical shearing waves on a static patch and under a moving box lie between the
 coarse-grid results, with no visible artifact at the level jumps. Swing amplification
 with multigrid self-gravity on a patch moves the peak $0.60\%$ toward linear theory, and a
 gravity-off control shows that gravity adds no deviation of its own. A timestep limit
-lets a run proceed where the shift would otherwise exceed the neighbor's rows. The
-production test --- SC14 clump-following AMR with and without rings --- is still to be
-run.
+lets a run proceed where the shift would otherwise exceed the neighbor's rows. For MHD
+(branch \code{fargo-amr-mhd}) orbital advection now runs on ring-refined meshes: the
+remap's EMFs are corrected at level jumps, which keeps the two copies of every shared face
+equal to round-off ($10^{-2}$ apart without it), and the refined-mesh field error of the
+magnetized swing (13--22\% without orbital advection) is gone: refined runs follow their
+uniform twins to 1--3\% and linear theory better than the uniform runs. The production test
+--- SC14 clump-following AMR with and without rings --- is still to be run.
 \end{abstract}
 
 \tableofcontents
@@ -77,6 +81,8 @@ Vortical shearing wave (\S\ref{sec:shwave}) & structure through level jumps &
 Swing with gravity (\S\ref{sec:swing}) & multigrid at $x_2$ level jumps & $+0.60\%$
   toward theory \\
 Timestep limit (\S\ref{sec:dtlimit}) & large shifts & runs, conserves \\
+MHD on rings (\S\ref{sec:mhd}) & orbital EMF correction, field error &
+  faces to $10^{-15}$; 1--3\% \\
 SC14 production (\S\ref{sec:open}) & cost & not yet run \\
 \bottomrule
 \end{tabular}
@@ -297,6 +303,135 @@ $0.999\,(6-2)\,\Delta x_2/(q\Om\max|x|) = 0.0416$, exactly the predicted value; 
 reaches $t = 8$ (193 steps) and conserves mass to $8\times10^{-14}$.
 
 %=========================================================================================
+\section{MHD with orbital advection on rings}
+\label{sec:mhd}
+Branch \code{fargo-amr-mhd}: MHD with orbital advection runs on refined meshes whose
+refinement comes in complete $x_2$ rings (\code{oa\_annular = true}); the effective EMFs of
+the face-field remap are corrected at level jumps like the stage EMFs (implementation
+document, section ``Magnetic fields: MHD on rings''). Before this, MHD $+$ orbital advection $+$ refinement was a
+fatal error, and the refined MHD shearing boxes of \file{multigrid\_sb\_validation.pdf}
+(Phase 4) ran without orbital advection, where the field perturbation of the magnetized
+swing is $13$--$22\%$ off.
+
+\subsection{Regression}
+Uniform MHD with orbital advection (\file{mhd\_compress\_shwave}) is bit-identical to the
+parent code in the history and all VTK dumps: without refinement the remap's EMFs are not
+corrected and the arithmetic is unchanged.
+
+\subsection{The refined-mesh field error disappears with orbital advection}
+The three-minute reproducer of the Phase-4 field error
+(\file{inputs/tests/swing\_mhd\_repro.athinput}: $64^2\times4$ root cells, $8^2\times4$
+blocks, $B_0 = 1$ along $y$, $\beta = 1.2$, no gravity, static level-1 ring
+$|x| < \pi/4$), run with and without orbital advection. Deviation over $t \le 6$, on common
+times:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+& \multicolumn{2}{c}{vs linear theory} & ring vs uniform twin \\
+run & $\delta$ & $c_y$ & $c_y$ \\
+\midrule
+uniform, no orbital advection   & 0.068 & 0.075 & --- \\
+ring, no orbital advection      & 0.075 & 0.226 & 0.220 \\
+uniform, orbital advection      & 0.091 & 0.106 & --- \\
+ring, orbital advection         & 0.062 & 0.074 & 0.033 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+With orbital advection the ring is closer to linear theory than its uniform twin, as
+refinement should be, and within $3.3\%$ of it ($\delta$: $3.0\%$), where the same ring
+without orbital advection is $22\%$ off (Fig.~\ref{fig:mhd}, left). The two uniform runs
+agree with each other to $3\%$. So the Phase-4 defect needs the background shear flow
+carried in the state across the level interfaces; with orbital advection the state holds
+only the perturbation and the defect does not arise. (Comparing the twins row by row of
+the history, as \file{repro.py} did, is wrong when one run's step exceeds the history
+interval --- the uniform run with orbital advection takes $\Delta t = 0.021$ against an
+output interval of 0.02 --- and gave a spurious $52\%$; \file{repro.py} now interpolates to
+common times.)
+
+\subsection{Shared faces stay consistent}
+The history columns \code{bmis}/\code{bnrm} measure how far the coarse copy of each face
+shared with a finer block is from the mean of the fine copies:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+& \multicolumn{2}{c}{copy mismatch $/\,|B_n|$} & \\
+mesh & EMF correction off & on & $\max|\nabla\!\cdot\!B|/|B|$ \\
+\midrule
+ring (level jumps at $x_1$ faces)                         & $\sim 10^{-2}$ (up to 0.7) & $\sim10^{-15}$ & $4\times10^{-15}$ \\
+ring $+$ half-height in $z$ ($x_1$ and $x_3$ jumps)        & median $1.8\times10^{-2}$ & $\sim10^{-15}$ & $3\times10^{-15}$ \\
+moving ring, AMR (280 blocks created, 224 destroyed)       & median $3\times10^{-3}$ & $\sim10^{-15}$ & $5\times10^{-15}$ \\
+ring without orbital advection (stage EMFs only)           & \multicolumn{2}{c}{$\sim10^{-15}$} & $4\times10^{-15}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+Without the correction the two copies drift apart by about $1\%$ of the field (the ratio
+peaks where $B_n$ passes through zero); each block stays divergence-free, which is why the
+history's $\nabla\!\cdot\!B$ does not see it. With it they agree to round-off, as the
+stage's own EMF correction keeps them without orbital advection (Fig.~\ref{fig:mhd},
+right). The effect on the smooth swing wave is small ($2$--$4\times10^{-4}$ in $\delta$ and
+$c_y$), but a shared face with two different values is a monopole of the composite mesh.
+On 4 MPI ranks every field dump of the $x_3$-jump and AMR runs is bit-identical to the
+serial run.
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fargo_amr_mhd.png}
+  \caption{MHD on rings. Left: azimuthal field perturbation $c_y$ of the refined-MHD
+  reproducer against linear theory; without orbital advection the ring misses the swing's
+  minimum (the Phase-4 defect), with it the ring follows its uniform twin. Right: mismatch
+  of the two copies of the faces shared by fine and coarse blocks, with (solid) and without
+  (dashed) the EMF correction of the face-field remap. Script
+  \file{figures/plot\_fargo\_amr\_mhd.jl}.}
+  \label{fig:mhd}
+\end{figure}
+
+\subsection{Magnetized swing amplification with gravity}
+The full Phase-4 test (\file{inputs/tests/swing\_mhd.athinput}: $128^2\times16$ root
+cells, $16^3$ blocks, multigrid gravity with $4\pi G\rho_0 = 1.9$, HLLD, PLM) on the
+two-column ring and the moving ring of Phase 4, now with orbital advection, against the
+uniform runs with orbital advection (\code{uF\_b*}). Deviation from the uniform twin over
+$t \le 6$, with the Phase-4 values without orbital advection for comparison:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{orbital advection (this work)} &
+  \multicolumn{2}{c}{without (Phase 4)} \\
+case & $\delta$ & $c_y$ & $\delta$ & $c_y$ \\
+\midrule
+static ring, $B_0 = 0.5$   & 0.035 & 0.017 & 0.025 & 0.071 \\
+static ring, $B_0 = 1.0$   & 0.014 & 0.014 & 0.039 & 0.133 \\
+moving ring, $B_0 = 1.0$   & 0.013 & 0.013 & 0.040 & 0.150 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+With orbital advection the refined runs follow their uniform twins to $1$--$4\%$ in
+$\delta$ and $1$--$2\%$ in $c_y$, against $7$--$15\%$ in $c_y$ without it. Against linear
+theory they are closer than the uniform runs, as refinement should be: $c_y$ is off by
+$3.2\%$ and $2.7\%$ on the static rings ($B_0 = 0.5$, $1.0$) and $2.9\%$ on the moving ring,
+against $4.9\%$ and $4.0\%$ for the uniform runs. The shared faces stay consistent to
+round-off (copy mismatch $\le 10^{-12}$ of $|B_n|$) and $\max|\nabla\!\cdot\!B|/|B| \le
+7\times10^{-15}$. The static rings (176 MeshBlocks) ran to $t = 10$; to $t \le 8$ their
+$c_y$ deviation is $1.7\%$ and $2.6\%$. The moving ring (64--176 MeshBlocks) is evaluated over
+$t \le 6$. All on 3 MPI ranks; inputs and runs in
+\file{validation/run/fargo\_amr/mhd/swing/}.
+
+So with orbital advection, refined MHD shearing boxes are validated on rings, with and
+without self-gravity; the refined-mesh field error of Phase 4 remains a property of the
+full-shear-flow frame.
+
+%=========================================================================================
 \section{Not yet validated}
 \label{sec:open}
 \begin{itemize}\itemsep2pt
@@ -306,7 +441,8 @@ reaches $t = 8$ (193 steps) and conserves mass to $8\times10^{-14}$.
       block count, cost per cycle and whether the timestep limit binds. Needs a cluster.
 \item \textbf{GPU.} The kernels follow the existing team-scratch pattern but have run
       only on the CPU (serial and MPI).
-\item \textbf{MHD.} Orbital advection with refinement remains fatal for MHD.
+\item \textbf{MHD across $x_2$ level jumps.} MHD with orbital advection needs
+      \code{oa\_annular = true}; face fields across $x_2$ level jumps are the next stage.
 \item \textbf{Non-FARGO refinement with $x_2$ level jumps} fails in the parent code
       (\S\ref{sec:shwave}); not addressed here.
 \end{itemize}
@@ -319,8 +455,10 @@ cd validation/run/fargo_amr        # README.md: one command per run directory
 python3 compare.py unif128 unif ring ypatch amrring amrbox   # shwave table
 python3 errmap.py 00010                                      # error at the level jumps
 (cd swing && python3 cmp.py)                                 # swing table
+python3 ../swing_mhd_repro/repro.py 6 base fargo fargo_nofc  # MHD reproducer pairs
 cd ../.. && julia figures/plot_fargo_amr_shwave.jl           # Fig. 2
 julia figures/plot_fargo_amr_tests.jl                        # Figs. 1 and 3
+julia figures/plot_fargo_amr_mhd.jl                          # Fig. 4
 \end{lstlisting}
 
 \end{document}

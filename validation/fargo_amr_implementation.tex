@@ -47,8 +47,12 @@ restricted (from a finer neighbor) or prolongated (from a coarser one) to the bl
 resolution before the remap. The remap is rewritten in flux form, and an orbital-advection
 flux correction makes it exactly conservative across the level jump. A timestep limit
 keeps the shift within the immediate neighbor. The ring policy becomes an option. Uniform
-and ring-refined runs are bit-identical to the parent code. Hydro only: MHD with orbital
-advection on a refined mesh remains a fatal error.
+and ring-refined runs are bit-identical to the parent code. For MHD (branch
+\code{fargo-amr-mhd}) orbital advection now runs on refined meshes whose refinement comes
+in complete $x_2$ rings: the effective EMFs of the face-field remap are corrected at level
+jumps like the stage EMFs, which keeps the two copies of every face shared by a fine and a
+coarse block equal. Face fields across $x_2$ level jumps (MHD with partial-$x_2$
+refinement) are the next stage.
 The tests are in the companion \file{fargo\_amr\_validation.pdf}.
 \end{abstract}
 
@@ -92,6 +96,17 @@ policy warning text \\
 \file{src/hydro/hydro.cpp}, \file{src/mhd/mhd.cpp} & Comments \\
 \file{src/pgen/tests/shwave.cpp} & Optional $x_2$ window for the moving-ring criterion
 (a moving box) \\
+\midrule
+\multicolumn{2}{@{}l}{\textbf{MHD on rings (branch \code{fargo-amr-mhd})}}\\
+\file{src/shearing\_box/orbital\_advection\_fc.cpp} & EMF correction of the face-field
+remap (\fn{SendEMF\_OA}, \fn{RecvEMFAndUpdateB\_OA}, \fn{UpdateB}); buffer depth
+\code{nrowb} $\le n_{x2}$; EMF arrays sized for AMR \\
+\file{src/shearing\_box/orbital\_advection\{.hpp,\_tasks.cpp\}} & FC overrides of
+\fn{InitRecv}/\fn{ClearRecv}/\fn{ClearSend} \\
+\file{src/mhd/mhd\{.cpp,.hpp,\_tasks.cpp\}} & Guard relaxed to rings; tasks
+\fn{SendE\_OA}, \fn{RecvE\_OA}, \fn{SendFlx\_OA}, \fn{RecvFlx\_OA} \\
+\file{src/pgen/tests/swing.cpp} & History columns \code{bmis}, \code{bnrm}: shared-face
+consistency \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -423,9 +438,8 @@ Task & With orbital advection \\
 \end{tabular}
 \end{center}
 \noindent
-The MHD task list calls the same \fn{OrbitalAdvectionCC} for the cell-centered variables
-but not the two flux tasks: with MHD, orbital advection on a refined mesh is fatal, so no
-level jump can occur.
+The MHD task list calls the same \fn{OrbitalAdvectionCC} for the cell-centered variables,
+with the same two flux tasks, and adds two for the face fields (\S\ref{sec:mhd}).
 
 \subsection{A test criterion: the moving box}
 The shwave problem generator's prescribed moving-ring criterion (\fn{MovingRingRefine})
@@ -433,6 +447,94 @@ takes an optional $x_2$ window, $y_c(t) = y_{c0} + A_y\sin(\omega_y t) + v_y t$,
 periodically into $[x_{2,\min}, x_{2,\max})$. With \code{ring\_yhwidth} $> 0$ a block is
 refined only if it overlaps both the $x_1$ interval and the $x_2$ window (or one of its
 periodic images): a box that moves in $x_1$ and drifts through $x_2$.
+
+%=========================================================================================
+\section{Magnetic fields: MHD on rings}
+\label{sec:mhd}
+
+\subsection{How the face-field remap works}
+\fn{OrbitalAdvectionFC} (\file{orbital\_advection\_fc.cpp}) shifts the face-centred field
+with constrained transport (CT) instead of remapping it directly. For each $x_2$ column of
+$B_3$ (at $x_1$ cell centres) and of $B_1$ (at $x_1$ faces) it builds the extended column
+from the $x_2$ neighbours, computes the remap flux exactly as for a cell-centred variable,
+and turns it into an effective EMF on the $x_2$ faces, in units of $\Delta x_2$:
+\begin{equation}
+  \mathcal E_1 = -\left(F + \textstyle\sum_{\rm whole\ cells} B_3\right), \qquad
+  \mathcal E_3 = +\left(F + \textstyle\sum_{\rm whole\ cells} B_1\right),
+\end{equation}
+(\code{emfx} on $x_1$ edges, \code{emfz} on $x_3$ edges; the remap has no $\mathcal E_2$).
+The field is then updated by the discrete curl,
+\begin{equation}
+  B_1 \mathrel{-}= \delta_2 \mathcal E_3, \qquad
+  B_2 \mathrel{+}= \tfrac{\Delta x_2}{\Delta x_1}\delta_1 \mathcal E_3
+                 - \tfrac{\Delta x_2}{\Delta x_3}\delta_3 \mathcal E_1, \qquad
+  B_3 \mathrel{+}= \delta_2 \mathcal E_1,
+\end{equation}
+which keeps $\nabla\!\cdot\!B$ unchanged inside every block.
+
+\subsection{What goes wrong at a level jump, even with rings}
+With rings every $x_2$ neighbour is at the block's level, so the extended columns are the
+uniform ones; but the blocks still meet coarser or finer blocks across $x_1$ and $x_3$ faces.
+AthenaK keeps both copies of a face shared by two blocks: the regular exchange never
+overwrites a block's own boundary face (\file{buffs\_fc.cpp}: same-level and finer data
+start one face beyond it). The copies stay equal only because the stage EMFs on the shared
+edges are made identical (\fn{RecvAndUnpackFluxFC}: averaged between same-level blocks,
+replaced by restricted fine values on coarse blocks). The remap's EMFs had no such step. A
+fine block remaps its fine $B_1$ on a shared $x_1$ face, the coarse block remaps its coarse
+$B_1$ on the same face, and the two results differ at truncation level: each block stays
+divergence-free, but the coarse copy drifts away from the mean of the fine copies
+($\sim1\%$ of the field in the tests). That was the unanalysed $\nabla\!\cdot\!B$ question
+behind the old fatal error.
+
+\subsection{The correction}
+With mesh refinement \fn{RecvAndUnpackFC} no longer updates $B$. It stores the EMFs as
+$E\,\Delta t$ on the edges (\code{eoa}: $\mathcal E_1\Delta x_2$ in \code{x1e},
+$\mathcal E_3\Delta x_2$ in \code{x3e}, zero \code{x2e}) and returns. Two new MHD tasks
+follow \fn{RecvB\_OA}:
+\begin{itemize}\itemsep2pt
+\item \fn{SendE\_OA} $\to$ \fn{SendEMF\_OA}: \fn{PackAndSendFluxFC} on \code{eoa};
+\item \fn{RecvE\_OA} $\to$ \fn{RecvEMFAndUpdateB\_OA}: \fn{RecvAndUnpackFluxFC} on
+      \code{eoa}, conversion back to units of $\Delta x_2$, and the CT update
+      (\fn{UpdateB}).
+\end{itemize}
+The exchange is the stage's own EMF machinery, run on a private
+\fn{MeshBoundaryValuesFC} instance (\code{pbval\_oa}, with its own buffers and MPI
+communicators), so it cannot collide with the stage's EMF messages, whose sends are still
+in flight. It handles faces and edges, same-rank copies and MPI, and skips the
+shear-periodic $x_1$ boundary as the stage correction does. Physical units are needed
+because the correction averages EMFs along edges: a coarse edge carries the mean of its two
+fine edges, which in units of the block's own $\Delta x_2$ would carry a factor $1/2$.
+Receives are posted in \fn{OrbitalAdvectionFC::InitRecv} and cleared with the base
+buffers. Without refinement nothing of this runs, and the arithmetic is the old one.
+
+\noindent
+Two further changes in the class:
+\begin{itemize}\itemsep2pt
+\item \textbf{Buffer depth.} $B_1$, $B_3$ rows sent across an $x_2$ face:
+      $\code{nrowb} = \min(n_{x2},\ \max(\code{ng} + \code{maxjshift} + 1,\
+      \code{oa\_nrow}))$, at least the cell-centred \code{nrow} and never more than one
+      block (the old depth $\code{ng} + \code{maxjshift}$ could exceed the block).
+\item \textbf{EMF arrays} \code{emfx}, \code{emfz} are sized for the largest pack AMR
+      can produce (the larger of the pack size and \code{nmb\_maxperrank}), as the other
+      MHD arrays are;
+      they were sized for the initial pack, which was harmless only while refinement was
+      fatal.
+\end{itemize}
+
+\subsection{Policy}
+\fn{MHD::MHD} accepts orbital advection on a refined mesh when
+\code{<shearing\_box> oa\_annular = true}, which makes \fn{Mesh::CheckShearingBoxRefinement}
+require complete $x_2$ rings and synchronizes AMR flags ring-wise. Without it the error
+names the option. The cell-centred flux tasks (\fn{SendFlx\_OA}, \fn{RecvFlx\_OA}) are in
+the MHD task list as well; on rings they do nothing.
+
+\subsection{A diagnostic: shared-face consistency}
+The swing problem generator's history has two more columns with MHD. After the boundary
+exchange a fine block holds, in \code{coarse\_b0}, the coarse neighbour's copy of every face
+they share; \code{bmis} $= \sum |B_n^{\rm coarse} - \langle B_n^{\rm fine}\rangle_{2\times2}|
+\,\Delta A$ over the six faces of every fine block with a coarser neighbour, and
+\code{bnrm} $= \sum |B_n|\,\Delta A$ over the same faces. Their ratio is round-off when the
+copies agree.
 
 %=========================================================================================
 \section{Input-file interface}
@@ -498,8 +600,8 @@ Location & Condition & Protects \\
   \code{oa\_annular = true} & The optional annular policy \\
 \fn{Mesh::CheckShearingBox\-Refinement} & $x_1$-face blocks on more than one level & I1
   (unchanged) \\
-\fn{MHD::MHD} & orbital advection $+$ refinement & The face-field remap at level jumps
-  (unchanged) \\
+\fn{MHD::MHD} & orbital advection $+$ refinement without \code{oa\_annular = true} &
+  Face fields across $x_2$ level jumps (not implemented yet) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -508,10 +610,10 @@ Location & Condition & Protects \\
 \section{Limitations and next steps}
 \label{sec:limits}
 \begin{enumerate}\itemsep4pt
-\item \textbf{MHD.} The face-centered field remap (\file{orbital\_advection\_fc.cpp},
-      EMF form) needs the same cross-level exchange plus a divergence-free treatment at
-      the level jump (prolongation of face fields, EMF correction of the orbital EMFs).
-      Until then MHD $+$ orbital advection $+$ refinement stays fatal.
+\item \textbf{MHD across $x_2$ level jumps.} Rings work (\S\ref{sec:mhd}). With
+      partial-$x_2$ refinement the face-field remap also needs the neighbour's $B_1$, $B_3$
+      at the block's resolution (restriction from finer, divergence-preserving
+      prolongation from coarser) and the EMF correction on $x_2$ faces and edges.
 \item \textbf{One neighbor deep.} All upstream data come from the immediate $x_2$
       neighbor; the timestep limit enforces it. Reaching through two neighbors would lift
       the limit on small blocks far from $x = 0$.

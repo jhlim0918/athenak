@@ -46,3 +46,21 @@ MPI: the same with `mpirun -np 3|4|7` and the MPI build; all bin dumps bit-ident
     patch      $ATH -i inputs/tests/swing_selfgrav_smr_ypatch.athinput
     *_nog      the same with hydro_srcterms/self_gravity=false
 (all with output1/data_format=%.15e). Analysis: `python3 swing/cmp.py` from `swing/`.
+
+## MHD with orbital advection on rings (branch fargo-amr-mhd), directory mhd
+Reproducer pairs (inputs/tests/swing_mhd_repro.athinput, 64^2 x 4, B0 = 1, no gravity,
+static ring |x| < pi/4); `fargo.athinput` is that input with orbital advection on:
+    nf_ring / nf_uni      $ATH -i inputs/tests/swing_mhd_repro.athinput [mesh_refinement/refinement=none]
+    f_ring / f_uni        $ATH -i fargo.athinput [mesh_refinement/refinement=none]
+    f_ring_nofc           $ATH -i fargo.athinput shearing_box/oa_flux_correct=false
+    z3, z3_nofc           $ATH -i z3.athinput [...]     (x1 and x3 level jumps)
+    amr, amr_nofc         $ATH -i amr.athinput [...]    (moving ring, AMR)
+    z3s/z3m, amrs/amrm    *_bin.athinput, serial / mpirun -np 4 (bin dumps bit-identical)
+(all with output1/data_format=%.15e). Or: python3 validation/run/swing_mhd_repro/repro.py
+6 base fargo fargo_nofc. History columns 12/13 (0-based) are bmis/bnrm.
+Full magnetized swing with gravity, directory mhd/swing (3 MPI ranks):
+    smrF_b0.5, smrF_b1.0  mpirun -np 3 $ATH -i smr.athinput shearing_box/orbital_advection=true problem/b0=...
+    amrF_b1.0             mpirun -np 3 $ATH -i amr.athinput shearing_box/orbital_advection=true problem/b0=1.0
+Twins: the uniform runs uF_b0.5, uF_b1.0 of validation/run/swing_mhd/runs (uniform MHD with
+orbital advection is bit-identical between the two branches). Figure:
+julia figures/plot_fargo_amr_mhd.jl
