@@ -40,7 +40,7 @@ and uniform configuration of the earlier test suite, hydro and MHD, is bit-ident
 the parent code. With the orbital-advection flux correction the remap conserves mass to
 round-off across static and moving level jumps ($\sim5\times10^{-14}$ over hundreds of
 steps; $10^{-7}$--$10^{-6}$ without it). Serial and 3-, 4- and 7-rank runs are
-bit-identical. A spatially uniform epicycle stays exactly uniform on a refined patch.
+bit-identical, and the same tests run on an H200 GPU. A spatially uniform epicycle stays exactly uniform on a refined patch.
 Vortical shearing waves on a static patch and under a moving box lie between the ring and
 coarse-grid results, with no visible artifact at the level jumps. Swing amplification
 with multigrid self-gravity on a patch moves the peak $0.60\%$ toward linear theory, and a
@@ -516,6 +516,38 @@ faces agree to $5\times10^{-15}$ of $|B_n|$, and $\nabla\!\cdot\!B$ stays at rou
 \file{mhd/stepB/} (reproducer).
 
 %=========================================================================================
+\section{GPU}
+\label{sec:gpu}
+The same inputs on one NVIDIA H200 (h-gpu; CUDA 13.3, Kokkos Hopper build, no MPI), October
+28, 2026. The CUDA compiler found one defect the CPU build accepts: an extended device
+lambda in a private member function (\fn{OrbitalAdvectionFC::UpdateB}), now public. Then
+all thirteen runs (seven hydro, six MHD; 31~s in total) ran to the same cycle counts as on
+the CPU:
+
+\begin{center}
+\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{5.4cm}>{\centering\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}p{6.0cm}@{}}
+\toprule
+runs & GPU vs CPU (max over $t$) & checks on the GPU \\
+\midrule
+hydro: conservation, $\Delta t$ limit, epicycle, shwave patch and box & $\le 8\times10^{-13}$ &
+  mass $\le 10^{-14}$ with correction, $1.8\times10^{-7}$ without \\
+MHD: ring, ring without correction, patch, uniform & $\le 2\times10^{-12}$ &
+  face mismatch $\le 3\times10^{-13}$, $\nabla\!\cdot\!B \le 4\times10^{-15}$ \\
+MHD: $x_3$ jumps, moving box & $\le 7\times10^{-9}$ &
+  face mismatch $\le 10^{-13}$; box $\nabla\!\cdot\!B$ $2\times10^{-12}$ (\S\ref{sec:mhdB}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+(GPU vs CPU: physical history columns --- mass, energies, wave projections --- relative to
+their maxima.) Repeated GPU runs of the two last cases are bit-identical, so the larger
+GPU--CPU difference there is round-off growing differently (limiter branches at
+near-zero differences), not a race. Runs in \file{h-gpu:/data/limjay/runs/fargo\_amr\_gpu/},
+scripts \file{build\_cuda.slurm}, \file{run\_tests.slurm}.
+
+%=========================================================================================
 \section{Not yet validated}
 \label{sec:open}
 \begin{itemize}\itemsep2pt
@@ -523,8 +555,6 @@ faces agree to $5\times10^{-15}$ of $|B_n|$, and $\nabla\!\cdot\!B$ stays at rou
       (\file{gravito\_turb\_l64z16\_clump\_amr\_overlay.athinput}) restarted from an
       archived $\beta = 3$ state, once with \code{oa\_annular = true} and once without:
       block count, cost per cycle and whether the timestep limit binds. Needs a cluster.
-\item \textbf{GPU.} The kernels follow the existing team-scratch pattern but have run
-      only on the CPU (serial and MPI).
 \item \textbf{$\nabla\!\cdot\!B$ at AMR derefinement} next to fine $x_2$ neighbours
       (\S\ref{sec:mhdB}): pre-existing in AthenaK, $10^{-13}$--$10^{-12}$ per event,
       to be fixed separately. Production MHD runs with box-shaped AMR should watch the
