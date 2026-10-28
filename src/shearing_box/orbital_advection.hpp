@@ -153,9 +153,9 @@ class OrbitalAdvectionFC : public OrbitalAdvection {
   TaskStatus InitRecv() override;
   TaskStatus ClearRecv() override;
   TaskStatus ClearSend() override;
-
- private:
-  void UpdateB(DvceFaceFld4D<Real> &b0);   // CT update of B from emfx, emfz
+  // CT update of B from emfx, emfz (public: nvcc does not allow extended device lambdas
+  // in private or protected member functions)
+  void UpdateB(DvceFaceFld4D<Real> &b0);
 };
 
 #endif // SHEARING_BOX_ORBITAL_ADVECTION_HPP_
