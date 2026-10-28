@@ -231,12 +231,41 @@ TaskStatus OrbitalAdvectionCC::ClearSend() {
 
 //----------------------------------------------------------------------------------------
 //! \fn void OrbitalAdvectionFC::InitRecv
-//! \brief Posts receives for the B1/B3 rows of the x2 neighbours and, with mesh
-//! refinement, for the remap EMFs (private MeshBoundaryValuesFC instance)
+//! \brief Posts receives for the B3/B1 rows of every x2 sub-face neighbour (sizes by
+//! level) and, with mesh refinement, for the remap EMFs (private MeshBoundaryValuesFC)
 
 TaskStatus OrbitalAdvectionFC::InitRecv() {
-  TaskStatus tstat = OrbitalAdvection::InitRecv();
-  if (tstat != TaskStatus::complete) return tstat;
+#if MPI_PARALLEL_ENABLED
+  const int &nmb = pmy_pack->nmb_thispack;
+  const auto &nghbr = pmy_pack->pmb->nghbr;
+  const auto &mblev = pmy_pack->pmb->mb_lev;
+  bool no_errors=true;
+  for (int m=0; m<nmb; ++m) {
+    for (int s=0; s<8; ++s) {
+      int nn = 8 + s;
+      if (nghbr.h_view(m,nn).gid >= 0) {
+        int srank = nghbr.h_view(m,nn).rank;
+        if (srank != global_variable::my_rank) {
+          int f = s/4, q = s - 4*f;
+          int nlev = nghbr.h_view(m,nn).lev, mylev = mblev.h_view(m);
+          int sz = (nlev == mylev) ? szb_same : ((nlev > mylev) ? szb_fc : szb_cf);
+          int tag = CreateBvals_MPI_Tag(m, nn);
+          auto recv_ptr = Kokkos::subview(rbufb, m, f,
+                              std::make_pair(q*2*sz, (q+1)*2*sz));
+          int ierr = MPI_Irecv(recv_ptr.data(), 2*sz, MPI_ATHENA_REAL, srank, tag,
+                               comm_orb_advect, &(rreqb[8*m+s]));
+          if (ierr != MPI_SUCCESS) {no_errors=false;}
+        }
+      }
+    }
+  }
+  if (!(no_errors)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+       << std::endl << "MPI error in posting non-blocking receives" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+#endif
+  TaskStatus tstat = TaskStatus::complete;
   if (flux_correct) {tstat = pbval_oa->InitFluxRecv(3);}
   return tstat;
 }
@@ -245,8 +274,19 @@ TaskStatus OrbitalAdvectionFC::InitRecv() {
 //! \fn void OrbitalAdvectionFC::ClearRecv
 
 TaskStatus OrbitalAdvectionFC::ClearRecv() {
-  TaskStatus tstat = OrbitalAdvection::ClearRecv();
-  if (tstat != TaskStatus::complete) return tstat;
+#if MPI_PARALLEL_ENABLED
+  bool no_errors=true;
+  int nmb = pmy_pack->nmb_thispack;
+  for (int n=0; n<8*nmb; ++n) {
+    if (MPI_Wait(&(rreqb[n]), MPI_STATUS_IGNORE) != MPI_SUCCESS) {no_errors=false;}
+  }
+  if (!(no_errors)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+       << std::endl << "MPI error in clearing receives" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+#endif
+  TaskStatus tstat = TaskStatus::complete;
   if (flux_correct) {tstat = pbval_oa->ClearFluxRecv();}
   return tstat;
 }
@@ -255,8 +295,19 @@ TaskStatus OrbitalAdvectionFC::ClearRecv() {
 //! \fn void OrbitalAdvectionFC::ClearSend
 
 TaskStatus OrbitalAdvectionFC::ClearSend() {
-  TaskStatus tstat = OrbitalAdvection::ClearSend();
-  if (tstat != TaskStatus::complete) return tstat;
+#if MPI_PARALLEL_ENABLED
+  bool no_errors=true;
+  int nmb = pmy_pack->nmb_thispack;
+  for (int n=0; n<8*nmb; ++n) {
+    if (MPI_Wait(&(sreqb[n]), MPI_STATUS_IGNORE) != MPI_SUCCESS) {no_errors=false;}
+  }
+  if (!(no_errors)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+       << std::endl << "MPI error in clearing sends" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+#endif
+  TaskStatus tstat = TaskStatus::complete;
   if (flux_correct) {tstat = pbval_oa->ClearFluxSend();}
   return tstat;
 }

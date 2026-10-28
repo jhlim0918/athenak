@@ -111,8 +111,12 @@ class OrbitalAdvectionCC : public OrbitalAdvection {
 //  before the field is updated: they are converted to E*dt on the edges (eoa) and passed
 //  through a private MeshBoundaryValuesFC flux correction, so a coarse block uses the
 //  restricted EMFs of its finer neighbours on every edge they share, and both copies of
-//  a shared face field stay equal. (x2-face neighbours must still be at the same level:
-//  <shearing_box> oa_annular = true.)
+//  a shared face field stay equal.
+//  The x2-face neighbours may be one level coarser or finer, as for OrbitalAdvectionCC:
+//  B1 and B3 rows are copied (same level), area-averaged over 2x2 fine faces (from a
+//  finer neighbour, one message per quadrant), or interpolated from a coarse box with
+//  limited slopes (from a coarser neighbour). The remap only needs these values to be
+//  accurate; CT keeps div(B) unchanged whatever the EMFs.
 
 class MeshBoundaryValuesFC;
 
@@ -121,8 +125,19 @@ class OrbitalAdvectionFC : public OrbitalAdvection {
   OrbitalAdvectionFC(MeshBlockPack *ppack, ParameterInput *pin);
   ~OrbitalAdvectionFC();
 
-  int nrowb;            // rows of B1, B3 sent across an x2 face (at most nx2)
+  int nrowb;            // rows of B1, B3 sent across a same-level x2 face (<= nx2)
+  int nrowb_fc;         // coarse rows a fine block sends to a coarser x2 neighbour
+  int nrowb_cf;         // coarse rows a coarse block sends to a finer x2 neighbour
+  int szb_same, szb_fc, szb_cf;   // message sizes per component (B3, B1)
+  int szb_face;         // size of one (MeshBlock, face) buffer, both components
   bool flux_correct;    // EMF correction of the remap at level jumps (multilevel only)
+
+  // buffers (nmb, 2 faces, szb_face); sub-face q at q*2*(message size)
+  DvceArray3D<Real> sbufb, rbufb;
+#if MPI_PARALLEL_ENABLED
+  int nreqb;                                // requests per array = nmb*8 sub-faces
+  MPI_Request *sreqb, *rreqb;
+#endif
 
   // containers for Ex and Ez used to remap magnetic fields (in units of dx2)
   DvceArray4D<Real> emfx, emfz;

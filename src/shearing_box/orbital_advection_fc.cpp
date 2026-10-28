@@ -25,6 +25,35 @@
 #include "bvals/bvals.hpp"
 #include "remap_fluxes.hpp"
 
+namespace {
+//----------------------------------------------------------------------------------------
+//! \fn OAFaceKindB
+//! \brief kind of the x2 neighbour of MeshBlock m on face f: 0 same level, 1 finer,
+//! 2 coarser, -1 none; q returns the sub-face slot of a same or coarser neighbour
+//! (as OAFaceKind in orbital_advection_cc.cpp)
+
+template <typename NV>
+KOKKOS_INLINE_FUNCTION
+int OAFaceKindB(const NV &nghbr, const int mylev, const int m, const int f, int &q) {
+  int kind = -1;
+  q = 0;
+  const int base = (f == 0) ? 8 : 12;
+  for (int s=0; s<4; ++s) {
+    if (nghbr(m, base+s).gid >= 0) {
+      int nlev = nghbr(m, base+s).lev;
+      if (nlev == mylev) {
+        kind = 0; q = s;
+      } else if (nlev > mylev) {
+        kind = 1;
+      } else {
+        kind = 2; q = s;
+      }
+    }
+  }
+  return kind;
+}
+} // namespace
+
 //----------------------------------------------------------------------------------------
 // OrbitalAdvectionFC derived class constructor:
 
@@ -37,18 +66,40 @@ OrbitalAdvectionFC::OrbitalAdvectionFC(MeshBlockPack *pp, ParameterInput *pin) :
   // but never more than one MeshBlock.
   int nmb = std::max((pp->nmb_thispack), (pp->pmesh->nmb_maxperrank));
   auto &indcs = pp->pmesh->mb_indcs;
-  nrowb = indcs.ng + maxjshift + 1;
+  const int nx1 = indcs.nx1, nx2 = indcs.nx2, nx3 = indcs.nx3;
+  const bool multilevel = pp->pmesh->multilevel;
+  nrowb = std::max(indcs.ng + maxjshift + 1, maxjshift + 3);
   if (pin->DoesParameterExist("shearing_box", "oa_nrow")) {
     nrowb = std::max(nrowb, pin->GetInteger("shearing_box", "oa_nrow"));
   }
-  nrowb = std::min(nrowb, indcs.nx2);
-  int ncells3 = indcs.nx3 + 1;
-  int ncells2 = nrowb;
-  int ncells1 = indcs.nx1 + 1;
-  for (int n=0; n<2; ++n) {
-    Kokkos::realloc(sendbuf[n].vars,nmb,2,ncells3,ncells2,ncells1);
-    Kokkos::realloc(recvbuf[n].vars,nmb,2,ncells3,ncells2,ncells1);
+  nrowb = std::min(nrowb, nx2);
+  if (multilevel) {
+    nrowb = std::min(nx2, nrowb + (nrowb % 2));     // whole coarse cells
+    nrowb_fc = std::min(nrowb, nx2/2);
+    nrowb_cf = nrowb/2 + 2;
+  } else {
+    nrowb_fc = 0;
+    nrowb_cf = 0;
   }
+  // Messages per component (0: B3 on x3 faces, 1: B1 on x1 faces), with one footprint
+  // for both: (nx3+1) x rows x (nx1+1) at the receiver's resolution. B3 at i = ie+1 and
+  // B1 at k = ke+1 are not used. A coarse box carries one more layer on every side.
+  szb_same = (nx3 + 1)*nrowb*(nx1 + 1);
+  szb_fc = multilevel ? (nx3/2 + 1)*nrowb_fc*(nx1/2 + 1) : 0;
+  szb_cf = multilevel ? (nx3/2 + 3)*nrowb_cf*(nx1/2 + 3) : 0;
+  szb_face = 2*std::max(szb_same, 4*std::max(szb_fc, szb_cf));
+  Kokkos::realloc(sbufb, nmb, 2, szb_face);
+  Kokkos::realloc(rbufb, nmb, 2, szb_face);
+#if MPI_PARALLEL_ENABLED
+  nreqb = 8*nmb;
+  sreqb = new MPI_Request[nreqb];
+  rreqb = new MPI_Request[nreqb];
+  for (int n=0; n<nreqb; ++n) {
+    sreqb[n] = MPI_REQUEST_NULL;
+    rreqb[n] = MPI_REQUEST_NULL;
+  }
+#endif
+  int ncells1, ncells2, ncells3;
 
   // Allocate memory for electric fields (for every MeshBlock the pack may hold after AMR)
   ncells1 = indcs.nx1 + 2*(indcs.ng);
@@ -75,120 +126,116 @@ OrbitalAdvectionFC::OrbitalAdvectionFC(MeshBlockPack *pp, ParameterInput *pin) :
 
 OrbitalAdvectionFC::~OrbitalAdvectionFC() {
   if (pbval_oa != nullptr) {delete pbval_oa;}
+#if MPI_PARALLEL_ENABLED
+  delete [] sreqb;
+  delete [] rreqb;
+#endif
 }
 
 //----------------------------------------------------------------------------------------
 //! \fn void OrbitalAdvectionFC::PackAndSendFC()
-//! \brief Pack face-centered fields into boundary buffers and send to neighbors for
-//! the orbital advection step. Only ghost zones on the x2-faces (Y-faces) are passed.
-//! Note only B3 and B1 need be passed.
+//! \brief Pack B3 and B1 next to the x2 faces into boundary buffers and send them to the
+//! x2 neighbours for the orbital advection step: same-level rows, rows area-averaged to
+//! a coarser neighbour, or a coarse box (one extra layer on every side) to a finer one.
+//! Layout per (MeshBlock, face): sub-face q at q*2*(size), component c at c*(size), then
+//! (k, row, i) with i fastest and rows in ascending j.
 
 TaskStatus OrbitalAdvectionFC::PackAndSendFC(DvceFaceFld4D<Real> &b) {
-  // create local references for variables in kernel
   int nmb = pmy_pack->nmb_thispack;
-
   int my_rank = global_variable::my_rank;
   auto &nghbr = pmy_pack->pmb->nghbr;
   auto &mbgid = pmy_pack->pmb->mb_gid;
-  auto &sbuf = sendbuf;
-  auto &rbuf = recvbuf;
+  auto &mblev = pmy_pack->pmb->mb_lev;
+  auto &sbuf = sbufb;
+  auto &rbuf = rbufb;
 
   auto &indcs = pmy_pack->pmesh->mb_indcs;
-  auto &is = indcs.is, &ie = indcs.ie;
-  auto &js = indcs.js, &je = indcs.je;
-  auto &ks = indcs.ks, &ke = indcs.ke;
-  const int nrowb_ = nrowb;
+  const int is = indcs.is, js = indcs.js, je = indcs.je, ks = indcs.ks;
+  const int nx1 = indcs.nx1, nx3 = indcs.nx3;
+  const int nrowb_ = nrowb, nrowb_fc_ = nrowb_fc, nrowb_cf_ = nrowb_cf;
+  const int szs = szb_same, szf = szb_fc, szc = szb_cf;
 
-  // Outer loop over (# of MeshBlocks)*(# of buffers)*(# of variables)
-  int nmnv = nmb*2;  // only consider 2 neighbors (x2-faces) and only 2 vars
-  Kokkos::TeamPolicy<> policy(DevExeSpace(), nmnv, Kokkos::AUTO);
+  // Outer loop over (# of MeshBlocks)*(8 x2 sub-faces)*(2 components)
+  Kokkos::TeamPolicy<> policy(DevExeSpace(), nmb*8*2, Kokkos::AUTO);
   Kokkos::parallel_for("oa-packB", policy, KOKKOS_LAMBDA(TeamMember_t tmember) {
-    const int m = tmember.league_rank()/2;
-    const int n = tmember.league_rank()%2;
+    const int m = tmember.league_rank()/16;
+    const int s = (tmember.league_rank() - m*16)/2;
+    const int c = tmember.league_rank() - m*16 - s*2;     // 0: B3, 1: B1
+    const int f = s/4, q = s - 4*f, nn = 8 + s;
+    if (nghbr.d_view(m,nn).gid < 0) return;
 
-    // indices of x2-face buffers in nghbr view
-    int nnghbr;
-    if (n==0) {nnghbr=8;} else {nnghbr=12;}
+    const int mylev = mblev.d_view(m);
+    const int nlev = nghbr.d_view(m,nn).lev;
+    const int dm = nghbr.d_view(m,nn).gid - mbgid.d_view(0);
+    const int ds = nghbr.d_view(m,nn).dest - 8;
+    const int df = ds/4, dq = ds - 4*df;
+    const bool same_rank = (nghbr.d_view(m,nn).rank == my_rank);
+    auto &fld = (c == 0) ? b.x3f : b.x1f;
 
-    // only load buffers when neighbor exists
-    if (nghbr.d_view(m,nnghbr).gid >= 0) {
-      // neighbor must always be at same level, so use same indices to pack buffer
-      // Note j-range of indices extended by shear
-      int il = is;
-      int iu = ie+1;
-      int jl, ju;
-      if (n==0) {
-        jl = js;
-        ju = js + (nrowb_ - 1);
-      } else {
-        jl = je - (nrowb_ - 1);
-        ju = je;
-      }
-      int kl = ks;
-      int ku = ke+1;
-      int ni = iu - il + 1;
-      int nj = ju - jl + 1;
-      int nk = ku - kl + 1;
-      int nji = nj*ni;
-      int nkji = nk*nj*ni;
-
-      // index of recv'ing (destination) MB and buffer [0,1]: MB IDs are stored
-      // sequentially in MeshBlockPacks, so array index equals (target_id - first_id)
-      int dm = nghbr.d_view(m,nnghbr).gid - mbgid.d_view(0);
-      int dn = (n+1) % 2;
-
-      // Middle loop over k,j,i
+    if (nlev == mylev) {
+      // same level: nrowb rows next to face f
+      const int jl = (f == 0) ? js : (je - nrowb_ + 1);
+      const int ni = nx1 + 1, nji = nrowb_*ni, nkji = (nx3 + 1)*nji;
+      const int soff = q*2*szs + c*szs, doff = dq*2*szs + c*szs;
       Kokkos::parallel_for(Kokkos::TeamThreadRange<>(tmember, nkji), [&](const int idx) {
-        int k = (idx)/nji;
-        int j = (idx - k*nji)/ni;
-        int i = (idx - k*nji - j*ni) + il;
-        k += kl;
-        j += jl;
-
-        // copy B1/B3 directly into recv buffer if MeshBlocks on same rank
-        if (nghbr.d_view(m,nnghbr).rank == my_rank) {
-          rbuf[dn].vars(dm,0,(k-kl),(j-jl),(i-il)) = b.x3f(m,k,j,i);
-          rbuf[dn].vars(dm,1,(k-kl),(j-jl),(i-il)) = b.x1f(m,k,j,i);
-        // else copy B1/B3 into send buffer for MPI communication below
-        } else {
-          sbuf[n].vars(m,0,(k-kl),(j-jl),(i-il)) = b.x3f(m,k,j,i);
-          sbuf[n].vars(m,1,(k-kl),(j-jl),(i-il)) = b.x1f(m,k,j,i);
-        }
+        int k = idx/nji, j = (idx - k*nji)/ni, i = idx - k*nji - j*ni;
+        Real val = fld(m, k+ks, j+jl, i+is);
+        if (same_rank) {rbuf(dm,df,doff+idx) = val;} else {sbuf(m,f,soff+idx) = val;}
       });
-    } // end if-neighbor-exists block
-  }); // end par_for_outer
+    } else if (nlev < mylev) {
+      // coarser neighbour: average 2 x 2 fine faces onto each coarse face
+      const int jl = (f == 0) ? js : (je - 2*nrowb_fc_ + 1);
+      const int ni = nx1/2 + 1, nji = nrowb_fc_*ni, nkji = (nx3/2 + 1)*nji;
+      const int soff = q*2*szf + c*szf, doff = dq*2*szf + c*szf;
+      Kokkos::parallel_for(Kokkos::TeamThreadRange<>(tmember, nkji), [&](const int idx) {
+        int kc = idx/nji, jc = (idx - kc*nji)/ni, ic = idx - kc*nji - jc*ni;
+        int k = ks + 2*kc, j = jl + 2*jc, i = is + 2*ic;
+        Real val;
+        if (c == 0) {   // B3 on the x3 face k: average over (i, i+1) x (j, j+1)
+          val = 0.25*(fld(m,k,j,i) + fld(m,k,j,i+1) + fld(m,k,j+1,i) + fld(m,k,j+1,i+1));
+        } else {        // B1 on the x1 face i: average over (j, j+1) x (k, k+1)
+          val = 0.25*(fld(m,k,j,i) + fld(m,k,j+1,i) + fld(m,k+1,j,i) + fld(m,k+1,j+1,i));
+        }
+        if (same_rank) {rbuf(dm,df,doff+idx) = val;} else {sbuf(m,f,soff+idx) = val;}
+      });
+    } else {
+      // finer neighbour in quadrant q = fx + 2*fz: coarse box, one extra layer around
+      const int fx = q & 1, fz = q >> 1;
+      const int il = is + fx*(nx1/2) - 1, kl = ks + fz*(nx3/2) - 1;
+      const int jl = (f == 0) ? (js - 1) : (je - nrowb_/2);
+      const int ni = nx1/2 + 3, nji = nrowb_cf_*ni, nkji = (nx3/2 + 3)*nji;
+      const int soff = q*2*szc + c*szc, doff = dq*2*szc + c*szc;
+      Kokkos::parallel_for(Kokkos::TeamThreadRange<>(tmember, nkji), [&](const int idx) {
+        int k = idx/nji, j = (idx - k*nji)/ni, i = idx - k*nji - j*ni;
+        Real val = fld(m, k+kl, j+jl, i+il);
+        if (same_rank) {rbuf(dm,df,doff+idx) = val;} else {sbuf(m,f,soff+idx) = val;}
+      });
+    }
+  });
 
 #if MPI_PARALLEL_ENABLED
-  // Send boundary buffer to neighboring MeshBlocks using MPI
   Kokkos::fence();
   bool no_errors=true;
   for (int m=0; m<nmb; ++m) {
-    for (int n=0; n<2; ++n) {
-      // indices of x2-face buffers in nghbr view
-      int nnghbr;
-      if (n==0) {nnghbr=8;} else {nnghbr=12;}
-      if (nghbr.h_view(m,nnghbr).gid >= 0) {  // neighbor exists and not a physical bndry
-        // index and rank of destination Neighbor
-        int dn = nghbr.h_view(m,nnghbr).dest;
-        int drank = nghbr.h_view(m,nnghbr).rank;
+    for (int s=0; s<8; ++s) {
+      int nn = 8 + s;
+      if (nghbr.h_view(m,nn).gid >= 0) {
+        int drank = nghbr.h_view(m,nn).rank;
         if (drank != my_rank) {
-          // create tag using local ID and buffer index of *receiving* MeshBlock
-          int lid = nghbr.h_view(m,nnghbr).gid - pmy_pack->pmesh->gids_eachrank[drank];
-          int tag = CreateBvals_MPI_Tag(lid, dn);
-
-          // get ptr to send buffer when neighbor is at coarser/same/fine level
-          using Kokkos::ALL;
-          auto send_ptr = Kokkos::subview(sbuf[n].vars, m, ALL, ALL, ALL, ALL);
-          int data_size = send_ptr.size();
-
-          int ierr = MPI_Isend(send_ptr.data(), data_size, MPI_ATHENA_REAL, drank, tag,
-                               comm_orb_advect, &(sbuf[n].vars_req[m]));
+          int f = s/4, q = s - 4*f;
+          int nlev = nghbr.h_view(m,nn).lev, mylev = mblev.h_view(m);
+          int sz = (nlev == mylev) ? szb_same : ((nlev < mylev) ? szb_fc : szb_cf);
+          int lid = nghbr.h_view(m,nn).gid - pmy_pack->pmesh->gids_eachrank[drank];
+          int tag = CreateBvals_MPI_Tag(lid, nghbr.h_view(m,nn).dest);
+          auto send_ptr = Kokkos::subview(sbuf, m, f,
+                              std::make_pair(q*2*sz, (q+1)*2*sz));
+          int ierr = MPI_Isend(send_ptr.data(), 2*sz, MPI_ATHENA_REAL, drank, tag,
+                               comm_orb_advect, &(sreqb[8*m+s]));
           if (ierr != MPI_SUCCESS) {no_errors=false;}
         }
       }
     }
   }
-  // Quit if MPI error detected
   if (!(no_errors)) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
        << std::endl << "MPI error in posting sends" << std::endl;
@@ -210,29 +257,19 @@ TaskStatus OrbitalAdvectionFC::PackAndSendFC(DvceFaceFld4D<Real> &b) {
 TaskStatus OrbitalAdvectionFC::RecvAndUnpackFC(DvceFaceFld4D<Real> &b0,
                                              ReconstructionMethod rcon) {
   int nmb = pmy_pack->nmb_thispack;
-  auto &rbuf = recvbuf;
-#if MPI_PARALLEL_ENABLED
+  auto &rbuf = rbufb;
   auto &nghbr = pmy_pack->pmb->nghbr;
+  auto &mblev = pmy_pack->pmb->mb_lev;
+#if MPI_PARALLEL_ENABLED
   //----- STEP 1: check that recv boundary buffer communications have all completed
 
   bool bflag = false;
   bool no_errors=true;
-  for (int m=0; m<nmb; ++m) {
-    for (int n=0; n<2; ++n) {
-      // indices of x2-face buffers in nghbr view
-      int nnghbr;
-      if (n==0) {nnghbr=8;} else {nnghbr=12;}
-      if (nghbr.h_view(m,nnghbr).gid >= 0) { // neighbor exists and not a physical bndry
-        if (nghbr.h_view(m,nnghbr).rank != global_variable::my_rank) {
-          int test;
-          int ierr = MPI_Test(&(rbuf[n].vars_req[m]), &test, MPI_STATUS_IGNORE);
-          if (ierr != MPI_SUCCESS) {no_errors=false;}
-          if (!(static_cast<bool>(test))) {
-            bflag = true;
-          }
-        }
-      }
-    }
+  for (int n=0; n<8*nmb; ++n) {
+    int test;
+    int ierr = MPI_Test(&(rreqb[n]), &test, MPI_STATUS_IGNORE);
+    if (ierr != MPI_SUCCESS) {no_errors=false;}
+    if (!(static_cast<bool>(test))) {bflag = true;}
   }
   // Quit if MPI error detected
   if (!(no_errors)) {
@@ -254,6 +291,9 @@ TaskStatus OrbitalAdvectionFC::RecvAndUnpackFC(DvceFaceFld4D<Real> &b0,
   int jfs = nrowb;
   int jfe = jfs + indcs.nx2 - 1;
   int nfx = indcs.nx2 + 2*nrowb;
+  const int nx3 = indcs.nx3;
+  const int nrowb_ = nrowb, nrowb_fc_ = nrowb_fc, nrowb_cf_ = nrowb_cf;
+  const int szs = szb_same, szf = szb_fc, szc = szb_cf;
 
   auto &mbsize = pmy_pack->pmb->mb_size;
   Real &dt = pmy_pack->pmesh->dt;
@@ -283,11 +323,73 @@ TaskStatus OrbitalAdvectionFC::RecvAndUnpackFC(DvceFaceFld4D<Real> &b0,
     Real yshear = -(qo)*x1*dt;
     int joffset = static_cast<int>(yshear/(mbsize.d_view(m).dx2));
 
+    // kind of the two x2 neighbours
+    const int mylev = mblev.d_view(m);
+    int qf[2], kind[2];
+    kind[0] = OAFaceKindB(nghbr.d_view, mylev, m, 0, qf[0]);
+    kind[1] = OAFaceKindB(nghbr.d_view, mylev, m, 1, qf[1]);
+
+    // row t (ascending j) of the column beyond face f at this block's resolution;
+    // v = 0: B3 (x3 face k, x1 cell i), v = 1: B1 (x1 face i, x3 cell k)
+    auto load = [&](const int f, const int t) -> Real {
+      if (kind[f] == 0) {
+        return rbuf(m,f, qf[f]*2*szs + v*szs + (k-ks)*nrowb_*(nx1+1) + t*(nx1+1)
+                         + (i-is));
+      } else if (kind[f] == 1) {
+        // finer neighbours: area-averaged rows; quadrant from (i,k), the face on a
+        // quadrant boundary taken from the upper quadrant (both copies are equal)
+        const int cnx1 = nx1/2, cnx3 = nx3/2;
+        const int fx = ((i-is) < cnx1) ? 0 : 1, fz = ((k-ks) < cnx3) ? 0 : 1;
+        const int ic = (i-is) - fx*cnx1, kc = (k-ks) - fz*cnx3;
+        const int tc = (f == 0) ? (t - (nrowb_ - nrowb_fc_)) : t;
+        if (tc < 0 || tc >= nrowb_fc_) return 0.0;   // never read (guarded)
+        return rbuf(m,f, (fx + 2*fz)*2*szf + v*szf + kc*nrowb_fc_*(cnx1+1)
+                         + tc*(cnx1+1) + ic);
+      } else if (kind[f] == 2) {
+        // coarser neighbour: limited-linear interpolation of the coarse faces. Along
+        // the field's own direction a fine face either coincides with a coarse face or
+        // lies midway between two; across it the minmod slopes of ProlongCC are used.
+        const int d = (f == 0) ? (nrowb_ - 1 - t) : t;
+        const int jj = (f == 0) ? (nrowb_/2 - d/2) : (d/2 + 1);
+        const Real s2 = (f == 0) ? ((d % 2 == 0) ? 1.0 : -1.0)
+                                 : ((d % 2 == 0) ? -1.0 : 1.0);
+        const int bni = nx1/2 + 3, bnji = nrowb_cf_*bni;
+        const int base = qf[f]*2*szc + v*szc;
+        auto c = [&](const int kk, const int j2, const int ii) -> Real {
+          return rbuf(m,f, base + kk*bnji + j2*bni + ii);
+        };
+        auto mm = [](const Real dl, const Real dr) -> Real {
+          return 0.125*(SIGN(dl) + SIGN(dr))*fmin(fabs(dl), fabs(dr));
+        };
+        // value on the coarse face (kk, ii) of component v, moved to the fine position
+        // across the face direction by the slopes in the two transverse directions
+        auto face = [&](const int kk, const int ii, const Real sa) -> Real {
+          Real c0 = c(kk,jj,ii);
+          Real dy = mm(c0 - c(kk,jj-1,ii), c(kk,jj+1,ii) - c0);
+          Real dt_ = (v == 0) ? mm(c0 - c(kk,jj,ii-1), c(kk,jj,ii+1) - c0)   // x for B3
+                              : mm(c0 - c(kk-1,jj,ii), c(kk+1,jj,ii) - c0);  // z for B1
+          return c0 + s2*dy + sa*dt_;
+        };
+        if (v == 1) {   // B1 at fine x1 face i, fine x3 cell k
+          const int a = (i-is)/2, ii = a + 1, kk = (k-ks)/2 + 1;
+          const Real s3 = (((k-ks) % 2) == 0) ? -1.0 : 1.0;
+          if (((i-is) % 2) == 0) return face(kk, ii, s3);
+          return 0.5*(face(kk, ii, s3) + face(kk, ii+1, s3));
+        } else {        // B3 at fine x3 face k, fine x1 cell i
+          const int a = (k-ks)/2, kk = a + 1, ii = (i-is)/2 + 1;
+          const Real s1 = (((i-is) % 2) == 0) ? -1.0 : 1.0;
+          if (((k-ks) % 2) == 0) return face(kk, ii, s1);
+          return 0.5*(face(kk, ii, s1) + face(kk+1, ii, s1));
+        }
+      }
+      return 0.0;
+    };
+
     // Load scratch array with no shift
     par_for_inner(member, 0, (nfx-1), [&](const int jf) {
       if (jf < jfs) {
         // Load from L boundary buffer
-        b0_(jf) = rbuf[0].vars(m,v,(k-ks),jf,(i-is));
+        b0_(jf) = load(0, jf);
       } else if (jf <= jfe) {
         // Load from array itself (addressed with j=jf-jfs+js)
         if (v==0) {
@@ -297,7 +399,7 @@ TaskStatus OrbitalAdvectionFC::RecvAndUnpackFC(DvceFaceFld4D<Real> &b0,
         }
       } else {
         // Load scratch arrays from R boundary buffer
-        b0_(jf) = rbuf[1].vars(m,v,(k-ks),jf-(jfe+1),(i-is));
+        b0_(jf) = load(1, jf-(jfe+1));
       }
     });
     member.team_barrier();
