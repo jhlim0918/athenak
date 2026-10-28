@@ -52,6 +52,7 @@
 //! (validation/run/swing_mhd/swing_ode.py). MHD with orbital advection cannot refine, so
 //! refined MHD runs use orbital_advection = false (the full shear flow in the state).
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <string>
@@ -237,7 +238,7 @@ void SwingHistory(HistoryData *pdata, Mesh *pm) {
   Real kx = sv.kx0 + (sv.qshear)*(sv.omega0)*(pm->time)*(sv.ky);
 
   const bool mhd = (pm->pmb_pack->pmhd != nullptr);
-  pdata->nhist = mhd ? 10 : 5;
+  pdata->nhist = mhd ? 12 : 5;
   pdata->label[0] = "d_cos";
   pdata->label[1] = "d_sin";
   pdata->label[2] = "vx_sin";
@@ -249,6 +250,8 @@ void SwingHistory(HistoryData *pdata, Mesh *pm) {
     pdata->label[7] = "divb";
     pdata->label[8] = "babs";
     pdata->label[9] = "nmb";
+    pdata->label[10] = "bmis";   // Sum |Bn(coarse copy) - mean Bn(fine copies)| dA
+    pdata->label[11] = "bnrm";   // Sum |Bn| dA over the same level-jump faces
   }
 
   auto &indcs = pm->pmb_pack->pmesh->mb_indcs;
@@ -317,6 +320,74 @@ void SwingHistory(HistoryData *pdata, Mesh *pm) {
     pdata->hdata[7] = sum_this_mb.the_array[7];     // divb, babs: integrals (ratio)
     pdata->hdata[8] = sum_this_mb.the_array[8];
     pdata->hdata[9] = static_cast<Real>(pm->pmb_pack->nmb_thispack);   // ranks summed
+    // Consistency of the two copies of a face field shared by a fine and a coarse
+    // MeshBlock. After the boundary exchange a fine block holds, in coarse_b0, the coarse
+    // neighbour's copy of the shared face; compare it with the mean of the fine block's
+    // own 2x2 faces, on all six faces with a coarser neighbour.
+    pdata->hdata[10] = 0.0;
+    pdata->hdata[11] = 0.0;
+    if (pm->multilevel) {
+      auto &cb = pm->pmb_pack->pmhd->coarse_b0;
+      auto &nghbr = pm->pmb_pack->pmb->nghbr;
+      auto &mblev = pm->pmb_pack->pmb->mb_lev;
+      int ie = indcs.ie, je = indcs.je, ke = indcs.ke;
+      int cis = indcs.cis, cie = indcs.cie, cjs = indcs.cjs, cje = indcs.cje;
+      int cks = indcs.cks, cke = indcs.cke;
+      int cnx1 = nx1/2, cnx2 = nx2/2, cnx3 = nx3/2;
+      int nfe = std::max(cnx2*cnx3, std::max(cnx1*cnx3, cnx1*cnx2));
+      int nm = pm->pmb_pack->nmb_thispack;
+      Real mis = 0.0, nrm = 0.0;
+      Kokkos::parallel_reduce("SwingBmis", Kokkos::RangePolicy<>(DevExeSpace(), 0,
+                              nm*6*nfe),
+      KOKKOS_LAMBDA(const int &idx, Real &smis, Real &snrm) {
+        int m = idx/(6*nfe);
+        int f = (idx - m*6*nfe)/nfe;          // 0,1: -/+x1  2,3: -/+x2  4,5: -/+x3
+        int e = idx - m*6*nfe - f*nfe;
+        const int base[6] = {0, 4, 8, 12, 24, 28};
+        bool coarser = false;
+        for (int s=0; s<4; ++s) {
+          int n = base[f] + s;
+          if (nghbr.d_view(m,n).gid >= 0 && nghbr.d_view(m,n).lev < mblev.d_view(m)) {
+            coarser = true;
+          }
+        }
+        if (!coarser) return;
+        Real dx1 = size.d_view(m).dx1, dx2 = size.d_view(m).dx2, dx3 = size.d_view(m).dx3;
+        Real bc, bf, da;
+        if (f < 2) {
+          if (e >= cnx2*cnx3) return;
+          int ck = e/cnx2 + cks, cj = e%cnx2 + cjs;
+          int ci = (f == 0) ? cis : cie+1, fi = (f == 0) ? is : ie+1;
+          int fk = ks + 2*(ck-cks), fj = js + 2*(cj-cjs);
+          bc = cb.x1f(m,ck,cj,ci);
+          bf = 0.25*(bx1f(m,fk,fj,fi) + bx1f(m,fk,fj+1,fi) + bx1f(m,fk+1,fj,fi)
+                   + bx1f(m,fk+1,fj+1,fi));
+          da = 4.0*dx2*dx3;
+        } else if (f < 4) {
+          if (e >= cnx1*cnx3) return;
+          int ck = e/cnx1 + cks, ci = e%cnx1 + cis;
+          int cj = (f == 2) ? cjs : cje+1, fj = (f == 2) ? js : je+1;
+          int fk = ks + 2*(ck-cks), fi = is + 2*(ci-cis);
+          bc = cb.x2f(m,ck,cj,ci);
+          bf = 0.25*(bx2f(m,fk,fj,fi) + bx2f(m,fk,fj,fi+1) + bx2f(m,fk+1,fj,fi)
+                   + bx2f(m,fk+1,fj,fi+1));
+          da = 4.0*dx1*dx3;
+        } else {
+          if (e >= cnx1*cnx2) return;
+          int cj = e/cnx1 + cjs, ci = e%cnx1 + cis;
+          int ck = (f == 4) ? cks : cke+1, fk = (f == 4) ? ks : ke+1;
+          int fj = js + 2*(cj-cjs), fi = is + 2*(ci-cis);
+          bc = cb.x3f(m,ck,cj,ci);
+          bf = 0.25*(bx3f(m,fk,fj,fi) + bx3f(m,fk,fj,fi+1) + bx3f(m,fk,fj+1,fi)
+                   + bx3f(m,fk,fj+1,fi+1));
+          da = 4.0*dx1*dx2;
+        }
+        smis += fabs(bc - bf)*da;
+        snrm += fabs(bf)*da;
+      }, Kokkos::Sum<Real>(mis), Kokkos::Sum<Real>(nrm));
+      pdata->hdata[10] = mis;
+      pdata->hdata[11] = nrm;
+    }
   }
   for (int n=pdata->nhist; n<NHISTORY_VARIABLES; ++n) {
     pdata->hdata[n] = 0.0;

@@ -106,16 +106,41 @@ class OrbitalAdvectionCC : public OrbitalAdvection {
 //! \class OrbitalAdvectionFC
 //  \brief Derived class implementing orbital advection of FC variables
 
+//
+//  With mesh refinement the remap's effective EMFs are corrected like the stage EMFs
+//  before the field is updated: they are converted to E*dt on the edges (eoa) and passed
+//  through a private MeshBoundaryValuesFC flux correction, so a coarse block uses the
+//  restricted EMFs of its finer neighbours on every edge they share, and both copies of
+//  a shared face field stay equal. (x2-face neighbours must still be at the same level:
+//  <shearing_box> oa_annular = true.)
+
+class MeshBoundaryValuesFC;
+
 class OrbitalAdvectionFC : public OrbitalAdvection {
  public:
   OrbitalAdvectionFC(MeshBlockPack *ppack, ParameterInput *pin);
+  ~OrbitalAdvectionFC();
 
-  // containers for Ex and Ey used to remap magnetic fields
+  int nrowb;            // rows of B1, B3 sent across an x2 face (at most nx2)
+  bool flux_correct;    // EMF correction of the remap at level jumps (multilevel only)
+
+  // containers for Ex and Ez used to remap magnetic fields (in units of dx2)
   DvceArray4D<Real> emfx, emfz;
+  // the same as E*dt on the edges, for the EMF correction (multilevel only)
+  DvceEdgeFld4D<Real> eoa;
+  MeshBoundaryValuesFC *pbval_oa = nullptr;
 
   // functions to communicate FC data with orbital advection
   TaskStatus PackAndSendFC(DvceFaceFld4D<Real> &b);
   TaskStatus RecvAndUnpackFC(DvceFaceFld4D<Real> &b0, ReconstructionMethod rcon);
+  TaskStatus SendEMF_OA();
+  TaskStatus RecvEMFAndUpdateB_OA(DvceFaceFld4D<Real> &b0);
+  TaskStatus InitRecv() override;
+  TaskStatus ClearRecv() override;
+  TaskStatus ClearSend() override;
+
+ private:
+  void UpdateB(DvceFaceFld4D<Real> &b0);   // CT update of B from emfx, emfz
 };
 
 #endif // SHEARING_BOX_ORBITAL_ADVECTION_HPP_

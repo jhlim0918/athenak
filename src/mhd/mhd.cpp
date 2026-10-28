@@ -229,14 +229,17 @@ MHD::MHD(MeshBlockPack *ppack, ParameterInput *pin) :
   // the MHD solver then integrates the full shear flow directly.
   if (pin->DoesBlockExist("shearing_box")) {
     if (pin->GetOrAddBoolean("shearing_box","orbital_advection",true)) {
-      // MHD orbital advection remaps face-centered B via EMFs; correctness of the
-      // per-level remap at fine/coarse interfaces (divB preservation) has not been
-      // verified, so refinement remains unsupported for MHD+FARGO (hydro supports
-      // x2-face neighbours one level coarser or finer; see orbital_advection_cc.cpp)
-      if (ppack->pmesh->multilevel) {
+      // MHD orbital advection remaps face-centered B via EMFs. With refinement these are
+      // corrected at level jumps like the stage EMFs (OrbitalAdvectionFC), which keeps
+      // shared faces consistent when every x2 neighbour is at the same level, i.e. with
+      // refinement in complete x2 rings. Face fields across x2 level jumps are not
+      // implemented yet, so MHD + orbital advection + refinement needs oa_annular = true.
+      if (ppack->pmesh->multilevel &&
+          !(pin->GetOrAddBoolean("shearing_box", "oa_annular", false))) {
         std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-          << std::endl << "MHD orbital advection does not support mesh refinement yet; "
-          << "set <shearing_box> orbital_advection = false" << std::endl;
+          << std::endl << "MHD orbital advection with mesh refinement needs refined "
+          << "regions spanning the full x2 extent: set <shearing_box> oa_annular = true "
+          << "(or orbital_advection = false)" << std::endl;
         std::exit(EXIT_FAILURE);
       }
       porb_u = new OrbitalAdvectionCC(ppack, pin, (nmhd+nscalars));

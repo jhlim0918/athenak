@@ -11,9 +11,10 @@
 # Adiabatic (gamma = 5/3, p0 = 0.6, so cs = 1, beta = 2 p0/b0^2 = 4.8 at b0 = 0.5): AthenaK's
 # isothermal HLLD amplifies grid noise at beta <~ 1 (2026-10-26); the perturbation is
 # isentropic, so the linear theory is the isothermal one with cs^2 = gamma p0/rho0.
-# Uniform grid with orbital advection here; refined meshes need orbital_advection =
-# false (MHD + orbital advection + refinement is not supported): the runner
-# (validation/run/swing_mhd/swing_mhd.py) adds the refined_region / AMR blocks.
+# Uniform grid with orbital advection here; the runner
+# (validation/run/swing_mhd/swing_mhd.py) adds the refined_region / AMR blocks. MHD with
+# orbital advection on a refined mesh needs refinement in full x2 rings (oa_annular); the
+# runner's refined cases without orbital advection integrate the full shear flow.
 # Gravity-off control: mhd_srcterms/self_gravity = false (and 4 pi G = 0 in the ODE).
 
 <comment>
@@ -63,6 +64,9 @@ rsolver     = hlld
 qshear = 1.5
 omega0 = 1.0
 orbital_advection = true  # false = non-FARGO: integrate the full shear flow
+oa_annular = true         # with orbital advection + refinement: refined regions in full
+                          # x2 rings (required for MHD); no effect otherwise
+oa_flux_correct = true    # false: switch off the OA flux / EMF correction (tests only)
 
 <gravity>
 solver    = multigrid

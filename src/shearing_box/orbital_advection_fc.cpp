@@ -22,31 +22,59 @@
 #include "shearing_box.hpp"
 #include "orbital_advection.hpp"
 #include "mhd/mhd.hpp"
+#include "bvals/bvals.hpp"
 #include "remap_fluxes.hpp"
 
 //----------------------------------------------------------------------------------------
 // OrbitalAdvectionFC derived class constructor:
 
 OrbitalAdvectionFC::OrbitalAdvectionFC(MeshBlockPack *pp, ParameterInput *pin) :
-  OrbitalAdvection(pp, pin) {
-  // Initialize boundary buffers
+  OrbitalAdvection(pp, pin),
+  eoa("eoa",1,1,1,1) {
+  // Initialize boundary buffers. The remap reads up to |shift| + 3 rows of the x2
+  // neighbour, and the cell-centred remap (OrbitalAdvectionCC, same shift) keeps that
+  // within its nrow <= nx2 rows through the timestep limit; send at least as many rows,
+  // but never more than one MeshBlock.
   int nmb = std::max((pp->nmb_thispack), (pp->pmesh->nmb_maxperrank));
   auto &indcs = pp->pmesh->mb_indcs;
+  nrowb = indcs.ng + maxjshift + 1;
+  if (pin->DoesParameterExist("shearing_box", "oa_nrow")) {
+    nrowb = std::max(nrowb, pin->GetInteger("shearing_box", "oa_nrow"));
+  }
+  nrowb = std::min(nrowb, indcs.nx2);
   int ncells3 = indcs.nx3 + 1;
-  int ncells2 = indcs.ng + maxjshift;
+  int ncells2 = nrowb;
   int ncells1 = indcs.nx1 + 1;
   for (int n=0; n<2; ++n) {
     Kokkos::realloc(sendbuf[n].vars,nmb,2,ncells3,ncells2,ncells1);
     Kokkos::realloc(recvbuf[n].vars,nmb,2,ncells3,ncells2,ncells1);
   }
 
-  // Allocate memory for electric fields
-  nmb = pmy_pack->nmb_thispack;
+  // Allocate memory for electric fields (for every MeshBlock the pack may hold after AMR)
   ncells1 = indcs.nx1 + 2*(indcs.ng);
   ncells2 = indcs.nx2 + 2*(indcs.ng);
   ncells3 = indcs.nx3 + 2*(indcs.ng);
   Kokkos::realloc(emfx,nmb,ncells3,ncells2,ncells1);
   Kokkos::realloc(emfz,nmb,ncells3,ncells2,ncells1);
+
+  // With mesh refinement, the EMFs of the remap are corrected at level jumps like the
+  // stage EMFs, through a private flux-correction instance (own buffers, communicator)
+  flux_correct = pp->pmesh->multilevel &&
+                 pin->GetOrAddBoolean("shearing_box", "oa_flux_correct", true);
+  if (flux_correct) {
+    Kokkos::realloc(eoa.x1e, nmb, ncells3+1, ncells2+1, ncells1);
+    Kokkos::realloc(eoa.x2e, nmb, ncells3+1, ncells2, ncells1+1);
+    Kokkos::realloc(eoa.x3e, nmb, ncells3, ncells2+1, ncells1+1);
+    pbval_oa = new MeshBoundaryValuesFC(pp, pin);
+    pbval_oa->InitializeBuffers(3);
+  }
+}
+
+//----------------------------------------------------------------------------------------
+// OrbitalAdvectionFC destructor
+
+OrbitalAdvectionFC::~OrbitalAdvectionFC() {
+  if (pbval_oa != nullptr) {delete pbval_oa;}
 }
 
 //----------------------------------------------------------------------------------------
@@ -69,8 +97,7 @@ TaskStatus OrbitalAdvectionFC::PackAndSendFC(DvceFaceFld4D<Real> &b) {
   auto &is = indcs.is, &ie = indcs.ie;
   auto &js = indcs.js, &je = indcs.je;
   auto &ks = indcs.ks, &ke = indcs.ke;
-  auto &ng = indcs.ng;
-  const int &maxjshift_ = maxjshift;
+  const int nrowb_ = nrowb;
 
   // Outer loop over (# of MeshBlocks)*(# of buffers)*(# of variables)
   int nmnv = nmb*2;  // only consider 2 neighbors (x2-faces) and only 2 vars
@@ -92,9 +119,9 @@ TaskStatus OrbitalAdvectionFC::PackAndSendFC(DvceFaceFld4D<Real> &b) {
       int jl, ju;
       if (n==0) {
         jl = js;
-        ju = js + (ng + maxjshift_ - 1);;
+        ju = js + (nrowb_ - 1);
       } else {
-        jl = je - (ng + maxjshift_ - 1);
+        jl = je - (nrowb_ - 1);
         ju = je;
       }
       int kl = ks;
@@ -224,10 +251,9 @@ TaskStatus OrbitalAdvectionFC::RecvAndUnpackFC(DvceFaceFld4D<Real> &b0,
   auto &is = indcs.is, &ie = indcs.ie;
   auto &js = indcs.js, &je = indcs.je;
   auto &ks = indcs.ks, &ke = indcs.ke;
-  auto &ng = indcs.ng;
-  int jfs = ng + maxjshift;
+  int jfs = nrowb;
   int jfe = jfs + indcs.nx2 - 1;
-  int nfx = indcs.nx2 + 2*(ng + maxjshift);
+  int nfx = indcs.nx2 + 2*nrowb;
 
   auto &mbsize = pmy_pack->pmb->mb_size;
   Real &dt = pmy_pack->pmesh->dt;
@@ -329,6 +355,85 @@ TaskStatus OrbitalAdvectionFC::RecvAndUnpackFC(DvceFaceFld4D<Real> &b0,
     }
   });
 
+  // Without refinement update B now; with it the EMFs are corrected first
+  // (SendEMF_OA, RecvEMFAndUpdateB_OA)
+  if (!flux_correct) {
+    UpdateB(b0);
+    return TaskStatus::complete;
+  }
+
+  // Store the EMFs as E*dt on the edges for the correction: emfx (E1) on x1 edges,
+  // emfz (E3) on x3 edges; the remap has no E2.
+  auto &eoa_ = eoa;
+  par_for("oa-eoa1", DevExeSpace(), 0, nmb-1, ks, ke+1, js, je+1, is, ie,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    eoa_.x1e(m,k,j,i) = emfx_(m,k,j,i)*mbsize.d_view(m).dx2;
+  });
+  par_for("oa-eoa3", DevExeSpace(), 0, nmb-1, ks, ke, js, je+1, is, ie+1,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    eoa_.x3e(m,k,j,i) = emfz_(m,k,j,i)*mbsize.d_view(m).dx2;
+  });
+  Kokkos::deep_copy(DevExeSpace(), eoa.x2e, 0.0);
+
+  return TaskStatus::complete;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void OrbitalAdvectionFC::SendEMF_OA()
+//! \brief With mesh refinement: send the remap EMFs (E*dt) on MeshBlock boundaries,
+//! restricted where the neighbour is coarser, as for the stage EMFs.
+
+TaskStatus OrbitalAdvectionFC::SendEMF_OA() {
+  if (!flux_correct) return TaskStatus::complete;
+  return pbval_oa->PackAndSendFluxFC(eoa);
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void OrbitalAdvectionFC::RecvEMFAndUpdateB_OA()
+//! \brief With mesh refinement: receive the remap EMFs, average shared edges with
+//! same-level neighbours and replace them by the restricted EMFs of finer neighbours
+//! (MeshBoundaryValuesFC::RecvAndUnpackFluxFC), then update B with CT.
+
+TaskStatus OrbitalAdvectionFC::RecvEMFAndUpdateB_OA(DvceFaceFld4D<Real> &b0) {
+  if (!flux_correct) return TaskStatus::complete;
+  TaskStatus tstat = pbval_oa->RecvAndUnpackFluxFC(eoa);
+  if (tstat != TaskStatus::complete) return tstat;
+
+  int nmb = pmy_pack->nmb_thispack;
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  auto &mbsize = pmy_pack->pmb->mb_size;
+  auto &eoa_ = eoa;
+  auto &emfx_ = emfx;
+  auto &emfz_ = emfz;
+  par_for("oa-emf1", DevExeSpace(), 0, nmb-1, ks, ke+1, js, je+1, is, ie,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    emfx_(m,k,j,i) = eoa_.x1e(m,k,j,i)/mbsize.d_view(m).dx2;
+  });
+  par_for("oa-emf3", DevExeSpace(), 0, nmb-1, ks, ke, js, je+1, is, ie+1,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    emfz_(m,k,j,i) = eoa_.x3e(m,k,j,i)/mbsize.d_view(m).dx2;
+  });
+  UpdateB(b0);
+  return TaskStatus::complete;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void OrbitalAdvectionFC::UpdateB()
+//! \brief CT update of the face-centred field from the remap EMFs emfx, emfz.
+
+void OrbitalAdvectionFC::UpdateB(DvceFaceFld4D<Real> &b0) {
+  int nmb = pmy_pack->nmb_thispack;
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  auto &mbsize = pmy_pack->pmb->mb_size;
+  auto &emfx_ = emfx;
+  auto &emfz_ = emfz;
+
   // Update face-centered fields using CT
   //---- update B1 (only for 2D/3D problems)
   if (pmy_pack->pmesh->multi_d) {
@@ -357,6 +462,4 @@ TaskStatus OrbitalAdvectionFC::RecvAndUnpackFC(DvceFaceFld4D<Real> &b0,
       b0.x3f(m,k,j,i) += (emfx_(m,k,j+1,i) - emfx_(m,k,j,i));
     });
   }
-
-  return TaskStatus::complete;
 }

@@ -41,6 +41,11 @@ VARIANTS = {
     'prim':       ['mesh_refinement/prolong_primitives=true'],
     'iso_hlle':   ['mhd/eos=isothermal', 'mhd/rsolver=hlle'],
     'hlle':       ['mhd/rsolver=hlle'],
+    # orbital advection (FARGO) on the ring, with and without the remap's EMF correction
+    # (branch fargo-amr-mhd); the history's bmis/bnrm measure the mismatch of the two
+    # copies of each fine/coarse shared face field
+    'fargo':      ['shearing_box/orbital_advection=true'],
+    'fargo_nofc': ['shearing_box/orbital_advection=true', 'shearing_box/oa_flux_correct=false'],
 }
 
 
@@ -58,12 +63,18 @@ def run(args):
 def score(name):
     h = [np.loadtxt(os.path.join(HERE, 'runs', f'{name}_{m}', 'SwingMHD.user.hst'))
          for m in ('ring', 'uni')]
-    n = min(len(h[0]), len(h[1]))
+    # compare on common times: with orbital advection the uniform run's step can exceed the
+    # history interval, so the rows of the two runs are not at the same times
+    t = np.linspace(0.0, min(h[0][-1, 0], h[1][-1, 0]), 600)
     out = {}
     for col, nm in ((2, 'delta'), (8, 'cy')):
-        ref = np.max(np.abs(h[1][:n, col]))
-        out[nm] = (np.max(np.abs(h[0][:n, col] - h[1][:n, col]))/ref) if ref > 0 else np.nan
-    out['divb'] = float(np.max(h[0][1:n, 9]/np.maximum(h[0][1:n, 10], 1e-300)))
+        x = np.interp(t, h[0][:, 0], h[0][:, col])
+        y = np.interp(t, h[1][:, 0], h[1][:, col])
+        ref = np.max(np.abs(y))
+        out[nm] = (np.max(np.abs(x - y))/ref) if ref > 0 else np.nan
+    out['divb'] = float(np.max(h[0][1:, 9]/np.maximum(h[0][1:, 10], 1e-300)))
+    out['bmis'] = (float(np.median(h[0][1:, 12]/np.maximum(h[0][1:, 13], 1e-300)))
+                   if h[0].shape[1] > 13 else np.nan)
     return out
 
 
@@ -75,7 +86,7 @@ if __name__ == '__main__':
     with Pool(njobs) as p:
         for j in p.imap_unordered(run, jobs):
             print('done', j, flush=True)
-    print(f"{'variant':10s} {'dev_delta':>10s} {'dev_cy':>10s} {'divB/B':>9s}")
+    print(f"{'variant':10s} {'dev_delta':>10s} {'dev_cy':>10s} {'divB/B':>9s} {'bmis':>9s}")
     for n in names:
         s = score(n)
-        print(f"{n:10s} {s['delta']:10.3f} {s['cy']:10.3f} {s['divb']:9.1e}")
+        print(f"{n:10s} {s['delta']:10.3f} {s['cy']:10.3f} {s['divb']:9.1e} {s['bmis']:9.1e}")

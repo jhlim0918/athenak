@@ -56,6 +56,8 @@ struct MHDTaskIDs {
   TaskID srctrms;
   TaskID sendu_oa;
   TaskID recvu_oa;
+  TaskID sendf_oa;
+  TaskID recvf_oa;
   TaskID restu;
   TaskID sendu;
   TaskID recvu;
@@ -67,6 +69,8 @@ struct MHDTaskIDs {
   TaskID ct;
   TaskID sendb_oa;
   TaskID recvb_oa;
+  TaskID sende_oa;
+  TaskID recve_oa;
   TaskID restb;
   TaskID sendb;
   TaskID recvb;
@@ -186,6 +190,8 @@ class MHD {
   TaskStatus MHDSrcTerms(Driver *d, int stage);
   TaskStatus SendU_OA(Driver *d, int stage);
   TaskStatus RecvU_OA(Driver *d, int stage);
+  TaskStatus SendFlx_OA(Driver *d, int stage);
+  TaskStatus RecvFlx_OA(Driver *d, int stage);
   TaskStatus RestrictU(Driver *d, int stage);
   TaskStatus SendU(Driver *d, int stage);
   TaskStatus RecvU(Driver *d, int stage);
@@ -198,6 +204,8 @@ class MHD {
   TaskStatus CT(Driver *d, int stage);
   TaskStatus SendB_OA(Driver *d, int stage);
   TaskStatus RecvB_OA(Driver *d, int stage);
+  TaskStatus SendE_OA(Driver *d, int stage);
+  TaskStatus RecvE_OA(Driver *d, int stage);
   TaskStatus RestrictB(Driver *d, int stage);
   TaskStatus SendB(Driver *d, int stage);
   TaskStatus RecvB(Driver *d, int stage);

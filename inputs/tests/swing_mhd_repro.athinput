@@ -14,6 +14,9 @@
 # converges with resolution (22% at a 64-cell root, 16% at 128). div B stays at round-off.
 # NB: needs 3-D: AthenaK's 2-D shearing box is x-z only (r-phi "not yet implemented"), and a
 # 2-D x-y run silently uses plain periodic x1 boundaries.
+# With orbital advection (shearing_box/orbital_advection=true, branch fargo-amr-mhd,
+# 2026-10-28) the same ring agrees with its uniform twin to 3% in c_y: the defect needs the
+# shear flow carried in the state across the level interfaces.
 
 <comment>
 problem   = refined-mesh field error reproducer (MHD shearing box, no gravity)
@@ -63,6 +66,9 @@ iso_sound_speed = 1.0   # used only with eos = isothermal
 qshear = 1.5
 omega0 = 1.0
 orbital_advection = false # false = non-FARGO: integrate the full shear flow
+oa_annular = true         # with orbital advection + refinement: refined regions in full
+                          # x2 rings (required for MHD); no effect otherwise
+oa_flux_correct = true    # false: switch off the OA flux / EMF correction (tests only)
 
 
 <problem>

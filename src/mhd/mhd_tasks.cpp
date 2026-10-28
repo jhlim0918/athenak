@@ -53,7 +53,9 @@ void MHD::AssembleMHDTasks(std::map<std::string, std::shared_ptr<TaskList>> tl) 
   id.srctrms   = tl["stagen"]->AddTask(&MHD::MHDSrcTerms, this, id.rkupdt);
   id.sendu_oa  = tl["stagen"]->AddTask(&MHD::SendU_OA, this, id.srctrms);
   id.recvu_oa  = tl["stagen"]->AddTask(&MHD::RecvU_OA, this, id.sendu_oa);
-  id.restu     = tl["stagen"]->AddTask(&MHD::RestrictU, this, id.recvu_oa);
+  id.sendf_oa  = tl["stagen"]->AddTask(&MHD::SendFlx_OA, this, id.recvu_oa);
+  id.recvf_oa  = tl["stagen"]->AddTask(&MHD::RecvFlx_OA, this, id.sendf_oa);
+  id.restu     = tl["stagen"]->AddTask(&MHD::RestrictU, this, id.recvf_oa);
   id.sendu     = tl["stagen"]->AddTask(&MHD::SendU, this, id.restu);
   id.recvu     = tl["stagen"]->AddTask(&MHD::RecvU, this, id.sendu);
   id.sendu_shr = tl["stagen"]->AddTask(&MHD::SendU_Shr, this, id.recvu);
@@ -64,7 +66,9 @@ void MHD::AssembleMHDTasks(std::map<std::string, std::shared_ptr<TaskList>> tl) 
   id.ct        = tl["stagen"]->AddTask(&MHD::CT, this, id.recve);
   id.sendb_oa  = tl["stagen"]->AddTask(&MHD::SendB_OA, this, id.ct);
   id.recvb_oa  = tl["stagen"]->AddTask(&MHD::RecvB_OA, this, id.sendb_oa);
-  id.restb     = tl["stagen"]->AddTask(&MHD::RestrictB, this, id.recvb_oa);
+  id.sende_oa  = tl["stagen"]->AddTask(&MHD::SendE_OA, this, id.recvb_oa);
+  id.recve_oa  = tl["stagen"]->AddTask(&MHD::RecvE_OA, this, id.sende_oa);
+  id.restb     = tl["stagen"]->AddTask(&MHD::RestrictB, this, id.recve_oa);
   id.sendb     = tl["stagen"]->AddTask(&MHD::SendB, this, id.restb);
   id.recvb     = tl["stagen"]->AddTask(&MHD::RecvB, this, id.sendb);
   id.sendb_shr = tl["stagen"]->AddTask(&MHD::SendB_Shr, this, id.recvb);
@@ -492,6 +496,70 @@ TaskStatus MHD::RecvB_OA(Driver *pdrive, int stage) {
     if ((stage == pdrive->nexp_stages) &&
         (pmy_pack->pmesh->three_d || porb_b->shearing_box_r_phi)) {
       tstat = porb_b->RecvAndUnpackFC(b0, recon_method);
+    }
+  }
+  return tstat;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn TaskList MHD::SendFlx_OA
+//! \brief Wrapper task list function: with refinement, send the cell-centred remap
+//! fluxes through x2 faces shared with a coarser MeshBlock (OA flux correction)
+
+TaskStatus MHD::SendFlx_OA(Driver *pdrive, int stage) {
+  TaskStatus tstat = TaskStatus::complete;
+  if (porb_u != nullptr) {
+    if ((stage == pdrive->nexp_stages) &&
+        (pmy_pack->pmesh->three_d || porb_u->shearing_box_r_phi)) {
+      tstat = porb_u->SendFluxCC();
+    }
+  }
+  return tstat;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn TaskList MHD::RecvFlx_OA
+//! \brief Wrapper task list function: with refinement, replace the cell-centred remap
+//! fluxes through x2 faces shared with finer MeshBlocks by the restricted fine ones
+
+TaskStatus MHD::RecvFlx_OA(Driver *pdrive, int stage) {
+  TaskStatus tstat = TaskStatus::complete;
+  if (porb_u != nullptr) {
+    if ((stage == pdrive->nexp_stages) &&
+        (pmy_pack->pmesh->three_d || porb_u->shearing_box_r_phi)) {
+      tstat = porb_u->RecvAndCorrectFluxCC(u0);
+    }
+  }
+  return tstat;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn TaskList MHD::SendE_OA
+//! \brief Wrapper task list function: with refinement, send the EMFs of the face-field
+//! remap for the EMF correction at level jumps
+
+TaskStatus MHD::SendE_OA(Driver *pdrive, int stage) {
+  TaskStatus tstat = TaskStatus::complete;
+  if (porb_b != nullptr) {
+    if ((stage == pdrive->nexp_stages) &&
+        (pmy_pack->pmesh->three_d || porb_b->shearing_box_r_phi)) {
+      tstat = porb_b->SendEMF_OA();
+    }
+  }
+  return tstat;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn TaskList MHD::RecvE_OA
+//! \brief Wrapper task list function: with refinement, receive and correct the remap
+//! EMFs, then update the face-centred field (without refinement RecvB_OA already did)
+
+TaskStatus MHD::RecvE_OA(Driver *pdrive, int stage) {
+  TaskStatus tstat = TaskStatus::complete;
+  if (porb_b != nullptr) {
+    if ((stage == pdrive->nexp_stages) &&
+        (pmy_pack->pmesh->three_d || porb_b->shearing_box_r_phi)) {
+      tstat = porb_b->RecvEMFAndUpdateB_OA(b0);
     }
   }
   return tstat;

@@ -17,6 +17,7 @@
 #include "mesh/mesh.hpp"
 #include "shearing_box.hpp"
 #include "orbital_advection.hpp"
+#include "bvals/bvals.hpp"
 
 //----------------------------------------------------------------------------------------
 //! \fn void OrbitalAdvection::InitRecv
@@ -226,4 +227,36 @@ TaskStatus OrbitalAdvectionCC::ClearSend() {
   }
 #endif
   return TaskStatus::complete;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void OrbitalAdvectionFC::InitRecv
+//! \brief Posts receives for the B1/B3 rows of the x2 neighbours and, with mesh
+//! refinement, for the remap EMFs (private MeshBoundaryValuesFC instance)
+
+TaskStatus OrbitalAdvectionFC::InitRecv() {
+  TaskStatus tstat = OrbitalAdvection::InitRecv();
+  if (tstat != TaskStatus::complete) return tstat;
+  if (flux_correct) {tstat = pbval_oa->InitFluxRecv(3);}
+  return tstat;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void OrbitalAdvectionFC::ClearRecv
+
+TaskStatus OrbitalAdvectionFC::ClearRecv() {
+  TaskStatus tstat = OrbitalAdvection::ClearRecv();
+  if (tstat != TaskStatus::complete) return tstat;
+  if (flux_correct) {tstat = pbval_oa->ClearFluxRecv();}
+  return tstat;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void OrbitalAdvectionFC::ClearSend
+
+TaskStatus OrbitalAdvectionFC::ClearSend() {
+  TaskStatus tstat = OrbitalAdvection::ClearSend();
+  if (tstat != TaskStatus::complete) return tstat;
+  if (flux_correct) {tstat = pbval_oa->ClearFluxSend();}
+  return tstat;
 }
