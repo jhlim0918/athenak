@@ -1,0 +1,92 @@
+# AthenaK input file for epicyclic motion test: level-1 patch over PART of x2 + FARGO
+# Use with shwave.cpp problem generator
+
+<comment>
+problem   = epicycle
+reference = 
+
+<job>
+basename  = epi_ypatch  # problem ID: basename of output filenames
+
+<mesh>
+nghost    = 2         # Number of ghost cells
+nx1       = 128       # Number of zones in X1-direction
+x1min     = -10.0     # minimum value of X1
+x1max     = 10.0      # maximum value of X1
+ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
+ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
+
+nx2       = 128       # Number of zones in X2-direction
+x2min     = -10.0     # minimum value of X2
+x2max     = 10.0      # maximum value of X2
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 4         # Number of zones in X3-direction
+x3min     = -0.5      # minimum value of X3
+x3max     = 0.5       # maximum value of X3
+ix3_bc    = periodic  # Inner-X3 boundary condition flag
+ox3_bc    = periodic  # Outer-X3 boundary condition flag
+
+<meshblock>
+nx1       = 32       # 4 root MeshBlocks in X1: edges at -10,-5,0,5,10
+nx2       = 32        # 4 root MeshBlocks in X2: the refined patch covers 2 of them
+nx3       = 4         # Number of cells in each MeshBlock, X3-dir
+
+<mesh_refinement>
+refinement = static    # type of refinement
+
+<refined_region1>
+level = 1
+x1min = -5.0         # inner 2 of 4 X1 blocks; blocks touching the
+x1max = 5.0          # shear_periodic x1 boundaries stay at root level
+x2min = -5.0         # PART of x2: orbital advection communicates across the
+x2max = 5.0          # level jumps at x2 = -5 and x2 = +5
+x3min = -0.5          # full X3 extent -> no level jump along X3
+x3max = 0.5
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integration algorithm
+cfl_number = 0.3      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = -1       # cycle limit
+tlim       = 125.66370614359172   # time limit (about 20 orbits = 40\pi)
+ndiag      = 1        # cycles between diagostic output
+
+<shearing_box>
+qshear = 1.5 
+omega0 = 1.0 
+
+# Can run test in hydro by uncommenting this block
+<hydro>
+eos          = ideal   # EOS type
+reconstruct  = plm     # spatial reconstruction method
+rsolver      = hllc    # Riemann-solver to be used
+gamma        = 1.6666666666666667 # gamma = C_p/C_v
+
+# Can run test in MHD by uncommenting this block
+#<mhd>
+#eos          = ideal   # EOS type
+#reconstruct  = plm     # spatial reconstruction method
+#rsolver      = hllc    # Riemann-solver to be used
+#gamma        = 1.6666666666666667 # gamma = C_p/C_v
+
+<problem>
+pgen_name    = shwave  # problem generator name
+ipert        = 1       # epicycle test
+d0           = 1.0     # background density
+amp          = 0.1     # amplitude of wave in units of sound speed
+nwx          = 1       # number of wavelengths in x-direction
+nwy          = 1       # number of wavelengths in y-direction
+nwz          = 1       # number of wavelengths in z-direction
+
+<output1>
+file_type   = hst      # History data dump
+dt          = 0.628      # time increment between outputs (about 0.1 orbits)
+data_format = %12.5e   # Optional data format string
+
+<output2>
+file_type   = bin        # Binary data dump
+variable    = hydro_w    # variables to be output
+#variable    = mhd_w      # variables to be output
+dt          = 0.628        # time increment between outputs (about 0.1 orbits)

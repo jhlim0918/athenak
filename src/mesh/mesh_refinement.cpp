@@ -57,7 +57,8 @@ MeshRefinement::MeshRefinement(Mesh *pm, ParameterInput *pin) :
   slab_z_(pin->DoesBlockExist("gravity") &&
       pin->GetOrAddString("gravity", "mg_bc", "none") == "slab"),
   sbox_ring_policy_(pin->DoesBlockExist("shearing_box") &&
-      pin->GetOrAddBoolean("shearing_box", "orbital_advection", true)),
+      pin->GetOrAddBoolean("shearing_box", "orbital_advection", true) &&
+      pin->GetOrAddBoolean("shearing_box", "oa_annular", false)),
   refine_flag("rflag",pm->nmb_total),
   fc_amr_repair("fc_amr_repair",pm->nmb_total),
   ncyc_since_ref("cyc_since_ref",pm->nmb_total),
@@ -351,8 +352,8 @@ void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
                    pmy_mesh->gids_eachrank, MPI_INT, MPI_COMM_WORLD);
 #endif
 
-  // Shearing box + orbital advection: refinement must proceed in complete x2-rings
-  // (annular policy; see Mesh::CheckShearingBoxRefinement). Synchronize flags ring-wise:
+  // Shearing box + orbital advection with <shearing_box> oa_annular = true: refinement
+  // proceeds in complete x2-rings (see Mesh::CheckShearingBoxRefinement). Sync ring-wise:
   // refine the whole (level,lx1,lx3) ring if any member is flagged; derefine only if
   // every member is flagged. Runs identically on all ranks after the Allgatherv, on the
   // globally consistent flag array, so the result is deterministic.

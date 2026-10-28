@@ -1,0 +1,93 @@
+# TEST INPUT: orbital advection (FARGO) + SMR with a refined patch over PART of x2.
+# Same as hydro_incompress_shwave_smr_ring.athinput, but the level-1 region covers only
+# the inner 2x2 root MeshBlocks, [-0.125,0.125]^2 in x1-x2 (full x3). The x2 faces at
+# x2 = -/+0.125 are level jumps, so the orbital-advection shift exchanges restricted /
+# prolongated data there and applies the OA flux correction (orbital_advection_cc.cpp).
+# Blocks touching the shear_periodic x1 boundaries stay at root level.
+# Compare against: (a) the ring run, (b) this run with orbital_advection=false (and
+# prolong_primitives=true), (c) the uniform grid (hydro_incompress_shwave.athinput).
+#
+# nghost=4: SMR/AMR requires an even number of ghost zones.
+# ipert=2 has no user history: validate with the generic .hst output and bin dumps.
+
+<comment>
+problem   = incompressible (vortical) hydro shwave of JG05, with SMR
+reference =
+
+<job>
+basename  = shwave2_ypatch    # problem ID: basename of output filenames
+
+<mesh>
+nghost    = 4         # Number of ghost cells (must be even with SMR)
+nx1       = 64        # Number of zones in X1-direction
+x1min     = -0.25     # minimum value of X1
+x1max     = 0.25      # maximum value of X1
+ix1_bc    = shear_periodic  # Inner-X1 boundary condition flag
+ox1_bc    = shear_periodic  # Outer-X1 boundary condition flag
+
+nx2       = 64        # Number of zones in X2-direction
+x2min     = -0.25     # minimum value of X2
+x2max     = 0.25      # maximum value of X2
+ix2_bc    = periodic  # Inner-X2 boundary condition flag
+ox2_bc    = periodic  # Outer-X2 boundary condition flag
+
+nx3       = 4         # Number of zones in X3-direction
+x3min     = -0.25     # minimum value of X3
+x3max     = 0.25      # maximum value of X3
+ix3_bc    = periodic  # Inner-X3 boundary condition flag
+ox3_bc    = periodic  # Outer-X3 boundary condition flag
+
+<meshblock>
+nx1       = 16        # 4 root MeshBlocks in X1: edges at -0.25,-0.125,0,0.125,0.25
+nx2       = 16        # 4 root MeshBlocks in X2: edges at -0.25,-0.125,0,0.125,0.25
+nx3       = 4         # single root MeshBlock in X3
+
+<mesh_refinement>
+refinement = static    # type of refinement
+
+<refined_region1>
+level = 1
+x1min = -0.125         # inner 2 of 4 X1 blocks; blocks touching the
+x1max = 0.125          # shear_periodic x1 boundaries stay at root level
+x2min = -0.125         # PART of x2 (2 of 4 root blocks): orbital advection
+x2max = 0.125          # communicates across the level jumps at x2 = -/+0.125
+x3min = -0.25          # full X3 extent -> no level jump along X3
+x3max = 0.25
+
+<time>
+evolution  = dynamic  # dynamic/kinematic/static
+integrator = rk2      # time integration algorithm
+cfl_number = 0.3      # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim       = -1       # cycle limit
+tlim       = 5.0      # time limit
+ndiag      = 1        # cycles between diagostic output
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true    # FARGO across x2 level jumps
+
+<hydro>
+eos             = isothermal   # EOS type
+reconstruct     = ppmx         # spatial reconstruction method
+rsolver         = hlle         # Riemann-solver to be used
+iso_sound_speed = 1.0          # isothermal sound speed
+
+<problem>
+pgen_name = shwave  # problem generator name
+ipert     = 2       # incompressible shwave test
+d0        = 1.0     # background density
+amp       = 1.0e-4  # amplitude of wave in units of sound speed
+nwx       = -8      # number of wavelengths in x-direction
+nwy       = 2       # number of wavelengths in y-direction
+nwz       = 0       # number of wavelengths in z-direction
+
+<output1>
+file_type   = hst      # History data dump
+dt          = 0.1      # time increment between outputs
+data_format = %12.5e   # Optional data format string
+
+<output2>
+file_type   = bin        # Binary data dump (vtk does not support SMR/AMR)
+variable    = hydro_w    # variables to be output
+dt          = 0.1        # time increment between outputs

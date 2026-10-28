@@ -231,8 +231,8 @@ MHD::MHD(MeshBlockPack *ppack, ParameterInput *pin) :
     if (pin->GetOrAddBoolean("shearing_box","orbital_advection",true)) {
       // MHD orbital advection remaps face-centered B via EMFs; correctness of the
       // per-level remap at fine/coarse interfaces (divB preservation) has not been
-      // verified, so refinement remains unsupported for MHD+FARGO (hydro is supported
-      // under the annular refinement policy; see Mesh::CheckShearingBoxRefinement)
+      // verified, so refinement remains unsupported for MHD+FARGO (hydro supports
+      // x2-face neighbours one level coarser or finer; see orbital_advection_cc.cpp)
       if (ppack->pmesh->multilevel) {
         std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
           << std::endl << "MHD orbital advection does not support mesh refinement yet; "

@@ -60,7 +60,9 @@ void Hydro::AssembleHydroTasks(std::map<std::string, std::shared_ptr<TaskList>> 
   id.srctrms   = tl["stagen"]->AddTask(&Hydro::HydroSrcTerms, this, id.rkupdt);
   id.sendu_oa  = tl["stagen"]->AddTask(&Hydro::SendU_OA, this, id.srctrms);
   id.recvu_oa  = tl["stagen"]->AddTask(&Hydro::RecvU_OA, this, id.sendu_oa);
-  id.restu     = tl["stagen"]->AddTask(&Hydro::RestrictU, this, id.recvu_oa);
+  id.sendf_oa  = tl["stagen"]->AddTask(&Hydro::SendFlx_OA, this, id.recvu_oa);
+  id.recvf_oa  = tl["stagen"]->AddTask(&Hydro::RecvFlx_OA, this, id.sendf_oa);
+  id.restu     = tl["stagen"]->AddTask(&Hydro::RestrictU, this, id.recvf_oa);
   id.sendu     = tl["stagen"]->AddTask(&Hydro::SendU, this, id.restu);
   id.recvu     = tl["stagen"]->AddTask(&Hydro::RecvU, this, id.sendu);
   id.sendu_shr = tl["stagen"]->AddTask(&Hydro::SendU_Shr, this, id.recvu);
@@ -323,6 +325,39 @@ TaskStatus Hydro::RecvU_OA(Driver *pdrive, int stage) {
     if ((stage == pdrive->nexp_stages) &&
         (pmy_pack->pmesh->three_d || porb_u->shearing_box_r_phi)) {
       tstat = porb_u->RecvAndUnpackCC(u0, recon_method);
+    }
+  }
+  return tstat;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn TaskList Hydro::SendFlx_OA
+//! \brief Wrapper task list function: with refinement, send the orbital-advection remap
+//! fluxes through x2 faces shared with a coarser MeshBlock (OA flux correction).
+
+TaskStatus Hydro::SendFlx_OA(Driver *pdrive, int stage) {
+  TaskStatus tstat = TaskStatus::complete;
+  if (porb_u != nullptr) {
+    if ((stage == pdrive->nexp_stages) &&
+        (pmy_pack->pmesh->three_d || porb_u->shearing_box_r_phi)) {
+      tstat = porb_u->SendFluxCC();
+    }
+  }
+  return tstat;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn TaskList Hydro::RecvFlx_OA
+//! \brief Wrapper task list function: with refinement, replace the orbital-advection
+//! remap fluxes through x2 faces shared with finer MeshBlocks by the restricted fine
+//! ones.
+
+TaskStatus Hydro::RecvFlx_OA(Driver *pdrive, int stage) {
+  TaskStatus tstat = TaskStatus::complete;
+  if (porb_u != nullptr) {
+    if ((stage == pdrive->nexp_stages) &&
+        (pmy_pack->pmesh->three_d || porb_u->shearing_box_r_phi)) {
+      tstat = porb_u->RecvAndCorrectFluxCC(u0);
     }
   }
   return tstat;

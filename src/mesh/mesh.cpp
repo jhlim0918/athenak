@@ -29,6 +29,7 @@
 #include "radiation/radiation.hpp"
 #include "particles/particles.hpp"
 #include "srcterms/srcterms.hpp"
+#include "shearing_box/orbital_advection.hpp"
 #include "outputs/io_wrapper.hpp"
 
 #if MPI_PARALLEL_ENABLED
@@ -205,16 +206,15 @@ Mesh::Mesh(ParameterInput *pin) :
   //      level (root, or both faces refined uniformly over the full x2/x3 extent
   //      to the same level) -- the shear machinery requires a same-level wrap and
   //      same-size blocks along each face;
-  //  (2) with orbital advection (FARGO) on, refined regions must additionally span
-  //      the full x2 extent ("annular" policy) so the per-level y-shift only ever
-  //      communicates between same-level, same-size x2-face neighbors.
+  //  (2) only with <shearing_box> oa_annular = true: refined regions must span the
+  //      full x2 extent ("annular" policy). Orbital advection (FARGO) itself handles
+  //      x2-face neighbours one level coarser or finer.
   // AMR is not supported with a shearing box yet (static boundary GID lists);
   // MHD orbital advection (face-centered B remap) does not support refinement yet.
   if (multilevel && pin->DoesBlockExist("shearing_box") && global_variable::my_rank==0) {
     std::cout << "### WARNING in " << __FILE__ << " at line " << __LINE__ << std::endl
         << "Shearing box with mesh refinement: both x1 boundary faces must share one "
-        << "uniform level, and with orbital advection refined regions must span the "
-        << "full x2 extent (both enforced with fatal errors)." << std::endl;
+        << "uniform level (enforced with a fatal error)." << std::endl;
   }
 
   // error check physical size of mesh (root level) from input file.
@@ -626,6 +626,10 @@ void Mesh::NewTimeStep(const Real tlim) {
     if (pmb_pack->phydro->psrc != nullptr) {
       dt_cycle = std::min(dt_cycle, (cfl_no)*(pmb_pack->phydro->psrc->dtnew) );
     }
+    // orbital advection: the shift must stay within the rows the x2 neighbours supply
+    if (pmb_pack->phydro->porb_u != nullptr) {
+      dt_cycle = std::min(dt_cycle, pmb_pack->phydro->porb_u->MaxTimeStep());
+    }
   }
   // MHD timestep
   if (pmb_pack->pmhd != nullptr) {
@@ -633,6 +637,9 @@ void Mesh::NewTimeStep(const Real tlim) {
     // source terms timestep
     if (pmb_pack->pmhd->psrc != nullptr) {
       dt_cycle = std::min(dt_cycle, (cfl_no)*(pmb_pack->pmhd->psrc->dtnew) );
+    }
+    if (pmb_pack->pmhd->porb_u != nullptr) {
+      dt_cycle = std::min(dt_cycle, pmb_pack->pmhd->porb_u->MaxTimeStep());
     }
   }
   // Diffusion-process timestep budgets

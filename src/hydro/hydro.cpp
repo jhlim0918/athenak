@@ -165,10 +165,9 @@ Hydro::Hydro(MeshBlockPack *ppack, ParameterInput *pin) :
   // the hydro solver then integrates the full shear flow directly.
   if (pin->DoesBlockExist("shearing_box")) {
     if (pin->GetOrAddBoolean("shearing_box","orbital_advection",true)) {
-      // With refinement, orbital advection requires the annular refinement policy:
-      // refined regions span the full x2 extent, so every x2-face neighbor is at the
-      // same level and the per-level y-shift comms remain valid. This is enforced in
-      // Mesh::CheckShearingBoxRefinement at startup and after every AMR update.
+      // With refinement, the x2-face neighbours may be one level coarser or finer: the
+      // remap uses their data restricted or prolongated to each block's resolution, and
+      // a flux correction keeps it conservative (orbital_advection_cc.cpp).
       porb_u = new OrbitalAdvectionCC(ppack, pin, (nhydro+nscalars));
     } else {
       porb_u = nullptr;

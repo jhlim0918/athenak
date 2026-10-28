@@ -57,6 +57,8 @@ ShwaveTestVariables shw_var;
 // parameters for the prescribed moving-ring AMR criterion
 struct MovingRingVariables {
   Real xc0, xamp, freq, hwidth;
+  Real yc0, yamp, yfreq, yvel, yhwidth;   // optional x2 window (yhwidth > 0): a box
+  Real x2min, x2max;                      // mesh x2 extent (periodic wrap of the window)
 };
 
 MovingRingVariables ring_var;
@@ -78,6 +80,16 @@ void ProblemGenerator::Shwave(ParameterInput *pin, const bool restart) {
     ring_var.xamp   = pin->GetOrAddReal("problem", "ring_xamp", 0.0);
     ring_var.freq   = pin->GetOrAddReal("problem", "ring_freq", 1.0);
     ring_var.hwidth = pin->GetReal("problem", "ring_hwidth");
+    // optional x2 window, yc(t) = yc0 + yamp*sin(yfreq*t) + yvel*t (periodic in x2):
+    // with ring_yhwidth > 0 only MBs overlapping it in x2 too are refined (a moving box,
+    // for orbital advection across x2 level jumps)
+    ring_var.yc0     = pin->GetOrAddReal("problem", "ring_yc0", 0.0);
+    ring_var.yamp    = pin->GetOrAddReal("problem", "ring_yamp", 0.0);
+    ring_var.yfreq   = pin->GetOrAddReal("problem", "ring_yfreq", 1.0);
+    ring_var.yvel    = pin->GetOrAddReal("problem", "ring_yvel", 0.0);
+    ring_var.yhwidth = pin->GetOrAddReal("problem", "ring_yhwidth", -1.0);
+    ring_var.x2min   = pin->GetReal("mesh", "x2min");
+    ring_var.x2max   = pin->GetReal("mesh", "x2max");
     user_ref_func = MovingRingRefine;
   }
 
@@ -392,21 +404,36 @@ void ProblemGenerator::Shwave(ParameterInput *pin, const bool restart) {
 //! \fn void MovingRingRefine()
 //! \brief User AMR criterion: refine MBs whose x1 extent overlaps a prescribed moving
 //! interval [xc(t)-hwidth, xc(t)+hwidth], derefine all others.  Criterion depends only
-//! on x1, so it naturally flags complete x2-rings; the shearing-box ring-sync and
-//! x1-boundary vetoes in MeshRefinement::CheckForRefinement enforce the rest of the
-//! refinement policy.  Runs on host data (MeshBlock bounds), no kernel needed.
+//! on x1, so it naturally flags complete x2-rings; the x1-boundary vetoes in
+//! MeshRefinement::CheckForRefinement enforce the rest of the refinement policy.
+//! With ring_yhwidth > 0 an x2 window [yc(t)-yhwidth, yc(t)+yhwidth] (periodic in x2)
+//! is required too, which makes a moving box instead of a ring.
+//! Runs on host data (MeshBlock bounds), no kernel needed.
 
 void MovingRingRefine(MeshBlockPack *pmbp) {
   auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
   int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
   auto &size = pmbp->pmb->mb_size;
   auto &rv = ring_var;
-  Real xc = rv.xc0 + rv.xamp*std::sin(rv.freq*(pmbp->pmesh->time));
+  Real time = pmbp->pmesh->time;
+  Real xc = rv.xc0 + rv.xamp*std::sin(rv.freq*time);
+  Real ly = rv.x2max - rv.x2min;
+  Real yc = rv.yc0 + rv.yamp*std::sin(rv.yfreq*time) + rv.yvel*time;
+  yc = rv.x2min + std::fmod(std::fmod(yc - rv.x2min, ly) + ly, ly);
 
   for (int m=0; m<(pmbp->nmb_thispack); ++m) {
     Real &x1min = size.h_view(m).x1min;
     Real &x1max = size.h_view(m).x1max;
-    if ((x1max > (xc - rv.hwidth)) && (x1min < (xc + rv.hwidth))) {
+    bool in_y = true;
+    if (rv.yhwidth > 0.0) {
+      in_y = false;
+      for (int p=-1; p<=1; ++p) {    // periodic images of the window
+        Real y0 = yc + p*ly;
+        if ((size.h_view(m).x2max > (y0 - rv.yhwidth)) &&
+            (size.h_view(m).x2min < (y0 + rv.yhwidth))) {in_y = true;}
+      }
+    }
+    if (in_y && (x1max > (xc - rv.hwidth)) && (x1min < (xc + rv.hwidth))) {
       refine_flag.h_view(m + mbs) = 1;
     } else {
       refine_flag.h_view(m + mbs) = -1;

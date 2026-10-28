@@ -21,7 +21,7 @@
 class OrbitalAdvection {
  public:
   OrbitalAdvection(MeshBlockPack *ppack, ParameterInput *pin);
-  ~OrbitalAdvection();
+  virtual ~OrbitalAdvection();
 
   // data
   int maxjshift;            // maximum integer shift of any cell in orbital advection
@@ -36,10 +36,10 @@ class OrbitalAdvection {
   MPI_Comm comm_orb_advect;
 #endif
 
-  // functions
-  TaskStatus InitRecv();
-  TaskStatus ClearRecv();
-  TaskStatus ClearSend();
+  // functions (virtual: the CC class overrides them for its per-subface buffers)
+  virtual TaskStatus InitRecv();
+  virtual TaskStatus ClearRecv();
+  virtual TaskStatus ClearSend();
 
  protected:
   // must use pointer to MBPack and not parent physics module since parent can be one of
@@ -51,12 +51,55 @@ class OrbitalAdvection {
 //! \class OrbitalAdvectionCC
 //  \brief Derived class implementing orbital advection of CC variables
 
+//
+//  The x2-face neighbours of a MeshBlock may sit one level coarser or finer (arbitrary
+//  refinement in x2). Each block remaps on its own grid, using an extended column filled
+//  with the x2 neighbour's data brought to the block's resolution:
+//    same level: the nrow rows next to the face are copied;
+//    finer:      each of the 4 fine blocks on the face restricts its rows and sends its
+//                (x1,x3) quadrant;
+//    coarser:    the coarse block sends a box of its rows (with one ghost cell on every
+//                side, for slopes) and the fine block prolongates it (as ProlongCC).
+//  Buffers are one flat array per (MeshBlock, face): a message for sub-face q starts at
+//  q*(message size). After the remap, fine blocks send their remap "fluxes" through the
+//  shared face (restricted) to the coarse neighbour, which replaces its own; this keeps
+//  the remap exactly conservative across level jumps (OA flux correction).
+
 class OrbitalAdvectionCC : public OrbitalAdvection {
  public:
   OrbitalAdvectionCC(MeshBlockPack *ppack, ParameterInput *pin, int nvar);
+  ~OrbitalAdvectionCC();
+
+  int nvar_;            // number of variables communicated
+  int nrow;             // rows (receiver cells) communicated across a same-level x2 face
+  int nrow_fc;          // coarse rows a fine block sends to a coarser x2 neighbour
+  int nrow_cf;          // coarse rows a coarse block sends to a finer x2 neighbour
+  int sz_same, sz_fc, sz_cf, sz_flx;  // message sizes per variable
+  int sz_face;          // size of one (MeshBlock, face) buffer, all variables
+  bool flux_correct;    // OA flux correction at x2 level jumps (<shearing_box>
+                        // oa_flux_correct, default true; false only for tests)
+
+  // buffers: (nmb, 2 faces, sz_face) for data; (nmb, 2, 4*nvar*sz_flx) for fluxes
+  DvceArray3D<Real> sbuf_oa, rbuf_oa, sflx_oa, rflx_oa;
+  // remap fluxes through this block's own x2 faces: (nmb, 2, nvar, nx3, nx1)
+  DvceArray5D<Real> gflx;
+
+#if MPI_PARALLEL_ENABLED
+  MPI_Comm comm_orb_flx;
+  int nreq;                                 // requests per array = nmb*8 sub-faces
+  MPI_Request *sreq, *rreq, *sreq_flx, *rreq_flx;
+#endif
+
   // functions to communicate CC data with orbital advection
   TaskStatus PackAndSendCC(DvceArray5D<Real> &a);
   TaskStatus RecvAndUnpackCC(DvceArray5D<Real> &a, ReconstructionMethod rcon);
+  TaskStatus SendFluxCC();
+  TaskStatus RecvAndCorrectFluxCC(DvceArray5D<Real> &a);
+  int RowsAvailable(int m);   // rows the x2 neighbours of MeshBlock m can supply
+  Real MaxTimeStep();         // largest dt whose shift stays within those rows
+  TaskStatus InitRecv() override;
+  TaskStatus ClearRecv() override;
+  TaskStatus ClearSend() override;
 };
 
 //----------------------------------------------------------------------------------------

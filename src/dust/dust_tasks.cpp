@@ -135,7 +135,9 @@ void DustGasDrag::AssembleDustGasDragTasks(
   // standard hydro tail (boundary comms, BCs, cons-to-prim, timestep)
   id.h_sendu_oa  = tl["stagen"]->AddTask(&Hydro::SendU_OA, phyd, id.apply);
   id.h_recvu_oa  = tl["stagen"]->AddTask(&Hydro::RecvU_OA, phyd, id.h_sendu_oa);
-  id.h_restu     = tl["stagen"]->AddTask(&Hydro::RestrictU, phyd, id.h_recvu_oa);
+  id.h_sendf_oa  = tl["stagen"]->AddTask(&Hydro::SendFlx_OA, phyd, id.h_recvu_oa);
+  id.h_recvf_oa  = tl["stagen"]->AddTask(&Hydro::RecvFlx_OA, phyd, id.h_sendf_oa);
+  id.h_restu     = tl["stagen"]->AddTask(&Hydro::RestrictU, phyd, id.h_recvf_oa);
   id.h_sendu     = tl["stagen"]->AddTask(&Hydro::SendU, phyd, id.h_restu);
   id.h_recvu     = tl["stagen"]->AddTask(&Hydro::RecvU, phyd, id.h_sendu);
   id.h_sendu_shr = tl["stagen"]->AddTask(&Hydro::SendU_Shr, phyd, id.h_recvu);

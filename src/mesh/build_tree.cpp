@@ -548,11 +548,13 @@ void Mesh::CheckShearingBoxRefinement(ParameterInput *pin) {
     std::exit(EXIT_FAILURE);
   }
 
-  // With orbital advection (FARGO) on a refined mesh, refinement must additionally come
-  // in complete x2-rings ("annular" policy): every refined MeshBlock must have same-level
-  // neighbors along the entire x2 (azimuthal) direction, so the per-level y-shift
-  // communication only ever involves same-level, same-size x2-face neighbors.
-  if (pin->GetOrAddBoolean("shearing_box", "orbital_advection", true)) {
+  // Optional annular policy for orbital advection (FARGO) on a refined mesh: refinement
+  // in complete x2-rings, so every refined MeshBlock has same-level neighbors along the
+  // entire x2 (azimuthal) direction. Orbital advection itself handles x2 neighbours one
+  // level coarser or finer (orbital_advection_cc.cpp), so the policy is off by default;
+  // <shearing_box> oa_annular = true restores it (e.g. for ring-vs-free comparisons).
+  if (pin->GetOrAddBoolean("shearing_box", "orbital_advection", true) &&
+      pin->GetOrAddBoolean("shearing_box", "oa_annular", false)) {
     // count leaf MBs in each (level, lx1, lx3) ring
     std::map<std::array<std::int64_t,3>, std::int64_t> ring_count;
     for (int m=0; m<nmb_total; ++m) {
@@ -572,7 +574,7 @@ void Mesh::CheckShearingBoxRefinement(ParameterInput *pin) {
           << "spanning the full x2 (azimuthal) extent: ring at level=" << lev
           << " lx1=" << kv.first[1] << " lx3=" << kv.first[2] << " has " << kv.second
           << " of " << nmbx2 << " MeshBlocks. Either make the <refined_region> span "
-          << "the full x2 domain, or set <shearing_box> orbital_advection = false."
+          << "the full x2 domain, or set <shearing_box> oa_annular = false."
           << std::endl;
         // diagnostic dump of every refined MeshBlock's logical location
         std::cout << "refined leaf MBs (level lx1 lx2 lx3):" << std::endl;

@@ -105,7 +105,8 @@ struct DustGasDragTaskIDs {
   TaskID scat, sendd, recvd, foldd, solve, sendus, recvus, sendus_shr, recvus_shr;
   TaskID gkp, sendbr, recvbr, foldbr, apply;
   TaskID p2_newgid, p2_cnt, p2_irecv, p2_sendp, p2_recvp;
-  TaskID h_sendu_oa, h_recvu_oa, h_restu, h_sendu, h_recvu, h_sendu_shr, h_recvu_shr;
+  TaskID h_sendu_oa, h_recvu_oa, h_sendf_oa, h_recvf_oa;
+  TaskID h_restu, h_sendu, h_recvu, h_sendu_shr, h_recvu_shr;
   TaskID h_bcs, h_prol, h_c2p, h_newdt, newdt, newdt2;
   // "after_stagen" tasks
   TaskID h_csend, h_crecv, p_csend, p_crecv, cleard;

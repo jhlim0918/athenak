@@ -57,8 +57,8 @@ class MeshRefinement {
   bool slab_z_;              // true if <gravity> mg_bc = slab: x3-face MeshBlocks must
                              // stay at root level (multigrid slab planes), so never
                              // refine them and grade interior refinement away in x3
-  bool sbox_ring_policy_;    // true if shearing box + orbital advection: refinement in
-                             // complete x2-rings (annular policy)
+  bool sbox_ring_policy_;    // true if shearing box + orbital advection + oa_annular:
+                             // refinement in complete x2-rings (annular policy)
   RefinementCriteria* pmrc=nullptr;   // object to control various refinement criteria
 
   // following 2x Views are dimensioned [nmb_total]
