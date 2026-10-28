@@ -287,9 +287,9 @@ physically natural --- a structure at the shear boundary has images on \emph{bot
 faces. Mixed-level boundaries remain fatal because combining the $y$-shift with
 prolongation inside the shear communication is not implemented.
 
-\invariant{Invariant I2 (annular rings, FARGO only).}{With
-\code{orbital\_advection = true}, every refined region must span the full $x_2$
-extent: for each $(\ell, l_{x1}, l_{x3})$ the number of leaf blocks must equal
+\invariant{Invariant I2 (annular rings, FARGO only; optional since the FARGO--AMR work).}{With
+\code{orbital\_advection = true} and \code{<shearing\_box> oa\_annular = true}, every
+refined region must span the full $x_2$ extent: for each $(\ell, l_{x1}, l_{x3})$ the number of leaf blocks must equal
 $N^{\rm root}_{{\rm mb},x2} \ll (\ell - \ell_{\rm root})$.}
 
 \noindent
@@ -302,6 +302,13 @@ same-size, so the existing pattern remains valid \emph{level by level} with no n
 code. Without FARGO the constraint is unnecessary and is not applied, which is why
 the \code{orbital\_advection} toggle (\S\ref{sec:nofargo}) is part of Phase 0 rather
 than an unrelated convenience.
+
+\noindent\emph{Update (branch \code{fargo-amr}, October 2026).} Orbital advection now
+handles $x_2$ neighbors one level coarser or finer, with a flux correction that keeps it
+exactly conservative, and I2 is off by default (\code{oa\_annular = false}). The
+method is described in \file{fargo\_amr\_implementation.pdf} and tested in
+\file{fargo\_amr\_validation.pdf}; the rest of this document describes the code
+before that change.
 
 \begin{figure}[htb]
 \centering
@@ -355,7 +362,8 @@ than an unrelated convenience.
 $x_1$ faces. (a) Interior ring: boundary at root level, refinement spans the full
 azimuth. (b) Both faces uniformly refined --- allowed by I1 from Phase 0b onward,
 and the configuration that creates boundary octets in Phase 2b. (c) A patch that does
-not close in $y$ violates I2 whenever orbital advection is on.}
+not close in $y$ violated I2 whenever orbital advection was on; it is allowed now
+unless \code{oa\_annular = true} (\file{fargo\_amr\_implementation.pdf}).}
 \label{fig:policy}
 \end{figure}
 
@@ -431,6 +439,7 @@ reasonable to keep that check fatal.
 \subsection{Ring-wise flag synchronization}
 \label{sec:ringsync}
 
+With \code{oa\_annular = true} (off by default since the FARGO--AMR work),
 I2 is enforced \emph{constructively} rather than by veto, immediately after the global
 flag \code{Allgatherv} in \fn{CheckForRefinement}. Flags are collapsed into a map keyed
 on $(\ell, l_{x1}, l_{x3})$ with the rule
@@ -536,7 +545,9 @@ geometry, before unpacking:
   \;\le\; \code{maxjshift},
 \end{equation}
 aborting with a message that names the observed shift and the buffer depth. This
-converts a silent out-of-bounds read into a diagnosable failure.
+converts a silent out-of-bounds read into a diagnosable failure. The FARGO--AMR work
+replaces the buffer depth, the check and adds an orbital-advection timestep limit
+(\file{fargo\_amr\_implementation.pdf}).
 
 \subsection{Phase 0c: making the boundary state rebuildable under AMR}
 \label{sec:amrreinit}
@@ -1681,7 +1692,9 @@ Block & Parameter & Default & Meaning \\
 \code{<shearing\_box>} & \code{qshear} & --- & $q$ \\
                        & \code{omega0} & --- & $\Om$ \\
                        & \code{orbital\_advection} & \code{true} & \code{false}
-                         selects the full-velocity (non-FARGO) frame and lifts I2 \\
+                         selects the full-velocity (non-FARGO) frame \\
+                       & \code{oa\_annular} & \code{false} & \code{true} restores I2
+                         (see \file{fargo\_amr\_implementation.pdf}) \\
 \midrule
 \code{<gravity>} & \code{solver} & --- & \code{multigrid} or \code{fft} \\
                  & \code{four\_pi\_G} & --- & $4\pi G$ \\
@@ -1796,10 +1809,12 @@ Location & Condition & Protects \\
 \endhead
 \fn{Mesh::CheckShearingBox\-Refinement} & $x_1$-face blocks span more than one level &
 I1: same-level wrap and same-size blocks along each face \\
-\fn{Mesh::CheckShearingBox\-Refinement} & Incomplete azimuthal ring, FARGO on &
+\fn{Mesh::CheckShearingBox\-Refinement} & Incomplete azimuthal ring, FARGO on,
+\code{oa\_annular = true} &
 I2: same-level, same-size $x_2$-face neighbors for the per-level shift \\
-\fn{OrbitalAdvectionCC::\-RecvAndUnpackCC} & Actual shift $>$ \code{maxjshift} &
-Buffer depth; converts an out-of-bounds read into a diagnosable abort \\
+\fn{OrbitalAdvectionCC::\-RecvAndUnpackCC} & Shift $+\,3 >$ rows available from the
+$x_2$ neighbors (since FARGO--AMR) &
+Remap stencil within the immediate neighbor \\
 \fn{MHD::MHD} & FARGO $+$ refinement & Face-centered $B$ remap at fine/coarse
 interfaces ($\nabla\!\cdot\!B$) is unanalyzed \\
 \fn{MGGravityDriver} & $x_2$ or $x_3$ not periodic & Plane wrap assumes periodic
@@ -1836,8 +1851,8 @@ boundary & Unreachable under the invariant above; defensive \\
 
 \item \textbf{MHD orbital advection with refinement.} Fatal. The face-centered $B$
       remap at fine/coarse interfaces needs a $\nabla\!\cdot\!B$ analysis before the
-      guard can be lifted. MHD without orbital advection, and hydro with it, are both
-      supported.
+      guard can be lifted. MHD without orbital advection, and hydro with it (including
+      $x_2$ level jumps, \file{fargo\_amr\_implementation.pdf}), are both supported.
 
 \item \textbf{\code{root\_on\_host} with shear.} Fatal. \fn{RootShearBoundaryX1} is a
       device kernel; a host twin (analogous to the scalar remap twins of

@@ -1632,10 +1632,10 @@ clump's $x_1$ columns at all $y$: a density criterion
 (\code{min\_max} on \code{hydro\_u\_d}, \code{value\_max=2}) flags the clump's
 blocks and the ring-sync completes the rings automatically. This is cheap here
 (one ring = 16 root blocks $\to$ 128 fine) and is what lets FARGO tolerate the
-clump's azimuthal drift. True local patches are legal only with
+clump's azimuthal drift. True local patches were legal only with
 \code{orbital\_advection=false} at the measured $\sim$5.7$\times$ timestep
-cost; per-ring bookkeeping for partially refined rings would be the Phase-3
-alternative if deep zooms demand it.
+cost. Since the FARGO--AMR work (\file{fargo\_amr\_validation.pdf}) they are legal
+with orbital advection as well; the run below predates it.
 Input \code{tests/swing\_selfgrav\_clump\_amr.athinput} runs the collapse with
 one refinement level chasing the crest and clump (level-1 Truelove ceiling
 $4\times$ higher, $\approx 684\rho_0$); the notebook (\S15) compares the final
