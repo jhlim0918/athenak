@@ -850,4 +850,200 @@ julia figures/plot_fargo_amr_mhd.jl                          # Figs. 4, 5
 julia figures/plot_fargo_amr_clump.jl     # nonlinear swing (run/fargo_amr/clump; README)
 \end{lstlisting}
 
+
+%=========================================================================================
+\appendix
+\section{Linear theory of the swing tests}
+\label{app:theory}
+The linear swing tests of \S\ref{sec:swing} and \S\ref{sec:mhd} (Figs.~\ref{fig:swing}
+and~\ref{fig:mhd}) are compared with the amplitude equations of a single shearing wave in a
+self-gravitating, magnetized shearing sheet. This appendix derives them, states the form
+the code solves (the discrete Laplacian), and lists the checks. The equations are those of
+the problem generator's header (\file{src/pgen/tests/swing.cpp}) and are integrated by
+\file{validation/run/swing\_mhd/swing\_ode.py}.
+
+\subsection{Background}
+Local Cartesian coordinates rotating at $\Om$: $x$ radial, $y$ azimuthal, $z$ vertical.
+The equilibrium is a uniform density $\rho_0$, pressure $p_0$, the shear flow
+$\mathbf v_0 = -q\Om x\,\hat{\mathbf y}$ (with $q = 3/2$ for Keplerian rotation, epicyclic
+frequency $\kappa^2 = 2(2-q)\Om^2$), and a uniform azimuthal field
+$\mathbf B_0 = B_0\hat{\mathbf y}$. Units are Heaviside--Lorentz, as in AthenaK: the
+magnetic pressure is $B^2/2$ and the Alfv\'en speed $v_A = B_0/\rho_0^{1/2}$. The field is
+in equilibrium with the shear, since $\mathbf v_0\times\mathbf B_0 = 0$, and the tidal
+force balances the Coriolis force of $\mathbf v_0$. The uniform background has no
+self-gravity of its own (the Jeans swindle; in the periodic box the mean density does not
+source the potential).
+
+The equations are
+\begin{align}
+  &\partial_t\rho + \nabla\cdot(\rho\mathbf v) = 0, \\
+  &\partial_t\mathbf v + (\mathbf v\cdot\nabla)\mathbf v =
+    -\frac{\nabla p}{\rho} - \nabla\Phi
+    + \frac{(\nabla\times\mathbf B)\times\mathbf B}{\rho}
+    - 2\Om\hat{\mathbf z}\times\mathbf v + 2q\Om^2 x\,\hat{\mathbf x}, \\
+  &\partial_t\mathbf B = \nabla\times(\mathbf v\times\mathbf B), \qquad
+    \nabla^2\Phi = 4\pi G(\rho - \rho_0).
+\end{align}
+The perturbations are isentropic, $\delta p = c_s^2\,\delta\rho$: isothermal runs use the
+isothermal sound speed, ideal-gas runs $c_s^2 = \gamma p_0/\rho_0$, with the initial
+pressure perturbation set to match. All the linear tests here use $c_s = 1$.
+
+\subsection{Linearized equations}
+Write $\rho = \rho_0 + \delta\rho$, $\mathbf v = \mathbf v_0 + \mathbf u$,
+$\mathbf B = \mathbf B_0 + \mathbf b$, $\Phi = \delta\Phi$, and restrict to
+perturbations independent of $z$ with $u_z = b_z = 0$ (they stay zero: nothing couples to
+them at $k_z = 0$). With the Lagrangian derivative of the shear flow
+$\mathcal D \equiv \partial_t - q\Om x\,\partial_y$ and the terms
+$(\mathbf u\cdot\nabla)\mathbf v_0 = -q\Om u_x\hat{\mathbf y}$ and
+$-2\Om\hat{\mathbf z}\times\mathbf u = (2\Om u_y, -2\Om u_x)$:
+\begin{align}
+  \mathcal D\frac{\delta\rho}{\rho_0} &= -\nabla\cdot\mathbf u, \\
+  \mathcal D u_x &= 2\Om u_y - c_s^2\partial_x\frac{\delta\rho}{\rho_0} - \partial_x\delta\Phi
+     + \frac{B_0}{\rho_0}\left(\partial_y b_x - \partial_x b_y\right), \\
+  \mathcal D u_y &= -(2-q)\Om u_x - c_s^2\partial_y\frac{\delta\rho}{\rho_0}
+     - \partial_y\delta\Phi .
+\end{align}
+The Lorentz force is linearized as
+$[(\mathbf B_0\cdot\nabla)\mathbf b - \nabla(\mathbf B_0\cdot\mathbf b)]/\rho_0$; its
+$y$ component, $B_0(\partial_y b_y - \partial_y b_y)/\rho_0$, vanishes: a field along $y$
+exerts no force along itself at $k_z = 0$. For the induction equation, with
+$\nabla\times(\mathbf a\times\mathbf c) = \mathbf a(\nabla\cdot\mathbf c)
+- \mathbf c(\nabla\cdot\mathbf a) + (\mathbf c\cdot\nabla)\mathbf a
+- (\mathbf a\cdot\nabla)\mathbf c$,
+\begin{align}
+  \nabla\times(\mathbf v_0\times\mathbf b) &= (\mathbf b\cdot\nabla)\mathbf v_0
+     - (\mathbf v_0\cdot\nabla)\mathbf b = -q\Om b_x\hat{\mathbf y} + q\Om x\,\partial_y\mathbf b, \\
+  \nabla\times(\mathbf u\times\mathbf B_0) &= B_0\,\partial_y\mathbf u
+     - B_0(\nabla\cdot\mathbf u)\,\hat{\mathbf y},
+\end{align}
+so that
+\begin{equation}
+  \mathcal D b_x = B_0\,\partial_y u_x, \qquad
+  \mathcal D b_y = -q\Om b_x - B_0\,\partial_x u_x .
+\end{equation}
+The first term of the $b_y$ equation is the shear stretching radial field into azimuthal
+field; the second, compression of the azimuthal field by radial motion.
+
+\subsection{Shearing waves}
+The coefficients depend on $x$ only through $\mathcal D$, so the equations admit shearing
+waves (Kelvin modes) with a time-dependent radial wavenumber,
+\begin{equation}
+  \theta = k_x(t)\,x + k_y y, \qquad k_x(t) = k_{x0} + q\Om k_y t .
+\end{equation}
+Acting on $f(t)\,e^{i\theta}$, $\partial_t$ gives $\dot f + i\dot k_x x f$ and
+$-q\Om x\partial_y$ gives $-iq\Om k_y x f$; the two cancel, so $\mathcal D$ becomes the
+time derivative of the amplitude. A wave with $k_{x0} < 0$ is leading; the shear winds it
+through $k_x = 0$ at $t = -k_{x0}/(q\Om k_y)$ (here $t = 4$ for $k_{x0} = -6$, $k_y = 1$)
+into a trailing wave. In the shear-periodic box the wave is an exact solution for all $t$
+when $k_{x0}$ and $k_y$ are box wavenumbers, because the boundary shift $q\Om L_x t$ in $y$
+matches the change of $k_x$.
+
+Take the phases of the initial condition (a density wave at rest):
+\begin{equation}
+  \frac{\delta\rho}{\rho_0} = \delta(t)\cos\theta, \quad
+  \mathbf u = \mathbf w(t)\sin\theta, \quad
+  \mathbf b = \mathbf c(t)\cos\theta, \quad
+  \delta\Phi = \phi(t)\cos\theta .
+\end{equation}
+Then $\nabla\cdot\mathbf u = (k_x w_x + k_y w_y)\cos\theta$,
+$\partial_x(\delta\rho/\rho_0) = -k_x\delta\sin\theta$,
+$\partial_y b_x - \partial_x b_y = -(k_y c_x - k_x c_y)\sin\theta$ and
+$\partial_y u_x = k_y w_x\cos\theta$, and the phases match term by term. The Poisson
+equation gives $\phi = 4\pi G\rho_0\,\delta/D$ with $D = -k^2 = -(k_x^2 + k_y^2)$ in the
+continuum. Collecting,
+\begin{equation}
+\boxed{
+\begin{aligned}
+  \dot\delta &= -(k_x w_x + k_y w_y), \\
+  \dot w_x &= 2\Om w_y + k_x\Psi\,\delta - \frac{B_0}{\rho_0}\,(k_y c_x - k_x c_y), \\
+  \dot w_y &= -(2-q)\Om w_x + k_y\Psi\,\delta, \\
+  \dot c_x &= k_y B_0\, w_x, \\
+  \dot c_y &= -k_x B_0\, w_x - q\Om c_x,
+\end{aligned}
+\qquad
+\Psi(t) = c_s^2 + \frac{4\pi G\rho_0}{D(t)} ,}
+\end{equation}
+with $\delta(0) = A$ and $\mathbf w(0) = \mathbf c(0) = 0$. $\Psi$ is the effective
+pressure: gravity lowers it, and it turns negative (the wave is Jeans unstable) while
+$k^2 < 4\pi G\rho_0/c_s^2$, i.e.\ near $k_x = 0$ when $k_y^2 < 4\pi G\rho_0/c_s^2$. That
+window, together with the epicyclic and shear terms, gives the transient swing
+amplification (Goldreich \& Lynden-Bell 1965; Julian \& Toomre 1966; Toomre 1981; the
+magnetized geometry is that of Kim \& Ostriker 2001). The system is linear, so the
+amplitudes scale with $A$, and the figures plot $\delta/A$ and $c_y/A$.
+
+\subsection{The discrete Laplacian}
+The multigrid solver inverts the 7-point Laplacian, whose eigenvalue for $e^{i\theta}$ on
+a grid of spacing $\Delta x = \Delta y$ is
+\begin{equation}
+  D_h = -\left(\frac{2}{\Delta x}\right)^2
+        \left[\sin^2\frac{k_x\Delta x}{2} + \sin^2\frac{k_y\Delta y}{2}\right]
+\end{equation}
+($k_z = 0$ removes the third term), which tends to $-k^2$ as $k\Delta x \to 0$. The
+comparisons use $D_h$ at the root spacing ($\Delta x = 2\pi/128$), the grid on which most
+of the wave lives in the refined runs. With $4\pi G\rho_0 = 1.9$, $k_{x0} = -6$,
+$k_y = 1$ the difference is small:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+$B_0$ & peak $\delta/A$ (time), continuum & the same, $D_h$ at $128^2$ & $\max_{t\le6}|c_y|/A$ \\
+\midrule
+0   & $-3.6090$ (7.811) & $-3.6083$ (7.812) & --- \\
+0.5 & $+2.2938$ (7.117) & $+2.2994$ (7.117) & 1.566 \\
+1.0 & $-2.8454$ (7.523) & $-2.8469$ (7.523) & 1.997 / 1.998 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+(Peak over $t \le 8$.) The field reduces the amplification: magnetic pressure stiffens the
+compression ($\Psi$ is effectively raised by $v_A^2$ for radial motions, see below), and
+the azimuthal field carries the oscillation past the swing (Fig.~\ref{fig:mhd}).
+
+\subsection{Checks}
+\paragraph{Divergence.} $\nabla\cdot\mathbf b = -(k_x c_x + k_y c_y)\sin\theta$, and
+\[
+  \frac{d}{dt}(k_x c_x + k_y c_y) = q\Om k_y c_x + k_x k_y B_0 w_x
+     + k_y(-k_x B_0 w_x - q\Om c_x) = 0,
+\]
+so a divergence-free initial field stays divergence-free; the integrator keeps
+$k_x c_x + k_y c_y$ at $10^{-11}$ of $A$.
+
+\paragraph{Axisymmetric limit.} For $k_y = 0$, $k_x$ is constant, $c_x$ stays zero, and the
+system closes on $w_x$:
+\[
+  \ddot w_x = -\left[\kappa^2 + k_x^2\left(c_s^2 + v_A^2\right) - 4\pi G\rho_0\right] w_x ,
+\]
+the dispersion relation of axisymmetric magnetosonic--epicyclic waves in a
+self-gravitating slab, $\omega^2 = \kappa^2 + k_x^2(c_s^2 + v_A^2) - 4\pi G\rho_0$ (with
+$D = -k_x^2$): the field adds its pressure to the gas pressure for compressions
+perpendicular to it.
+
+\paragraph{Hydrodynamic limit.} For $B_0 = 0$ the field decouples ($\mathbf c$ is driven
+only through $B_0$) and the first three equations are the self-gravitating hydrodynamic
+swing of \S\ref{sec:swing}. Its peak is $-3.609$ at $t = 7.811$; at $t = 7.804$, the
+output time at which the runs peak, it is $-3.605$, the value quoted there.
+
+\subsection{Projections and the comparison}
+The history output (\file{swing.cpp}) projects the solution on the instantaneous wave,
+\[
+  \texttt{d\_cos} = \frac{2}{V}\!\int\!\left(\frac{\rho}{\rho_0} - 1\right)\cos\theta\,dV,
+  \quad
+  \texttt{vx\_sin} = \frac{2}{V}\!\int\! v_x\sin\theta\,dV,
+  \quad
+  \texttt{by\_cos} = \frac{2}{V}\!\int\! \delta B_y\cos\theta\,dV,
+\]
+and likewise \code{vy\_sin}, \code{bx\_cos}, with $\theta$ built from $k_x(t)$. For a single
+linear wave these return $\delta$, $w_x$, $w_y$, $c_x$, $c_y$ exactly; the sine
+projection of the density, \code{d\_sin}, should stay zero, and its size measures phase
+errors. Without orbital advection $v_y$ includes the shear flow, whose projection vanishes
+($\int x\sin\theta\,dV = 0$ over a box with $k_y \neq 0$), so the same projections serve
+both frames. The tables report, for a variable $f$ (here $\delta$ or $c_y$), the
+trajectory deviation $\max_t|f - f_{\rm ref}|/\max_t|f_{\rm ref}|$ over the stated
+interval, against linear theory (amplitude-scaled) or against the uniform twin
+interpolated to common times. The integration uses an eighth-order Runge--Kutta
+method (DOP853) with relative tolerance $10^{-11}$, so the theory curves are exact to
+plotting precision.
+
 \end{document}
