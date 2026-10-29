@@ -304,6 +304,16 @@ void MeshRefinement::CheckForRefinement(MeshBlockPack* pmbp) {
         break;
       }
     }
+    // ... and never derefine one either: a boundary MB derefined on its own would break
+    // the uniform boundary level; boundary columns set up refined (e.g. by a
+    // <refined_region> over the whole x1 range) therefore stay at that level
+    for (int m=0; m<nmb; ++m) {
+      if (refine_flag.h_view(m+mbs) >= 0) continue;
+      int lev = pmy_mesh->lloc_eachmb[m+mbs].level;
+      std::int32_t lx1 = pmy_mesh->lloc_eachmb[m+mbs].lx1;
+      std::int32_t nmbx1 = (pmy_mesh->nmb_rootx1 << (lev - pmy_mesh->root_level));
+      if (lx1 == 0 || lx1 == (nmbx1-1)) {refine_flag.h_view(m+mbs) = 0;}
+    }
     for (int m=0; m<nmb; ++m) {
       if (refine_flag.h_view(m+mbs) <= 0) continue;
       int lev = pmy_mesh->lloc_eachmb[m+mbs].level;
