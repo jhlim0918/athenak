@@ -8,6 +8,8 @@
 //! \file mesh_refinement.hpp
 //! \brief defines MeshRefinement class containing data and functions controlling SMR/AMR
 
+#include <vector>
+
 //----------------------------------------------------------------------------------------
 //! \fn int CreateAMR_MPI_Tag(int lid, int ox1, int ox2, int ox3)
 //! \brief calculate an MPI tag for AMR communications.  Note maximum size of
@@ -64,6 +66,8 @@ class MeshRefinement {
   // following 2x Views are dimensioned [nmb_total]
   DualArray1D<int> refine_flag;    // refinement flag for each MeshBlock
   DualArray1D<int> fc_amr_repair;  // marks MBs needing post-AMR FC interior repair
+  std::vector<int> amr_src_level_; // [nmb_total] level the MB's data came from at the last
+                                   // regrid: lev (kept), lev-1 (refined), lev+1 (derefined)
   HostArray1D<int> ncyc_since_ref; // # of cycles since MB last refined/derefined
 
   // following 4x arrays allocated with length [nranks] only with AMR
@@ -122,6 +126,7 @@ class MeshRefinement {
                 bool is_z4c=false);
   void RefineFC(DualArray1D<int> &n2o, DvceFaceFld4D<Real> &b, DvceFaceFld4D<Real> &cb);
   void RepairAMRFC(DvceFaceFld4D<Real> &b);
+  void SyncSharedFacesAMR(DvceFaceFld4D<Real> &b);
 
   void RestrictCC(DvceArray5D<Real> &a, DvceArray5D<Real> &ca, bool is_z4c=false);
   void RestrictFC(DvceFaceFld4D<Real> &b, DvceFaceFld4D<Real> &cb);

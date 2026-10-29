@@ -193,6 +193,7 @@ void MeshRefinement::AdaptiveMeshRefinement(Driver *pdriver, ParameterInput *pin
     pdriver->InitBoundaryValuesAndPrimitives(pmy_mesh);
 
     if (pmbp->pmhd != nullptr) {
+      SyncSharedFacesAMR(pmbp->pmhd->b0);
       RepairAMRFC(pmbp->pmhd->b0);
       // Repair changes internal faces after the first exchange finalized exterior
       // faces. Refresh neighboring ghost fields and their primitives before the next
@@ -796,8 +797,12 @@ void MeshRefinement::RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, in
   pm->pmb_pack->pmb->SetNeighbors(pm->ptree, pm->rank_eachmb);
 
   Kokkos::realloc(fc_amr_repair, new_nmb_total);
+  amr_src_level_.assign(new_nmb_total, 0);
   for (int m=0; m<new_nmb_total; ++m) {
-    fc_amr_repair.h_view(m) = (refine_flag.h_view(newtoold[m]) != 0) ? 1 : 0;
+    int rf = refine_flag.h_view(newtoold[m]);
+    fc_amr_repair.h_view(m) = (rf != 0) ? 1 : 0;
+    int lev = pm->lloc_eachmb[m].level;
+    amr_src_level_[m] = (rf > 0) ? lev - 1 : ((rf < 0) ? lev + 1 : lev);
   }
   fc_amr_repair.modify_host();
   fc_amr_repair.sync_device();
@@ -1352,6 +1357,219 @@ void MeshRefinement::RepairAMRFC(DvceFaceFld4D<Real> &b) {
     }
   });
 
+  return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void MeshRefinement::SyncSharedFacesAMR
+//! \brief After a regrid, make the two copies of every face shared by two MeshBlocks
+//! agree again. A MeshBlock created by the regrid (refined or derefined) holds faces that
+//! were prolongated from its coarser parent or restricted from its finer children; where
+//! it shares a face with a MeshBlock whose copy is better informed, that copy replaces
+//! its own. The data source ranks a copy: restricted from a finer level > kept at its own
+//! level > prolongated from a coarser one; a kept MeshBlock wins a tie. Kept MeshBlocks
+//! are never modified. The replacement is a copy (same level), the area average of the
+//! finer neighbour's faces (finer neighbour), or a shift of each 2x2 group of fine faces
+//! to the coarse value (coarser neighbour). RepairAMRFC then recomputes the interior faces
+//! of the new MeshBlocks, so div(B) stays zero in every cell.
+//!
+//! Without this, a MeshBlock refined next to an existing MeshBlock of its new level keeps
+//! prolongated faces on the shared face while the neighbour keeps its evolved ones; the
+//! constrained-transport update preserves the difference (both copies receive the same
+//! EMFs), and later regrids turn it into a coarse/fine mismatch (a monopole of the
+//! composite mesh). Host-side; it runs only at regrid events.
+
+void MeshRefinement::SyncSharedFacesAMR(DvceFaceFld4D<Real> &b) {
+  Mesh *pm = pmy_mesh;
+  auto &indcs = pm->mb_indcs;
+  auto *pmb = pm->pmb_pack->pmb;
+  const int nmb = pm->pmb_pack->nmb_thispack;
+  const int gs = pm->gids_eachrank[global_variable::my_rank];
+  const int nmbt = pm->nmb_total;
+  auto &rep = fc_amr_repair.h_view;
+  // is any MB new? (all ranks hold the global list)
+  bool any_new = false;
+  for (int g=0; g<nmbt; ++g) { if (rep(g) != 0) {any_new = true; break;} }
+  if (!any_new) return;
+
+  auto h1 = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), b.x1f);
+  auto h2 = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), b.x2f);
+  auto h3 = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace(), b.x3f);
+  auto fc = [&](int d, int m, int k, int j, int i) -> Real& {
+    return (d == 0) ? h1(m,k,j,i) : ((d == 1) ? h2(m,k,j,i) : h3(m,k,j,i));
+  };
+  const int st[3] = {indcs.is, indcs.js, indcs.ks};
+  const int en[3] = {indcs.ie, indcs.je, indcs.ke};
+  const int nx[3] = {indcs.nx1, indcs.nx2, indcs.nx3};
+  const int dims = pm->three_d ? 3 : (pm->multi_d ? 2 : 1);
+  const int base[6] = {0, 4, 8, 12, 24, 28};
+  auto lx = [&](int g, int d) -> std::int32_t {
+    const LogicalLocation &l = pm->lloc_eachmb[g];
+    return (d == 0) ? l.lx1 : ((d == 1) ? l.lx2 : l.lx3);
+  };
+  // does the copy of MB n replace that of MB m?
+  auto wins = [&](int n, int m) -> bool {
+    if (rep(m) == 0) return false;               // never modify a kept MB
+    int sn = amr_src_level_[n], sm = amr_src_level_[m];
+    return (sn > sm) || ((sn == sm) && (rep(n) == 0));
+  };
+  // a face pair across the shear-periodic x1 boundary is not a plain face neighbour
+  auto crosses_shear = [&](int m, int d, bool plus) -> bool {
+    if (!shearing_box_ || d != 0) return false;
+    int lev = pm->lloc_eachmb[m].level;
+    std::int32_t nmbx1 = (pm->nmb_rootx1 << (lev - pm->root_level));
+    return plus ? (lx(m,0) == nmbx1 - 1) : (lx(m,0) == 0);
+  };
+
+  // one transfer: winner n -> loser m across m's face f
+  struct Xfer { int m, n, f; };
+  auto key_less = [](const Xfer &a, const Xfer &c) {
+    return (a.m != c.m) ? (a.m < c.m) : ((a.n != c.n) ? (a.n < c.n) : (a.f < c.f));
+  };
+  // transverse layout of a face in direction d
+  auto tdims = [&](int d, int &t1, int &t2) {
+    t1 = (d == 0) ? 1 : 0;
+    t2 = (d == 2) ? 1 : 2;
+  };
+  // payload of winner n for loser m (m's face f), size n1*n2 (coarse-plane counts)
+  auto pack = [&](const Xfer &x, int ln_local, std::vector<Real> &buf) {
+    int d = x.f/2; bool plus = (x.f%2 == 1);
+    int t1, t2; tdims(d, t1, t2);
+    int r1 = (nx[t1] > 1) ? 2 : 1, r2 = (nx[t2] > 1) ? 2 : 1;
+    int lm = pm->lloc_eachmb[x.m].level, ln = pm->lloc_eachmb[x.n].level;
+    int in = plus ? st[d] : en[d] + 1;           // n's copy of the shared face
+    buf.clear();
+    int idx[3]; idx[d] = in;
+    if (ln == lm) {
+      for (int c=st[t2]; c<=en[t2]; ++c) for (int a=st[t1]; a<=en[t1]; ++a) {
+        idx[t1] = a; idx[t2] = c;
+        buf.push_back(fc(d, ln_local, idx[2], idx[1], idx[0]));
+      }
+    } else if (ln == lm + 1) {                   // finer winner: restrict
+      for (int c=0; c<nx[t2]/r2; ++c) for (int a=0; a<nx[t1]/r1; ++a) {
+        Real v = 0.0;
+        for (int q=0; q<r2; ++q) for (int p=0; p<r1; ++p) {
+          idx[t1] = st[t1] + r1*a + p; idx[t2] = st[t2] + r2*c + q;
+          v += fc(d, ln_local, idx[2], idx[1], idx[0]);
+        }
+        buf.push_back(v/static_cast<Real>(r1*r2));
+      }
+    } else {                                     // coarser winner: the part covering m
+      int o1 = (r1 == 2) ? (lx(x.m,t1) - 2*lx(x.n,t1))*(nx[t1]/2) : 0;
+      int o2 = (r2 == 2) ? (lx(x.m,t2) - 2*lx(x.n,t2))*(nx[t2]/2) : 0;
+      for (int c=0; c<nx[t2]/r2; ++c) for (int a=0; a<nx[t1]/r1; ++a) {
+        idx[t1] = st[t1] + o1 + a; idx[t2] = st[t2] + o2 + c;
+        buf.push_back(fc(d, ln_local, idx[2], idx[1], idx[0]));
+      }
+    }
+  };
+  auto apply = [&](const Xfer &x, int lm_local, const Real *buf) {
+    int d = x.f/2; bool plus = (x.f%2 == 1);
+    int t1, t2; tdims(d, t1, t2);
+    int r1 = (nx[t1] > 1) ? 2 : 1, r2 = (nx[t2] > 1) ? 2 : 1;
+    int lm = pm->lloc_eachmb[x.m].level, ln = pm->lloc_eachmb[x.n].level;
+    int im = plus ? en[d] + 1 : st[d];           // m's copy of the shared face
+    int idx[3]; idx[d] = im;
+    int k = 0;
+    if (ln == lm) {
+      for (int c=st[t2]; c<=en[t2]; ++c) for (int a=st[t1]; a<=en[t1]; ++a) {
+        idx[t1] = a; idx[t2] = c;
+        fc(d, lm_local, idx[2], idx[1], idx[0]) = buf[k++];
+      }
+    } else if (ln == lm + 1) {                   // finer winner covers part of m's face
+      int o1 = (r1 == 2) ? (lx(x.n,t1) - 2*lx(x.m,t1))*(nx[t1]/2) : 0;
+      int o2 = (r2 == 2) ? (lx(x.n,t2) - 2*lx(x.m,t2))*(nx[t2]/2) : 0;
+      for (int c=0; c<nx[t2]/r2; ++c) for (int a=0; a<nx[t1]/r1; ++a) {
+        idx[t1] = st[t1] + o1 + a; idx[t2] = st[t2] + o2 + c;
+        fc(d, lm_local, idx[2], idx[1], idx[0]) = buf[k++];
+      }
+    } else {                                     // coarser winner: shift the fine groups
+      for (int c=0; c<nx[t2]/r2; ++c) for (int a=0; a<nx[t1]/r1; ++a) {
+        Real mean = 0.0;
+        for (int q=0; q<r2; ++q) for (int p=0; p<r1; ++p) {
+          idx[t1] = st[t1] + r1*a + p; idx[t2] = st[t2] + r2*c + q;
+          mean += fc(d, lm_local, idx[2], idx[1], idx[0]);
+        }
+        Real shift = buf[k++] - mean/static_cast<Real>(r1*r2);
+        for (int q=0; q<r2; ++q) for (int p=0; p<r1; ++p) {
+          idx[t1] = st[t1] + r1*a + p; idx[t2] = st[t2] + r2*c + q;
+          fc(d, lm_local, idx[2], idx[1], idx[0]) += shift;
+        }
+      }
+    }
+  };
+
+  // Transfers this rank receives (loser m local) and sends (winner n local), each in
+  // canonical (m, n, f) order so that messages between two ranks match in sequence.
+  std::vector<Xfer> recvs, sends;
+  for (int ml=0; ml<nmb; ++ml) {
+    int m = gs + ml;
+    for (int f=0; f<2*dims; ++f) {
+      int d = f/2; bool plus = (f%2 == 1);
+      if (crosses_shear(m, d, plus)) continue;
+      int last = -1;
+      for (int sub=0; sub<4; ++sub) {
+        int nb = base[f] + sub;
+        if (nb >= pmb->nnghbr) continue;
+        int n = pmb->nghbr.h_view(ml, nb).gid;
+        if (n < 0 || n == last) continue;
+        last = n;
+        // m as loser: receive from n
+        if (wins(n, m)) recvs.push_back({m, n, f});
+        // m as winner: send to n (n's face is the opposite one)
+        if (wins(m, n)) sends.push_back({n, m, f ^ 1});
+      }
+    }
+  }
+  std::sort(recvs.begin(), recvs.end(), key_less);
+  std::sort(sends.begin(), sends.end(), key_less);
+
+  auto plane_size = [&](const Xfer &x) {
+    int d = x.f/2, t1, t2; tdims(d, t1, t2);
+    int lm = pm->lloc_eachmb[x.m].level, ln = pm->lloc_eachmb[x.n].level;
+    int r1 = (nx[t1] > 1 && ln != lm) ? 2 : 1, r2 = (nx[t2] > 1 && ln != lm) ? 2 : 1;
+    return (nx[t1]/r1)*(nx[t2]/r2);
+  };
+  std::vector<std::vector<Real>> sbuf(sends.size()), rbuf(recvs.size());
+  for (size_t s=0; s<sends.size(); ++s) {
+    pack(sends[s], sends[s].n - gs, sbuf[s]);
+  }
+#if MPI_PARALLEL_ENABLED
+  std::vector<MPI_Request> req;
+  for (size_t r=0; r<recvs.size(); ++r) {
+    int src = pm->rank_eachmb[recvs[r].n];
+    rbuf[r].resize(plane_size(recvs[r]));
+    if (src == global_variable::my_rank) continue;
+    req.emplace_back();
+    MPI_Irecv(rbuf[r].data(), static_cast<int>(rbuf[r].size()), MPI_ATHENA_REAL, src,
+              9917, amr_comm, &req.back());
+  }
+  for (size_t s=0; s<sends.size(); ++s) {
+    int dst = pm->rank_eachmb[sends[s].m];
+    if (dst == global_variable::my_rank) continue;
+    req.emplace_back();
+    MPI_Isend(sbuf[s].data(), static_cast<int>(sbuf[s].size()), MPI_ATHENA_REAL, dst,
+              9917, amr_comm, &req.back());
+  }
+#endif
+  // same-rank transfers: match by key
+  for (size_t r=0, s=0; r<recvs.size(); ++r) {
+    if (pm->rank_eachmb[recvs[r].n] != global_variable::my_rank) continue;
+    while (s < sends.size() && key_less(sends[s], recvs[r])) ++s;
+    rbuf[r] = sbuf[s];
+  }
+#if MPI_PARALLEL_ENABLED
+  if (!req.empty()) MPI_Waitall(static_cast<int>(req.size()), req.data(),
+                                MPI_STATUSES_IGNORE);
+#endif
+  for (size_t r=0; r<recvs.size(); ++r) {
+    apply(recvs[r], recvs[r].m - gs, rbuf[r].data());
+  }
+  if (!recvs.empty()) {
+    Kokkos::deep_copy(b.x1f, h1);
+    Kokkos::deep_copy(b.x2f, h2);
+    Kokkos::deep_copy(b.x3f, h3);
+  }
   return;
 }
 
