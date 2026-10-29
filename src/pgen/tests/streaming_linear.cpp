@@ -23,6 +23,13 @@
 //!         plane waves k+- = (kx, +-kz) of amplitude A/2, each shifted ALONG k+- (their
 //!         eq. C2) plus the second-order shift that removes the 2k+- harmonic (eq. C6).
 //! Both seed the same density to first order (they differ by a solenoidal shift).
+//! The undisplaced lattice is chosen by <problem>/lattice:
+//!   square (default): ppc = N^2 particles per cell at the centres of an N x N sub-cell grid;
+//!   rank1: any ppc; particle s = 0..ppc-1 of a cell at x = (s + 1/2)/ppc, z = ((g s mod ppc)
+//!          + 1/2)/ppc (cell units), g = <problem>/lattice_g coprime to ppc (default: the g
+//!          with the widest minimum spacing).  Every sub-column and sub-row holds one particle
+//!          (1/ppc of the cell mass), so a column crossing a deposit-kernel breakpoint moves
+//!          1/ppc of the mass, against 1/sqrt(ppc) on the square lattice.
 //!
 //! With <problem>/user_hist = true, the history records the complex Fourier projection
 //! of the particle mass distribution and of the gas density/radial-velocity fields onto
@@ -223,11 +230,52 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
   int ncells = indcs.nx1*indcs.nx2*indcs.nx3;
   int ppc_int = npart_permb/ncells;
   int npar1d = static_cast<int>(std::round(std::sqrt(static_cast<Real>(ppc_int))));
-  if ((npart_permb != ppc_int*ncells) || (npar1d*npar1d != ppc_int)) {
+  std::string lattice = pin->GetOrAddString("problem","lattice","square");
+  if (lattice != "square" && lattice != "rank1") {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
-              << "Streaming test requires <particles>/ppc to be a perfect square "
-              << "(1, 4, 9, 16, ...) for the quiet-start subcell lattice" << std::endl;
+              << "<problem>/lattice must be 'square' or 'rank1', not '" << lattice << "'"
+              << std::endl;
     std::exit(EXIT_FAILURE);
+  }
+  const bool rank1 = (lattice == "rank1");
+  if ((npart_permb != ppc_int*ncells) || (!rank1 && npar1d*npar1d != ppc_int)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+              << "Streaming test requires an integer <particles>/ppc, a perfect square "
+              << "(1, 4, 9, 16, ...) for the square quiet-start lattice (any ppc with "
+              << "<problem>/lattice = rank1)" << std::endl;
+    std::exit(EXIT_FAILURE);
+  }
+  // rank-1 lattice multiplier: the given lattice_g (coprime to ppc), or by default the g in
+  // [1, ppc-1] with the widest minimum (periodic) particle spacing, the smallest on ties
+  int lat_g = 1;
+  if (rank1) {
+    auto gcd = [](int a, int b) {while (b != 0) {int t = a % b; a = b; b = t;} return a;};
+    lat_g = pin->GetOrAddInteger("problem","lattice_g",0);
+    if (lat_g == 0) {
+      Real best = -1.0;
+      for (int g=1; g<std::max(ppc_int, 2); ++g) {
+        if (gcd(g, ppc_int) != 1) continue;
+        Real dmin = 1.0;   // a particle's own image one cell away
+        for (int s=1; s<ppc_int; ++s) {
+          Real dx = static_cast<Real>(s)/ppc_int;
+          Real dz = static_cast<Real>((g*s) % ppc_int)/ppc_int;
+          dx = std::min(dx, 1.0 - dx); dz = std::min(dz, 1.0 - dz);
+          dmin = std::min(dmin, std::sqrt(dx*dx + dz*dz));
+        }
+        if (dmin > best + 1.0e-12) {best = dmin; lat_g = g;}
+      }
+      pin->SetInteger("problem","lattice_g",lat_g);
+    }
+    if (lat_g < 1 || (ppc_int > 1 && gcd(lat_g % ppc_int, ppc_int) != 1)) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+                << "<problem>/lattice_g = " << lat_g << " must be coprime to ppc = "
+                << ppc_int << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    if (global_variable::my_rank == 0) {
+      std::cout << "# streaming rank-1 lattice: ppc = " << ppc_int << ", g = " << lat_g
+                << std::endl;
+    }
   }
   // SMR: with <problem>/lattice_finest the quiet-start lattice is laid out at the
   // FINEST-level cell size on every MeshBlock (a block one level below the finest carries
@@ -294,17 +342,19 @@ void ProblemGenerator::StreamingLinear(ParameterInput *pin, const bool restart) 
     int q = p - lat_off_(m);
     int c = q/ppc_int;
     int sub = q - c*ppc_int;
-    int ip = sub % npar1d;
-    int jp = sub / npar1d;
+    // sub-column ip and sub-row jp out of nsub per cell
+    const int nsub = rank1 ? ppc_int : npar1d;
+    int ip = rank1 ? sub : sub % npar1d;
+    int jp = rank1 ? (lat_g*sub) % ppc_int : sub / npar1d;
     int i = c % (r*lnx1);
     int j = (c/(r*lnx1)) % (r*lnx2);
     Real dx1 = mbsize.d_view(m).dx1/static_cast<Real>(r);
     Real dx2 = mbsize.d_view(m).dx2/static_cast<Real>(r);
-    // subcell quiet-start position: cell left edge + (ip+1/2) dx/Npar
+    // subcell quiet-start position: cell left edge + (ip+1/2) dx/nsub
     Real x0 = mbsize.d_view(m).x1min + (static_cast<Real>(i)
-              + (static_cast<Real>(ip) + 0.5)/static_cast<Real>(npar1d))*dx1;
+              + (static_cast<Real>(ip) + 0.5)/static_cast<Real>(nsub))*dx1;
     Real z0 = mbsize.d_view(m).x2min + (static_cast<Real>(j)
-              + (static_cast<Real>(jp) + 0.5)/static_cast<Real>(npar1d))*dx2;
+              + (static_cast<Real>(jp) + 0.5)/static_cast<Real>(nsub))*dx2;
     Real ce = cos(kx*x0), se = sin(kx*x0);
     Real cz = cos(kz*z0), sz = sin(kz*z0);
     if (yj07) {
