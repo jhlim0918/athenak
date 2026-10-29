@@ -98,3 +98,10 @@ Face fields at AMR regrids with two levels, directory mhd/twolev (Mac serial bui
 Each: $ATH -i ../NAME.athinput from inside NAME/. History columns 12/13 (0-based) = bmis/bnrm.
     M6_uni256_b0.5   2026-10-29, job mhd256.slurm (in clump/): MHD input, refinement=none,
                      mesh/nx1=256 nx2=256 nx3=32 time/tlim=12.0
+
+## Refined-region figures (plot_fargo_amr_meshes.jl), directory meshfig
+Hydro (Fig. 3 runs): python3 slice.py swing/{unif,ring}/bin/SwingSG.hydro_w.00001.bin
+meshfig/hydro_{unif,ring}; patch: swing/patch/bin/SwingSGpatch.hydro_w.00001.bin.
+MHD (Fig. 4 meshes, B0 = 1, rerun with density dumps every pi/4 to t = 6.3, 3 ranks):
+mhd/swing/mesh_{smr,ypatch,amr}.athinput, run from mhd/swing/mesh_NAME/; slices
+meshfig/mhd_{smr,ypatch}_last (t = 6.3) and meshfig/mhd_amr_{1,2,4,6} (t = k pi/4).

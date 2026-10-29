@@ -269,7 +269,7 @@ The planned twin without orbital advection is not available for patches: with
 \file{multigrid\_sb\_validation.pdf} (Phase 2a: $2\pi\times2\pi\times\pi/4$,
 $128^2\times16$ root cells, $16^3$ blocks, $4\pi G\rho_0 = 1.9$, a leading wave with
 $k_x/k_y = -6$) with the level-1 region cut to the middle four of eight block rows in $y$
-(six of eight columns in $x$, as for the ring). The $x_2$ faces at $y = \pm\pi/2$ are then
+(six of eight columns in $x$, as for the ring). The $x_2$ faces at $y = \pm\pi/2$ (Fig.~\ref{fig:swing_mesh}) are then
 level jumps for orbital advection and for the multigrid octets. The ring and uniform runs
 were repeated with the new code.
 
@@ -306,6 +306,19 @@ $+0.60\%$), so multigrid gravity across the $x_2$ level jumps adds no deviation 
   oscillation of the deviations is present in the ring run as well. Script
   \file{figures/plot\_fargo\_amr\_tests.jl}.}
   \label{fig:swing}
+\end{figure}
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fargo_amr_mesh_hydro.png}
+  \caption{Where the runs of Fig.~\ref{fig:swing} are refined: midplane density
+  perturbation $(\rho - \rho_0)/(\rho_0 A)$ at $t = 8$, near the swing peak, with the
+  MeshBlock outlines (dark gray level 0, root $128^2$ in $16^3$ blocks; red level 1). The
+  refinement is static, set by \code{<refined\_region>} blocks, not by a criterion: the
+  ring covers six of the eight block columns in all of $y$; the patch the same columns in
+  the middle four of eight block rows, with $x_2$ level jumps at $y = \pm\pi/2$. Script
+  \file{figures/plot\_fargo\_amr\_meshes.jl}.}
+  \label{fig:swing_mesh}
 \end{figure}
 
 %=========================================================================================
@@ -391,6 +404,22 @@ common times.)
   \label{fig:mhd}
 \end{figure}
 
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fargo_amr_mesh_mhd.png}
+  \caption{Where the runs of Fig.~\ref{fig:mhd} are refined ($B_0 = 1$; as
+  Fig.~\ref{fig:swing_mesh}). Top: the static ring (the central two of eight block
+  columns, $|x| < \pi/4$) and the static patch (the same columns, $|y| < \pi/2$) at
+  $t = 6.3$, both set by \code{<refined\_region>} blocks; the moving ring at $t = 0.79$.
+  Bottom: the moving ring at $t = 1.57$, $3.14$, $4.72$. It is adaptive with a prescribed
+  criterion (\fn{SwingMovingRingRefine}): a block is refined when it overlaps
+  $x_c(t) \pm \pi/16$, $x_c = (\pi/4)\sin t$, and derefined otherwise, so complete $x_2$
+  rings sweep across the centre and regrids happen at known times, independent of the
+  flow. (These snapshots come from reruns of the same inputs with density dumps; the runs
+  of Fig.~\ref{fig:mhd} kept only histories.)}
+  \label{fig:mhd_mesh}
+\end{figure}
+
 \subsection{Shared faces stay consistent}
 The history columns \code{bmis}/\code{bnrm} measure how far the coarse copy of each face
 shared with a finer block is from the mean of the fine copies:
@@ -455,7 +484,8 @@ moving ring, $B_0 = 1.0$   & 0.013 & 0.013 & 0.040 & 0.150 \\
 
 \noindent
 Figure~\ref{fig:mhd} shows $c_y$ against linear theory and the deviation from the
-uniform twin, together with the patch runs of \S\ref{sec:mhdB}. With orbital advection the
+uniform twin, together with the patch runs of \S\ref{sec:mhdB}; Fig.~\ref{fig:mhd_mesh}
+shows where each mesh is refined. With orbital advection the
 refined runs follow their uniform twins to $1$--$4\%$ in
 $\delta$ and $1$--$2\%$ in $c_y$, against $7$--$15\%$ in $c_y$ without it. Against linear
 theory they are closer than the uniform runs, as refinement should be: $c_y$ is off by
@@ -885,7 +915,8 @@ python3 errmap.py 00010                                      # error at the leve
 python3 ../swing_mhd_repro/repro.py 6 base fargo fargo_nofc  # MHD reproducer pairs
 cd ../.. && julia figures/plot_fargo_amr_shwave.jl           # Fig. 2
 julia figures/plot_fargo_amr_tests.jl                        # Figs. 1 and 3
-julia figures/plot_fargo_amr_mhd.jl                          # Figs. 4, 5
+julia figures/plot_fargo_amr_mhd.jl                          # MHD swing figures
+julia figures/plot_fargo_amr_meshes.jl       # refined regions (run/fargo_amr/meshfig)
 julia figures/plot_fargo_amr_clump.jl     # nonlinear swing (run/fargo_amr/clump; README)
 \end{lstlisting}
 
