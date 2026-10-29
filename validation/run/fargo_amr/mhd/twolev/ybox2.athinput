@@ -1,0 +1,104 @@
+# AthenaK input file: minimal reproducer of the refined-mesh field error of the magnetized
+# swing test (2026-10-27). Thin 3-D shearing box (64 x 64 x 4, 8 x 8 x 4 MeshBlocks), ideal MHD,
+# NO self-gravity, NO orbital advection (the shear flow vy = -q Omega x is in the state), a
+# uniform azimuthal field B0 = 1 (beta = 1.2, adiabatic cs = 1), and a leading shearing wave
+# (kx0 = -6, ky = 1, amplitude 1e-4). A static level-1 ring over the central two of eight
+# x1 block columns (|x| < pi/4) refines the wave as it swings (kx = 0 at t = 4).
+# Run it twice -- as is, and with mesh_refinement/refinement=none -- and compare the user
+# history column by_cos (the projected azimuthal field perturbation c_y): a correct
+# refinement keeps the two within the uniform run's own truncation error (a few per cent);
+# here they differ by ~22% by t = 6 (validation/run/swing_mhd_repro/repro.py).
+# Facts so far: no field (b0 = 0) -> agreement; no shear (qshear = 0) -> the ring is better
+# than uniform; uniform flow + field across a refinement slab without a shearing box
+# (linear_wave_mhd_tflow_smr.athinput) -> no error; gravity irrelevant; the error barely
+# converges with resolution (22% at a 64-cell root, 16% at 128). div B stays at round-off.
+# NB: needs 3-D: AthenaK's 2-D shearing box is x-z only (r-phi "not yet implemented"), and a
+# 2-D x-y run silently uses plain periodic x1 boundaries.
+
+<comment>
+problem   = refined-mesh field error reproducer (MHD shearing box, no gravity)
+
+<job>
+basename  = SwingMHD
+
+<mesh>
+nghost    = 4
+nx1       = 64
+x1min     = -3.14159265358979
+x1max     =  3.14159265358979
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+nx2       = 64
+x2min     = -3.14159265358979
+x2max     =  3.14159265358979
+ix2_bc    = periodic
+ox2_bc    = periodic
+nx3       = 4
+x3min     = -0.39269908169872
+x3max     =  0.39269908169872
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 8
+nx2       = 8
+nx3       = 4
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 3.0        # swing at t = 4; the error is fully developed by t = 6
+ndiag      = 100
+
+<mhd>
+eos         = ideal
+gamma       = 1.6666666666666667
+reconstruct = plm
+rsolver     = hlld
+iso_sound_speed = 1.0   # used only with eos = isothermal
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true
+oa_annular = false
+oa_flux_correct = true
+
+
+<problem>
+pgen_name = swing
+rho0      = 1.0
+p0        = 0.6         # cs^2 = gamma p0/rho0 = 1
+b0        = 1.0         # uniform B along x2: vA = 1, beta = 1.2
+amp       = 1.0e-4      # small enough to stay linear through the amplification
+nwx       = -6          # leading wave (kx0 < 0)
+nwy       = 1
+user_hist = true
+amr_moving_ring = true
+ring_xc0 = 0.0
+ring_xamp = 0.78539816339745
+ring_freq = 1.0
+ring_hwidth = 0.19634954084936
+ring_yc0 = 0.0
+ring_yamp = 1.0
+ring_yfreq = 1.0
+ring_yvel = 0.5
+ring_yhwidth = 0.6
+
+<output1>
+file_type      = hst
+dt             = 0.02
+data_format    = %.15e
+user_hist_only = true
+
+<mesh_refinement>
+refinement = adaptive
+num_levels = 3
+refinement_interval = 5
+prolong_primitives = false   # true: prolongate primitives (exact for a uniform P)
+max_nmb_per_rank = 1024
+
+<amr_criterion1>
+method = user

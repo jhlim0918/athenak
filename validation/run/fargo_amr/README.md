@@ -71,3 +71,26 @@ first-step runs repeated with the second-step binary (histories bit-identical);
 yb_q0 (qshear=0) and yb_q0_nf (qshear=0, orbital_advection=false): the div(B) jumps at
 derefinement are pre-existing. Full swing on the patch: mhd/swing/ypF_b0.5, ypF_b1.0
     mpirun -np 3 $ATH -i ypatch.athinput shearing_box/orbital_advection=true problem/b0=...
+
+## Nonlinear swing to collapse (Jeans-criterion AMR), directory clump
+Runs on h-gpu (one H200; /data/limjay/runs/swing_clump_fargoamr, slurm scripts
+clump_hydro.slurm / clump_mhd.slurm there). Inputs inputs/tests/swing_selfgrav_clump_jeans
+(hydro) and swing_mhd_clump_jeans (MHD, B0 = 0.5 along y):
+    H1_uniform   mesh_refinement/refinement=none
+    H2_ring      shearing_box/oa_annular=true
+    H3_patch     (as is)
+    H4_uni256    mesh_refinement/refinement=none mesh/nx1=256 mesh/nx2=256 mesh/nx3=32
+    H5_marginal  gravity/four_pi_G=5.0 problem/amp=0.05
+    M1_uni_b0.5, M2_ring_b0.5, M3_patch_b0.5   the same three meshes, MHD input
+    M4_uni_b0.25, M5_patch_b0.25               problem/b0=0.25
+Kept here: SwingSG.user.hst, log, rhomax.txt (python3 rhomax.py RUN: t, max rho, blocks
+per level from the density dumps) and maps/ (python3 maps.py RUN 180 190 200: midplane
+slices on the finest level plus block outlines); both scripts are in clump/. The ring-era
+runs of multigrid_selfgravity_validation.pdf sec. 13 are in clump/old/.
+Figure: julia figures/plot_fargo_amr_clump.jl (from validation/).
+Face fields at AMR regrids with two levels, directory mhd/twolev (Mac serial build, t <= 3):
+    twolev, twolev_nofc, twolev_nofargo   static nested patches (levels 1 and 2)
+    ybox1                                  mhd/stepB/ybox.athinput, num_levels = 2
+    ybox2, ybox2_nofc                      num_levels = 3
+    ybox2_q0 / ybox2_nf / ybox2_q0_nf      qshear = 0 / orbital_advection = false / both
+Each: $ATH -i ../NAME.athinput from inside NAME/. History columns 12/13 (0-based) = bmis/bnrm.

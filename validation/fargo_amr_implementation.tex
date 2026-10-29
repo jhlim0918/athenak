@@ -105,7 +105,8 @@ remap (\fn{SendEMF\_OA}, \fn{RecvEMFAndUpdateB\_OA}, \fn{UpdateB}); buffer depth
 \file{src/mhd/mhd\{.cpp,.hpp,\_tasks.cpp\}} & Guard relaxed to rings; tasks
 \fn{SendE\_OA}, \fn{RecvE\_OA}, \fn{SendFlx\_OA}, \fn{RecvFlx\_OA} \\
 \file{src/pgen/tests/swing.cpp} & History columns \code{bmis}, \code{bnrm}: shared-face
-consistency; optional $x_2$ window of the moving-ring criterion \\
+consistency; optional $x_2$ window of the moving-ring criterion; Jeans-length
+criterion \fn{SwingJeansRefine} (\S\ref{sec:jeanscrit}) \\
 \file{src/shearing\_box/orbital\_advection\_fc.cpp} (second step) & $B_1$, $B_3$ rows across
 $x_2$ level jumps: per-sub-face buffers, area-averaged and interpolated messages \\
 \bottomrule
@@ -449,6 +450,26 @@ periodically into $[x_{2,\min}, x_{2,\max})$. With \code{ring\_yhwidth} $> 0$ a 
 refined only if it overlaps both the $x_1$ interval and the $x_2$ window (or one of its
 periodic images): a box that moves in $x_1$ and drifts through $x_2$.
 
+\subsection{A physical criterion: the Jeans length}
+\label{sec:jeanscrit}
+For the nonlinear swing (validation document, section ``Nonlinear swing to collapse'') the swing problem
+generator has a Jeans-length criterion, \fn{SwingJeansRefine}, switched on by
+\code{<problem> amr\_njeans} $> 0$ with \code{<amr\_criterion1> method = user}. For each
+MeshBlock it takes the minimum of $c_s^2/\rho$ over the cells (with \code{amr\_buffer},
+the default, over the ghost cells too, so refinement reaches a little beyond the gas that
+triggered it) and forms
+\[
+  n_J = \frac{\lambda_J}{\Delta x_1}, \qquad
+  \lambda_J = 2\pi\left(\frac{c_s^2}{4\pi G\rho}\right)^{1/2},
+\]
+with $c_s$ the isothermal sound speed, or $(\gamma P/\rho)^{1/2}$ for an ideal gas. The block
+is flagged for refinement when $n_J < $ \code{amr\_njeans} and for derefinement when
+$n_J > $ \code{amr\_njeans}$\,\times\,$\code{amr\_njeans\_deref} (default 2.5) and no other
+criterion has flagged it. This is the thermal Jeans length: magnetic support is not
+counted, so for MHD the criterion is conservative. It is a team reduction per block (one
+kernel), on the GPU as on the CPU, and with orbital advection it needs no $x_2$
+synchronization: the refined region may be any set of blocks.
+
 %=========================================================================================
 \section{Magnetic fields: MHD}
 \label{sec:mhd}
@@ -607,6 +628,11 @@ Block & Parameter & Default & Meaning \\
   oscillation amplitude \\
  & \code{ring\_yfreq}, \code{ring\_yvel} & 1, 0 & Oscillation frequency and drift speed \\
  & \code{ring\_yhwidth} & $-1$ & $> 0$: refine only inside the $x_2$ window \\
+\code{<problem>} (swing) & \code{amr\_njeans} & $-1$ & $> 0$: Jeans criterion,
+  refine where $\lambda_J <$ this many cells (\S\ref{sec:jeanscrit}) \\
+ & \code{amr\_njeans\_deref} & 2.5 & derefine where $\lambda_J$ exceeds
+  \code{amr\_njeans} times this everywhere in the block \\
+ & \code{amr\_buffer} & \code{true} & include the ghost cells \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -629,6 +655,9 @@ File (under \file{inputs/}) & Configuration \\
 \file{shearing\_box/hydro\_incompress\_shwave\_amr\_box.athinput} & Vortical shwave,
   moving box (AMR) \\
 \file{tests/swing\_selfgrav\_smr\_ypatch.athinput} & Swing with multigrid gravity, patch \\
+\file{tests/swing\_selfgrav\_clump\_jeans.athinput} & Nonlinear swing to collapse,
+  Jeans-criterion AMR \\
+\file{tests/swing\_mhd\_clump\_jeans.athinput} & The same, magnetized ($\beta = 8$) \\
 \bottomrule
 \end{tabular}
 \end{center}
