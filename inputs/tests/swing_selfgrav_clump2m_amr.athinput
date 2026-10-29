@@ -1,0 +1,128 @@
+# AthenaK input: two-mode swing collapse (psi = 2.3) with orbital advection and AMR
+# patches, against a uniform 256^2 run at the same finest resolution (branch fargo-amr-mhd).
+# Initial condition: swing_selfgrav_clump_amr256_2m.athinput (primary wave nwx=-6, nwy=1,
+# amp 0.2; second wave nwx2=-11, nwy2=2, amp2 0.1, phase2 2.3: breaks the parity), shifted
+# by dx = +1.2 in x1 (phase0 -> 0 + 6 dx, phase2 -> 2.3 + 11 dx). The shearing sheet is
+# invariant under x-translation (with the pattern carried in y by the shear), so this is
+# the same physical problem; it moves the uniform-256^2 knots of the unshifted run,
+# (-1.755, 1.559) and (-2.908, -2.295), to x = -0.56 and -1.71, inside the level-2
+# window (|x| < 1.96) instead of the never-refined boundary block column.
+# AMR: 64^2 x 8 root, 8^3 MeshBlocks (8 block columns; level 1 allowed for |x| < 2.36,
+# level 2 for |x| < 1.96), num_levels = 3, finest = 256^2. Criterion (SwingJeansRefine):
+# refine where lambda_J < 16 cells OR rho > 2 (crests to the finest level); derefine
+# where lambda_J > 40 cells and rho < 1.25 everywhere in the block.
+# Uniform twin (same initial condition):
+#   mesh/nx1=256 mesh/nx2=256 mesh/nx3=32 meshblock/nx1=16 meshblock/nx2=16
+#   meshblock/nx3=16 mesh_refinement/refinement=none
+<comment>
+problem   = Two-mode swing collapse (psi=2.3), AMR patches vs uniform 256^2
+
+<job>
+basename  = SwingSG
+
+<mesh>
+nghost    = 4
+nx1       = 64
+x1min     = -3.14159265358979
+x1max     =  3.14159265358979
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+
+nx2       = 64
+x2min     = -3.14159265358979
+x2max     =  3.14159265358979
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 8
+x3min     = -0.39269908169872
+x3max     =  0.39269908169872
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 8
+nx2       = 8
+nx3       = 8
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 10.0
+ndiag      = 100
+
+<hydro>
+eos             = isothermal
+reconstruct     = plm
+rsolver         = hlle
+iso_sound_speed = 1.0
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true
+oa_annular = false         # patches: refinement need not form x2 rings
+oa_flux_correct = true
+
+<gravity>
+solver    = multigrid
+four_pi_G = 6.0
+vert_bc   = periodic
+fft_remap = ppmx
+threshold = -1             # fixed-count mode (stagnation control can hit the
+niteration = 10            # 40-cycle cap mid-run on refined meshes)
+full_multigrid = true
+fmg_ncycle = 1
+mg_remap  = ppmx
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+amr_moving_ring = false    # density criterion below, not the prescribed ring
+ring_xc0     = 0.0
+ring_xamp    = 0.0
+ring_freq    = 1.0
+ring_hwidth  = 0.19634954084936
+pgen_name = swing
+rho0      = 1.0
+amp       = 0.2
+nwx       = -6             # primary leading wave
+nwy       = 1
+phase0    = 7.2              # 0 + 6*1.2: shift by dx = +1.2 (see header)
+nwx2      = -11            # second leading wave: breaks all parity (generic sites)
+nwy2      = 2
+amp2      = 0.1
+phase2    = 15.5             # 2.3 + 11*1.2
+user_hist = true
+amr_njeans = 16.0          # refine where lambda_J < 16 cells
+amr_njeans_deref = 2.5     # derefine where lambda_J > 40 cells everywhere in the block
+amr_buffer = true          # include the ghost zones
+amr_rho_refine = 2.0       # ... or where rho > 2 (swing crests to the finest level)
+amr_rho_deref = 1.25       # derefine only where rho < 1.25 everywhere as well
+
+<mesh_refinement>
+refinement = adaptive
+num_levels = 3             # root 64^2 + 2 levels: finest 256^2
+refinement_interval = 5
+max_nmb_per_rank = 8192    # whole box at level 2 = 4096 MeshBlocks (one GPU)
+
+<amr_criterion1>
+method    = user           # SwingJeansRefine (problem block)
+
+<output1>
+file_type      = hst
+dt             = 0.02
+data_format    = %.15e
+user_hist_only = true
+
+<output2>
+file_type      = bin
+variable       = hydro_u_d
+dt             = 0.1       # movies
+
+<output3>
+file_type      = rst
+dt             = 0.5       # restart dumps (cluster walltime insurance)

@@ -103,6 +103,8 @@ struct SwingJeansVariables {
   Real njeans_deref;  // derefine where lambda_J > njeans*njeans_deref*dx everywhere
   Real four_pi_G;
   bool buffer;        // include the ghost zones (refinement reaches beyond the gas)
+  Real rho_refine;    // > 0: also refine where max rho > rho_refine (to the finest level)
+  Real rho_deref;     // ... and derefine only where max rho < rho_deref as well
 };
 SwingJeansVariables swing_jeans_var;
 } // namespace
@@ -151,12 +153,19 @@ void ProblemGenerator::SwingAmplification(ParameterInput *pin, const bool restar
   // amr_njeans_deref cells everywhere in it. cs is the isothermal sound speed, or
   // sqrt(gamma P/rho) for an ideal gas; the thermal Jeans length (no magnetic support).
   // With amr_buffer the ghost zones are included, so refinement reaches beyond the
-  // flagged gas. Requires refinement=adaptive and an <amr_criterion> with method=user.
+  // flagged gas. Optionally (amr_rho_refine > 0) a block is also refined while any cell
+  // has rho > amr_rho_refine, at every level up to the finest, and derefined only once
+  // max rho < amr_rho_deref (default amr_rho_refine/1.6) as well: it keeps the swing
+  // crests, not only the Jeans-unstable gas, on the finest level.
+  // Requires refinement=adaptive and an <amr_criterion> with method=user.
   swing_jeans_var.njeans = pin->GetOrAddReal("problem", "amr_njeans", -1.0);
   if (swing_jeans_var.njeans > 0.0) {
     swing_jeans_var.njeans_deref = pin->GetOrAddReal("problem", "amr_njeans_deref", 2.5);
     swing_jeans_var.four_pi_G = pin->GetReal("gravity", "four_pi_G");
     swing_jeans_var.buffer = pin->GetOrAddBoolean("problem", "amr_buffer", true);
+    swing_jeans_var.rho_refine = pin->GetOrAddReal("problem", "amr_rho_refine", -1.0);
+    swing_jeans_var.rho_deref = pin->GetOrAddReal("problem", "amr_rho_deref",
+                                                  swing_jeans_var.rho_refine/1.6);
     user_ref_func = SwingJeansRefine;
   }
 
@@ -481,7 +490,9 @@ void SwingMovingRingRefine(MeshBlockPack *pmbp) {
 //! \fn void SwingJeansRefine()
 //! \brief Jeans-length AMR criterion (see the setup above): nJ = lambda_J/dx with
 //! lambda_J = 2 pi sqrt(cs^2/(4 pi G rho)); refine if min nJ < njeans, derefine if
-//! min nJ > njeans*njeans_deref (and no other criterion has flagged the block).
+//! min nJ > njeans*njeans_deref (and no other criterion has flagged the block); with
+//! rho_refine > 0 also refine if max rho > rho_refine, and derefine only if max rho <
+//! rho_deref too.
 
 void SwingJeansRefine(MeshBlockPack *pmbp) {
   auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
@@ -503,6 +514,8 @@ void SwingJeansRefine(MeshBlockPack *pmbp) {
   const Real fpG = swing_jeans_var.four_pi_G;
   const Real njeans = swing_jeans_var.njeans;
   const Real nderef = swing_jeans_var.njeans*swing_jeans_var.njeans_deref;
+  const Real rho_ref = swing_jeans_var.rho_refine;
+  const Real rho_der = swing_jeans_var.rho_deref;
 
   par_for_outer("SwingJeansAMR", DevExeSpace(), 0, 0, 0, (nmb-1),
   KOKKOS_LAMBDA(TeamMember_t tmember, const int m) {
@@ -519,10 +532,25 @@ void SwingJeansRefine(MeshBlockPack *pmbp) {
       Real cs2 = ideal ? gamma*(gamma - 1.0)*w0(m,IEN,k,j,i)/rho : iso_cs2;
       qmin = fmin(cs2/rho, qmin);
     }, Kokkos::Min<Real>(team_qmin));
+    // max over the cells of rho (density criterion)
+    Real team_rmax = 0.0;
+    if (rho_ref > 0.0) {
+      Kokkos::parallel_reduce(Kokkos::TeamThreadRange(tmember, nkji),
+      [=](const int idx, Real &rmax) {
+        int k = (idx)/nji;
+        int j = (idx - k*nji)/n1;
+        int i = (idx - k*nji - j*n1) + il;
+        j += jl;
+        k += kl;
+        rmax = fmax(w0(m,IDN,k,j,i), rmax);
+      }, Kokkos::Max<Real>(team_rmax));
+    }
     Real nj = 2.0*M_PI*sqrt(team_qmin/fpG)/size.d_view(m).dx1;
     int &flag = refine_flag.d_view(m+mbs);
-    if (nj < njeans) {flag = 1;}
-    if ((nj > nderef) && (flag == 0)) {flag = -1;}
+    bool dense = (rho_ref > 0.0) && (team_rmax > rho_ref);
+    bool thin = (rho_ref <= 0.0) || (team_rmax < rho_der);
+    if ((nj < njeans) || dense) {flag = 1;}
+    if ((nj > nderef) && thin && (flag == 0)) {flag = -1;}
   });
   refine_flag.modify_device();
   refine_flag.sync_host();
