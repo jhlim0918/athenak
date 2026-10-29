@@ -53,6 +53,7 @@
 //! refined MHD runs use orbital_advection = false (the full shear flow in the state).
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <iostream>
 #include <string>
@@ -75,6 +76,8 @@ void SwingHistory(HistoryData *pdata, Mesh *pm);
 // User-defined refinement criterion: prescribed moving ring (same as the shwave
 // pgen's; here it exercises AMR + self-gravity in the shearing box, Phase 2c)
 void SwingMovingRingRefine(MeshBlockPack *pmbp);
+// Jeans-length AMR criterion for the nonlinear (collapse) runs
+void SwingJeansRefine(MeshBlockPack *pmbp);
 
 //----------------------------------------------------------------------------------------
 //! \struct SwingTestVariables
@@ -93,6 +96,15 @@ struct SwingRingVariables {
   Real x2min, x2max;                      // mesh x2 extent (periodic wrap of the window)
 };
 SwingRingVariables swing_ring_var;
+
+// parameters of the Jeans-length AMR criterion
+struct SwingJeansVariables {
+  Real njeans;        // refine where lambda_J < njeans*dx
+  Real njeans_deref;  // derefine where lambda_J > njeans*njeans_deref*dx everywhere
+  Real four_pi_G;
+  bool buffer;        // include the ghost zones (refinement reaches beyond the gas)
+};
+SwingJeansVariables swing_jeans_var;
 } // namespace
 
 //----------------------------------------------------------------------------------------
@@ -131,6 +143,21 @@ void ProblemGenerator::SwingAmplification(ParameterInput *pin, const bool restar
     swing_ring_var.x2min   = pin->GetReal("mesh", "x2min");
     swing_ring_var.x2max   = pin->GetReal("mesh", "x2max");
     user_ref_func = SwingMovingRingRefine;
+  }
+
+  // Jeans-length AMR criterion (<problem> amr_njeans > 0): refine every MeshBlock in
+  // which the Jeans length lambda_J = 2 pi cs/sqrt(4 pi G rho) of any cell is shorter
+  // than amr_njeans cells; derefine a block when lambda_J exceeds amr_njeans *
+  // amr_njeans_deref cells everywhere in it. cs is the isothermal sound speed, or
+  // sqrt(gamma P/rho) for an ideal gas; the thermal Jeans length (no magnetic support).
+  // With amr_buffer the ghost zones are included, so refinement reaches beyond the
+  // flagged gas. Requires refinement=adaptive and an <amr_criterion> with method=user.
+  swing_jeans_var.njeans = pin->GetOrAddReal("problem", "amr_njeans", -1.0);
+  if (swing_jeans_var.njeans > 0.0) {
+    swing_jeans_var.njeans_deref = pin->GetOrAddReal("problem", "amr_njeans_deref", 2.5);
+    swing_jeans_var.four_pi_G = pin->GetReal("gravity", "four_pi_G");
+    swing_jeans_var.buffer = pin->GetOrAddBoolean("problem", "amr_buffer", true);
+    user_ref_func = SwingJeansRefine;
   }
 
   // geometry and wave numbers (mode numbers are w.r.t. the whole mesh)
@@ -447,5 +474,57 @@ void SwingMovingRingRefine(MeshBlockPack *pmbp) {
   // sync host array with device
   refine_flag.modify_host();
   refine_flag.sync_device();
+  return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void SwingJeansRefine()
+//! \brief Jeans-length AMR criterion (see the setup above): nJ = lambda_J/dx with
+//! lambda_J = 2 pi sqrt(cs^2/(4 pi G rho)); refine if min nJ < njeans, derefine if
+//! min nJ > njeans*njeans_deref (and no other criterion has flagged the block).
+
+void SwingJeansRefine(MeshBlockPack *pmbp) {
+  auto &refine_flag = pmbp->pmesh->pmr->refine_flag;
+  int nmb = pmbp->nmb_thispack;
+  int mbs = pmbp->pmesh->gids_eachrank[global_variable::my_rank];
+  auto &indcs = pmbp->pmesh->mb_indcs;
+  const int ng = swing_jeans_var.buffer ? indcs.ng : 0;
+  const int il = indcs.is - ng, n1 = indcs.nx1 + 2*ng;
+  const int jl = indcs.js - ng, n2 = indcs.nx2 + 2*ng;
+  const int kl = indcs.ks - ng, n3 = indcs.nx3 + 2*ng;
+  const int nkji = n3*n2*n1, nji = n2*n1;
+
+  const bool mhd = (pmbp->pmhd != nullptr);
+  auto &w0 = mhd ? pmbp->pmhd->w0 : pmbp->phydro->w0;
+  auto eos = mhd ? pmbp->pmhd->peos->eos_data : pmbp->phydro->peos->eos_data;
+  const bool ideal = eos.is_ideal;
+  const Real gamma = eos.gamma, iso_cs2 = SQR(eos.iso_cs);
+  auto &size = pmbp->pmb->mb_size;
+  const Real fpG = swing_jeans_var.four_pi_G;
+  const Real njeans = swing_jeans_var.njeans;
+  const Real nderef = swing_jeans_var.njeans*swing_jeans_var.njeans_deref;
+
+  par_for_outer("SwingJeansAMR", DevExeSpace(), 0, 0, 0, (nmb-1),
+  KOKKOS_LAMBDA(TeamMember_t tmember, const int m) {
+    // min over the cells of cs^2/rho
+    Real team_qmin = (FLT_MAX);
+    Kokkos::parallel_reduce(Kokkos::TeamThreadRange(tmember, nkji),
+    [=](const int idx, Real &qmin) {
+      int k = (idx)/nji;
+      int j = (idx - k*nji)/n1;
+      int i = (idx - k*nji - j*n1) + il;
+      j += jl;
+      k += kl;
+      Real rho = w0(m,IDN,k,j,i);
+      Real cs2 = ideal ? gamma*(gamma - 1.0)*w0(m,IEN,k,j,i)/rho : iso_cs2;
+      qmin = fmin(cs2/rho, qmin);
+    }, Kokkos::Min<Real>(team_qmin));
+    Real nj = 2.0*M_PI*sqrt(team_qmin/fpG)/size.d_view(m).dx1;
+    int &flag = refine_flag.d_view(m+mbs);
+    if (nj < njeans) {flag = 1;}
+    if ((nj > nderef) && (flag == 0)) {flag = -1;}
+  });
+  refine_flag.modify_device();
+  refine_flag.sync_host();
   return;
 }

@@ -1,0 +1,122 @@
+# AthenaK input file: swing-driven gravitational collapse with orbital advection and a
+# Jeans-length AMR criterion (SwingJeansRefine in pgen/tests/swing.cpp): every MeshBlock
+# in which lambda_J = 2 pi cs/sqrt(4 pi G rho) is shorter than amr_njeans = 16 cells is
+# refined, up to 3 levels (lambda_J = 16 cells at rho = 10.7, 43, 171, 683 on levels
+# 0-3). 4piG = 6, amp = 0.2: the swing crest fragments at t ~ 4.5 and a bound clump runs
+# away near t ~ 9 (validation/multigrid_selfgravity_validation.pdf sec. 13).
+# With oa_annular = false the refined region is a patch (x2 level jumps, branch
+# fargo-amr); oa_annular = true restores complete x2 rings for comparison.
+# Uniform twin: mesh_refinement/refinement=none. Validation: fargo_amr_validation.pdf.
+<comment>
+problem   = Swing amplification with self-gravity
+
+<job>
+basename  = SwingSG
+
+<mesh>
+nghost    = 4
+nx1       = 128
+x1min     = -3.14159265358979
+x1max     =  3.14159265358979
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+
+nx2       = 128
+x2min     = -3.14159265358979
+x2max     =  3.14159265358979
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 16
+x3min     = -0.39269908169872
+x3max     =  0.39269908169872
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim      = 10.0
+ndiag      = 100
+
+<hydro>
+eos             = isothermal
+reconstruct     = plm
+rsolver         = hlle
+iso_sound_speed = 1.0
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true  # false = non-FARGO: integrate the full shear flow
+oa_annular = false        # true: refinement in full x2 rings (the old policy)
+oa_flux_correct = true
+
+<gravity>
+solver    = multigrid
+four_pi_G = 6.0
+vert_bc   = periodic
+fft_remap = ppmx
+# multigrid-solver settings (active only with solver=multigrid; ignored by fft)
+threshold = -1        # fixed-count mode: stagnation control (0.0) can hit the 40-cycle
+                      # cap mid-run on refined meshes (CF~0.55 for the wound-up kx~0 mode
+                      # whose coarse-grid correction crosses the sheared x1 wrap)
+niteration = 10       # used when threshold = -1 (fixed V-cycle count)
+full_multigrid = true
+fmg_ncycle = 1
+mg_remap  = ppmx
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+amr_moving_ring = false
+ring_xc0     = 0.0
+ring_xamp    = 0.78539816339745   # pi/4; set 0.0 for the fixed-ring bit-identity test
+ring_freq    = 1.0
+ring_hwidth  = 0.19634954084936   # pi/16
+pgen_name = swing
+rho0      = 1.0
+amp       = 0.2
+nwx       = -6          # leading wave (kx0 < 0)
+nwy       = 1
+phase0    = 0.0         # constant phase of the initial wave (translation tests)
+nwx2      = 0           # optional second wave (parity-breaking tests); 0 = off
+nwy2      = 0
+amp2      = 0.0
+phase2    = 0.0
+user_hist = true
+amr_njeans = 16.0          # refine where lambda_J < 16 cells
+amr_njeans_deref = 2.5     # derefine where lambda_J > 40 cells everywhere in the block
+amr_buffer = true          # include the ghost zones
+
+<output1>
+file_type      = hst
+dt             = 0.02
+data_format    = %.15e
+user_hist_only = true
+
+<mesh_refinement>
+refinement = adaptive          # Phase 2c: AMR + multigrid gravity + shear
+num_levels = 4                 # root + 3: lambda_J/16 resolved up to rho ~ 700
+refinement_interval = 5
+max_nmb_per_rank = 8192
+
+<amr_criterion1>
+method    = user           # SwingJeansRefine: lambda_J resolved by amr_njeans cells
+
+<output2>
+file_type      = bin
+variable       = hydro_u_d
+dt             = 0.05
+
+<output3>
+file_type      = rst
+dt             = 0.5     # restart dumps (cluster walltime insurance)
