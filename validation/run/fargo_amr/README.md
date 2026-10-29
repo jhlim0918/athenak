@@ -63,7 +63,9 @@ Full magnetized swing with gravity, directory mhd/swing (3 MPI ranks):
     amrF_b1.0             mpirun -np 3 $ATH -i amr.athinput shearing_box/orbital_advection=true problem/b0=1.0
 Twins: the uniform runs uF_b0.5, uF_b1.0 of validation/run/swing_mhd/runs (uniform MHD with
 orbital advection is bit-identical between the two branches). Figure:
-julia figures/plot_fargo_amr_mhd.jl
+julia figures/plot_fargo_amr_mhd.jl (Fig. 4 also reads the Phase-4 runs uF_*, uN_*, smr_*,
+amr_b1.0 from validation/run/swing_mhd/runs, or SWING_MHD_RUNS; copies of their histories
+and theory.tsv are in the main tree's validation/run/swing_mhd/runs)
 Across x2 level jumps (second step), directory mhd/stepB (inputs ypatch/ybox in it,
 oa_annular = false): yp/yp_nofc static patch |x|<pi/4, |y|<pi/2; yb/yb_nofc moving box
 (ring_y* window); yps/ypm, ybs/ybm serial vs 4 ranks (*_bin inputs); f_ring, z3, amr:

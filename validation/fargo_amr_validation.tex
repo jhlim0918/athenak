@@ -339,8 +339,11 @@ corrected and the arithmetic is unchanged.
 \subsection{The refined-mesh field error disappears with orbital advection}
 The three-minute reproducer of the Phase-4 field error
 (\file{inputs/tests/swing\_mhd\_repro.athinput}: $64^2\times4$ root cells, $8^2\times4$
-blocks, $B_0 = 1$ along $y$, $\beta = 1.2$, no gravity, static level-1 ring
-$|x| < \pi/4$), run with and without orbital advection. Deviation over $t \le 6$, on common
+blocks, $B_0 = 1$ along $y$, $\beta = 1.2$, static level-1 ring $|x| < \pi/4$), run with
+and without orbital advection. It is a magnetized shearing wave without self-gravity: the
+Phase-4 work found the error with and without gravity and dropped it to isolate the
+defect. The swing amplification with self-gravity follows in \S\ref{sec:mhdgrav}
+(Fig.~\ref{fig:mhd}). Deviation over $t \le 6$, on common
 times:
 
 \begin{center}
@@ -361,7 +364,7 @@ ring, orbital advection         & 0.062 & 0.074 & 0.033 \\
 \noindent
 With orbital advection the ring is closer to linear theory than its uniform twin, as
 refinement should be, and within $3.3\%$ of it ($\delta$: $3.0\%$), where the same ring
-without orbital advection is $22\%$ off (Fig.~\ref{fig:mhd}, left). The two uniform runs
+without orbital advection is $22\%$ off. The two uniform runs
 agree with each other to $3\%$. So the Phase-4 defect needs the background shear flow
 carried in the state across the level interfaces; with orbital advection the state holds
 only the perturbation and the defect does not arise. (Comparing the twins row by row of
@@ -369,6 +372,22 @@ the history, as \file{repro.py} did, is wrong when one run's step exceeds the hi
 interval --- the uniform run with orbital advection takes $\Delta t = 0.021$ against an
 output interval of 0.02 --- and gave a spurious $52\%$; \file{repro.py} now interpolates to
 common times.)
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fargo_amr_mhd.png}
+  \caption{Magnetized swing amplification with self-gravity
+  (\file{inputs/tests/swing\_mhd.athinput}: $128^2\times16$ root, multigrid gravity with
+  $4\pi G\rho_0 = 1.9$, amplitude $10^{-4}$), $B_0 = 0.5$ (left) and $1.0$ (right). Top:
+  azimuthal field perturbation $c_y$ against linear theory (black; \file{swing\_ode.py},
+  7-point Laplacian at the root spacing) for the uniform run and, with orbital advection,
+  a static ring, a static patch ($|y| < \pi/2$, \S\ref{sec:mhdB}) and a moving ring (AMR);
+  dashed, the Phase-4 ring without orbital advection. Bottom: deviation from the uniform
+  twin in the same frame (orbital advection or not), normalized by the twin's maximum
+  $|c_y|$ over $t \le 10$ (the tables use $t \le 6$). Script
+  \file{figures/plot\_fargo\_amr\_mhd.jl}.}
+  \label{fig:mhd}
+\end{figure}
 
 \subsection{Shared faces stay consistent}
 The history columns \code{bmis}/\code{bnrm} measure how far the coarse copy of each face
@@ -393,25 +412,24 @@ ring without orbital advection (stage EMFs only)           & \multicolumn{2}{c}{
 Without the correction the two copies drift apart by about $1\%$ of the field (the ratio
 peaks where $B_n$ passes through zero); each block stays divergence-free, which is why the
 history's $\nabla\!\cdot\!B$ does not see it. With it they agree to round-off, as the
-stage's own EMF correction keeps them without orbital advection (Fig.~\ref{fig:mhd},
-right). The effect on the smooth swing wave is small ($2$--$4\times10^{-4}$ in $\delta$ and
+stage's own EMF correction keeps them without orbital advection
+(Fig.~\ref{fig:mhdfaces}). The effect on the smooth swing wave is small ($2$--$4\times10^{-4}$ in $\delta$ and
 $c_y$), but a shared face with two different values is a monopole of the composite mesh.
 On 4 MPI ranks every field dump of the $x_3$-jump and AMR runs is bit-identical to the
 serial run.
 
 \begin{figure}[htb]
   \centering
-  \includegraphics[width=\textwidth]{figures/fargo_amr_mhd.png}
-  \caption{MHD on rings. Left: azimuthal field perturbation $c_y$ of the refined-MHD
-  reproducer against linear theory; without orbital advection the ring misses the swing's
-  minimum (the Phase-4 defect), with it the ring follows its uniform twin. Right: mismatch
-  of the two copies of the faces shared by fine and coarse blocks, with (solid) and without
-  (dashed) the EMF correction of the face-field remap. Script
+  \includegraphics[width=0.62\textwidth]{figures/fargo_amr_mhd_faces.png}
+  \caption{Mismatch of the two copies of the faces shared by fine and coarse blocks, with
+  (solid) and without (dashed) the EMF correction of the face-field remap, in the
+  gravity-free reproducer: ring, ring with $x_3$ level jumps, moving ring (AMR). Script
   \file{figures/plot\_fargo\_amr\_mhd.jl}.}
-  \label{fig:mhd}
+  \label{fig:mhdfaces}
 \end{figure}
 
 \subsection{Magnetized swing amplification with gravity}
+\label{sec:mhdgrav}
 The full Phase-4 test (\file{inputs/tests/swing\_mhd.athinput}: $128^2\times16$ root
 cells, $16^3$ blocks, multigrid gravity with $4\pi G\rho_0 = 1.9$, HLLD, PLM) on the
 two-column ring and the moving ring of Phase 4, now with orbital advection, against the
@@ -434,7 +452,9 @@ moving ring, $B_0 = 1.0$   & 0.013 & 0.013 & 0.040 & 0.150 \\
 \end{center}
 
 \noindent
-With orbital advection the refined runs follow their uniform twins to $1$--$4\%$ in
+Figure~\ref{fig:mhd} shows $c_y$ against linear theory and the deviation from the
+uniform twin, together with the patch runs of \S\ref{sec:mhdB}. With orbital advection the
+refined runs follow their uniform twins to $1$--$4\%$ in
 $\delta$ and $1$--$2\%$ in $c_y$, against $7$--$15\%$ in $c_y$ without it. Against linear
 theory they are closer than the uniform runs, as refinement should be: $c_y$ is off by
 $3.2\%$ and $2.7\%$ on the static rings ($B_0 = 0.5$, $1.0$) and $2.9\%$ on the moving ring,
@@ -826,7 +846,7 @@ python3 errmap.py 00010                                      # error at the leve
 python3 ../swing_mhd_repro/repro.py 6 base fargo fargo_nofc  # MHD reproducer pairs
 cd ../.. && julia figures/plot_fargo_amr_shwave.jl           # Fig. 2
 julia figures/plot_fargo_amr_tests.jl                        # Figs. 1 and 3
-julia figures/plot_fargo_amr_mhd.jl                          # Fig. 4
+julia figures/plot_fargo_amr_mhd.jl                          # Figs. 4, 5
 julia figures/plot_fargo_amr_clump.jl     # nonlinear swing (run/fargo_amr/clump; README)
 \end{lstlisting}
 

@@ -1,12 +1,15 @@
-# Figure for fargo_amr_validation.pdf, MHD on rings (branch fargo-amr-mhd):
-#   left  -- c_y (azimuthal field perturbation) of the refined-MHD reproducer
-#            (inputs/tests/swing_mhd_repro.athinput: B0 = 1, no gravity, static ring
-#            |x| < pi/4, 64^2 x 4 root) against linear theory: the ring without orbital
-#            advection (the known field error), the ring with it, and the uniform twins;
-#   right -- mismatch of the two copies of the faces shared by fine and coarse blocks,
-#            Sum|Bn(coarse) - <Bn(fine)>| dA / Sum|Bn| dA (history bmis/bnrm), with and
-#            without the EMF correction of the face-field remap, for the ring, a mesh with
-#            x3 level jumps as well, and a moving ring (AMR).
+# Figures for fargo_amr_validation.pdf, MHD with orbital advection on refined meshes
+# (branch fargo-amr-mhd):
+#   fargo_amr_mhd.png       -- magnetized swing amplification WITH self-gravity
+#                              (inputs/tests/swing_mhd.athinput): c_y against linear theory
+#                              and the deviation from the uniform twin, for static rings, a
+#                              static patch and a moving ring with orbital advection, and the
+#                              Phase-4 ring without it;
+#   fargo_amr_mhd_faces.png -- mismatch of the two copies of the faces shared by fine and
+#                              coarse blocks, Sum|Bn(coarse) - <Bn(fine)>| dA / Sum|Bn| dA
+#                              (history bmis/bnrm), with and without the EMF correction of the
+#                              face-field remap (gravity-free shearing wave of
+#                              inputs/tests/swing_mhd_repro.athinput).
 # Run directories: FARGO_AMR_RUNS (default validation/run/fargo_amr), subdirectory mhd/.
 # Run from validation/: julia figures/plot_fargo_amr_mhd.jl
 using CairoMakie
@@ -29,42 +32,59 @@ function read_hst(f)
 end
 hst(d) = read_hst(joinpath(RUNS, d, "SwingMHD.user.hst"))
 
-# linear theory (validation/run/swing_mhd/swing_ode.py, no gravity): RK4 on the 5-ODE system
-function theory(tt; kx0=-6.0, ky=1.0, b0=1.0, om=1.0, q=1.5, cs=1.0, amp=1e-4)
-    f(t, y) = begin
-        d, wx, wy, cx, cy = y
-        kx = kx0 + q*om*ky*t
-        [-(kx*wx + ky*wy), 2om*wy + kx*cs^2*d - b0*(ky*cx - kx*cy),
-         -(2 - q)*om*wx + ky*cs^2*d, ky*b0*wx, -kx*b0*wx - q*om*cx]
-    end
-    y = [amp, 0, 0, 0, 0]; t = 0.0; h = 1e-3; out = zeros(length(tt))
-    for (n, te) in enumerate(tt)
-        while t < te - 1e-12
-            hh = min(h, te - t)
-            k1 = f(t, y); k2 = f(t + hh/2, y .+ hh/2 .* k1)
-            k3 = f(t + hh/2, y .+ hh/2 .* k2); k4 = f(t + hh, y .+ hh .* k3)
-            y = y .+ hh/6 .* (k1 .+ 2k2 .+ 2k3 .+ k4); t += hh
-        end
-        out[n] = y[5]
-    end
-    out
+# --- Fig. 4: magnetized swing amplification WITH self-gravity (inputs/tests/swing_mhd.athinput:
+# 128^2 x 16 root, multigrid gravity 4 pi G rho0 = 1.9, B0 along y, amplitude 1e-4) on
+# refined meshes with orbital advection, against linear theory (swing_ode.py, 7-point
+# Laplacian at the root spacing) and the uniform twins; the Phase-4 ring without orbital
+# advection for comparison. Runs: mhd/swing/ (this work) and SWING_MHD_RUNS (default
+# validation/run/swing_mhd/runs: uF_* uniform with, uN_* without orbital advection, smr_*/amr_*
+# refined without it).
+const P4 = get(ENV, "SWING_MHD_RUNS", joinpath(VAL, "run", "swing_mhd", "runs"))
+const A0 = 1e-4
+grav(d) = read_hst(joinpath(RUNS, "swing", d, "SwingMHD.user.hst"))
+p4(d) = read_hst(joinpath(P4, d, "SwingMHD.user.hst"))
+function rel(h, tw, cyw)        # (c_y - c_y,twin)/max|c_y,twin| on the twin's times
+    m = tw .<= h[end, 1]
+    ci = [begin
+              k = clamp(searchsortedlast(h[:, 1], t), 1, size(h, 1) - 1)
+              w = (t - h[k, 1]) / (h[k+1, 1] - h[k, 1])
+              (1 - w) * h[k, 9] + w * h[k+1, 9]
+          end for t in tw[m]]
+    tw[m], (ci .- cyw[m]) ./ maximum(abs.(cyw))
 end
-
-fig = Figure(size=(1100, 420))
-ax = Axis(fig[1, 1], xlabel="t Ω", ylabel="c_y / A",
-          title="reproducer: field perturbation, static ring")
-tt = range(0, 6, length=601)
-lines!(ax, tt, theory(tt) ./ 1e-4, color=:black, linewidth=2.5, label="linear theory")
-for (d, lab, col, ls) in [("nf_ring", "ring, no orbital advection", C2, :solid),
-                          ("nf_uni", "uniform, no orbital advection", C2, :dot),
-                          ("f_ring", "ring, orbital advection", C1, :solid),
-                          ("f_uni", "uniform, orbital advection", C1, :dot)]
-    h = hst(d)
-    lines!(ax, h[:, 1], h[:, 9] ./ 1e-4, color=col, linestyle=ls, linewidth=2, label=lab)
+fig = Figure(size=(1150, 760))
+for (col_i, b0) in enumerate((0.5, 1.0))
+    tb = @sprintf("%.1f", b0)
+    th = read_hst(joinpath(P4, "uF_b" * tb, "theory.tsv"))
+    a = Axis(fig[1, col_i], xlabel="t Ω", ylabel=(col_i == 1 ? "c_y / A" : ""),
+             title="swing with self-gravity (4πGρ₀ = 1.9), B₀ = $tb")
+    lines!(a, th[:, 1], th[:, 6], color=:black, linewidth=2.5, label="linear theory")
+    u = p4("uF_b" * tb)
+    lines!(a, u[:, 1], u[:, 9] ./ A0, color=:gray45, linestyle=:dot, linewidth=2,
+           label="uniform 128²")
+    runs = [("smr_b" * tb, true, "ring, no orbital advection (Phase 4)", :gray60, :dash),
+            ("smrF_b" * tb, false, "static ring", C1, :solid),
+            ("ypF_b" * tb, false, "static patch", C3, :solid)]
+    b0 == 1.0 && push!(runs, ("amrF_b1.0", false, "moving ring (AMR)", C2, :solid))
+    b = Axis(fig[2, col_i], xlabel="t Ω", ylabel=(col_i == 1 ? "(c_y − c_y,uniform) / max|c_y|" : ""),
+             title="deviation from the uniform twin")
+    for (d, phase4, lab, c, ls) in runs
+        h = phase4 ? p4(d) : grav(d)
+        lines!(a, h[:, 1], h[:, 9] ./ A0, color=c, linestyle=ls, linewidth=1.8, label=lab)
+        tw = phase4 ? p4("uN_b" * tb) : u              # twin: same frame, uniform
+        t, r = rel(h, tw[:, 1], tw[:, 9])
+        lines!(b, t, r, color=c, linestyle=ls, linewidth=1.6, label=lab)
+    end
+    hlines!(b, [0.0], color=:black, linewidth=0.8)
+    col_i == 2 && axislegend(a, position=:lt, framevisible=false, labelsize=10)
 end
-axislegend(ax, position=:lb, framevisible=false, labelsize=11)
+save(joinpath(HERE, "fargo_amr_mhd.png"), fig, px_per_unit=2)
+println("wrote fargo_amr_mhd.png")
 
-ax2 = Axis(fig[1, 2], yscale=log10, xlabel="t Ω", ylabel="Σ|ΔBₙ| dA / Σ|Bₙ| dA",
+# --- shared-face consistency (gravity-free magnetized shearing wave of
+# inputs/tests/swing_mhd_repro.athinput, 64^2 x 4, B0 = 1, static ring |x| < pi/4)
+fig = Figure(size=(700, 420))
+ax2 = Axis(fig[1, 1], yscale=log10, xlabel="t Ω", ylabel="Σ|ΔBₙ| dA / Σ|Bₙ| dA",
            title="shared fine/coarse faces: copy mismatch")
 for (d, lab, col, ls) in [("f_ring_nofc", "ring, no EMF correction", C1, :dash),
                           ("f_ring", "ring, EMF correction", C1, :solid),
@@ -79,5 +99,5 @@ for (d, lab, col, ls) in [("f_ring_nofc", "ring, no EMF correction", C1, :dash),
 end
 ylims!(ax2, 1e-17, 1e8)
 axislegend(ax2, position=:rt, framevisible=false, labelsize=10, nbanks=2)
-save(joinpath(HERE, "fargo_amr_mhd.png"), fig, px_per_unit=2)
-println("wrote fargo_amr_mhd.png")
+save(joinpath(HERE, "fargo_amr_mhd_faces.png"), fig, px_per_unit=2)
+println("wrote fargo_amr_mhd_faces.png")
