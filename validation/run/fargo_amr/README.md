@@ -94,3 +94,5 @@ Face fields at AMR regrids with two levels, directory mhd/twolev (Mac serial bui
     ybox2, ybox2_nofc                      num_levels = 3
     ybox2_q0 / ybox2_nf / ybox2_q0_nf      qshear = 0 / orbital_advection = false / both
 Each: $ATH -i ../NAME.athinput from inside NAME/. History columns 12/13 (0-based) = bmis/bnrm.
+    M6_uni256_b0.5   2026-10-29, job mhd256.slurm (in clump/): MHD input, refinement=none,
+                     mesh/nx1=256 nx2=256 nx3=32 time/tlim=12.0

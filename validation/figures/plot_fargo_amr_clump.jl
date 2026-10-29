@@ -122,8 +122,9 @@ function outline!(ax, mp; zoom=nothing, yshift=0.0, ylen=0.0)
                linewidth=(L == 0 ? 0.4 : 0.7))
     end
 end
+# maprows: (run, label) shown at dump, or (run, label, dump) with a per-run dump
 function mapfig(maprows, dump, fname; cr=(-1.0, 3.0))
-mps = [(d, lab, readmap(d, dump)) for (d, lab) in maprows]
+mps = [(r[1], r[2], readmap(r[1], length(r) > 2 ? r[3] : dump)) for r in maprows]
 mps = filter(x -> x[3] !== nothing, mps)
 if !isempty(mps)
     # zoom window: around each run's densest pixel; the image is periodic in y, so the
@@ -173,7 +174,8 @@ mhd = [("M1_uni_b0.5",    "uniform 128², B₀ = 0.5",  C1, :solid),
        ("M2_ring_b0.5",   "rings, B₀ = 0.5",         C2, :solid),
        ("M3_patch_b0.5",  "patches, B₀ = 0.5",       C3, :solid),
        ("M4_uni_b0.25",   "uniform 128², B₀ = 0.25", C1, :dash),
-       ("M5_patch_b0.25", "patches, B₀ = 0.25",      C3, :dash)]
+       ("M5_patch_b0.25", "patches, B₀ = 0.25",      C3, :dash),
+       ("M6_uni256_b0.5", "uniform 256², B₀ = 0.5",  :black, :solid)]
 if any(have(d, "SwingSG.user.hst") for (d, _, _, _) in mhd)
     fig = Figure(size=(1200, 760))
     a1 = Axis(fig[1, 1], xlabel="t Ω", ylabel="max ρ / ρ₀", yscale=log10, title="peak density")
@@ -215,10 +217,11 @@ if any(have(d, "SwingSG.user.hst") for (d, _, _, _) in mhd)
         text!(a1, 5.2, v * 1.3, text=lab, color=c, fontsize=10)
     end
     legend!(a1, position=:lt, framevisible=false, labelsize=10)
-    legend!(a2, position=:rb, framevisible=false, labelsize=10)
     legend!(a4, position=:lt, framevisible=false, labelsize=10)
     save(joinpath(HERE, "fargo_amr_clump_mhd.png"), fig)
     println("wrote figures/fargo_amr_clump_mhd.png")
 end
-mapfig([("M1_uni_b0.5", "MHD uniform 128², B₀ = 0.5"), ("M2_ring_b0.5", "MHD rings, B₀ = 0.5"),
-        ("M3_patch_b0.5", "MHD patches, B₀ = 0.5")], 196, "fargo_amr_clump_mhd_maps.png")
+# B0 = 0.5, each refined run and the 256^2 run at its collapse (rho ~ 400), the 128^2 run at t = 10
+mapfig([("M1_uni_b0.5", "uniform 128²", 200), ("M6_uni256_b0.5", "uniform 256²", 220),
+        ("M2_ring_b0.5", "rings", 196), ("M3_patch_b0.5", "patches", 196)], 196,
+       "fargo_amr_clump_mhd_maps.png")

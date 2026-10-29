@@ -56,8 +56,9 @@ uniform runs. Pushed into collapse ($4\pi G\rho_0 = 6$) with a Jeans-length crit
 same time, winding waves within $0.012$ of each other where refinement itself moves them by
 $0.13$ --- with $8.6$ times fewer MeshBlock-cycles for patches; both collapse earlier than a
 uniform $256^2$ run, because between the crests the criterion leaves the box at the
-$128^2$ root. Magnetized ($\beta = 8$), the refined runs collapse where the uniform one
-does not. AMR regrids with two or more levels leave the two copies of shared faces
+$128^2$ root. Magnetized ($\beta = 8$), the refined runs collapse at the centre, $1.2$
+time units before a uniform $256^2$ run, which collapses on the shear-periodic $x_1$
+boundary, where the mesh policy forbids refinement. AMR regrids with two or more levels leave the two copies of shared faces
 $10^{-7}$--$10^{-3}$ apart, with or without orbital advection; like the $\nabla\!\cdot\!B$
 jumps at derefinement ($10^{-13}$--$10^{-12}$ per event next to fine $x_2$ neighbours), this
 is a pre-existing AthenaK defect, documented here. The production test
@@ -678,8 +679,8 @@ and the run is the uniform run (the same peak to seven digits as the CPU run of 
 \paragraph{MHD.} The same with a uniform field along $y$
 (\file{inputs/tests/swing\_mhd\_clump\_jeans.athinput}; isothermal HLLE --- isothermal HLLD
 is unstable at $\beta \lesssim 1$ --- and the thermal Jeans length, so the criterion ignores
-magnetic support): $B_0 = 0.5$ ($\beta = 8$) on the three $128^2$ meshes, and $B_0 = 0.25$
-uniform and on patches:
+magnetic support): $B_0 = 0.5$ ($\beta = 8$) on the three $128^2$ meshes and uniform
+$256^2$ (to $t = 12$), and $B_0 = 0.25$ uniform and on patches:
 
 \begin{center}
 \small
@@ -690,6 +691,7 @@ run & first crest & $\rho > 100$ & $\rho > 683$ & max $\rho/\rho_0$ & MeshBlock-
 uniform, $B_0 = 0.5$   & 38.0 (4.45) & ---  & ---  & 38          & $9.5\times10^4$ & 1.4 min \\
 rings, $B_0 = 0.5$     & 36.8 (4.45) & 9.70 & 9.90 & $1.4\times10^4$ & $7.3\times10^6$ & 34 min \\
 patches, $B_0 = 0.5$   & 36.8 (4.45) & 9.60 & 9.75 & $1.1\times10^7$ & $1.6\times10^6$ & 23 min \\
+uniform $256^2$, $B_0 = 0.5$ & 36.3 (4.45) & 10.90 & 11.25 & $1.4\times10^5$ & $2.5\times10^6$ & 9.6 min \\
 uniform, $B_0 = 0.25$  & 2.46 (5.65) & ---  & ---  & 20.4        & $9.1\times10^4$ & 1.3 min \\
 patches, $B_0 = 0.25$  & 2.46 (5.65) & ---  & ---  & 20.4        & $8.6\times10^4$ & 1.4 min \\
 \bottomrule
@@ -700,12 +702,29 @@ patches, $B_0 = 0.25$  & 2.46 (5.65) & ---  & ---  & 20.4        & $8.6\times10^
 At $B_0 = 0.5$ rings and patches again agree through the swing and the first crest
 ($36.769$ and $36.773\rho_0$ at $t = 4.45$, level 1), with winding waves within $0.044$ of
 each other up to $t = 7$ and $0.13$ up to $t = 8$, against $0.25$ between either and the
-uniform run already at $t \le 7$. Both then collapse while the uniform run does not: they
-cross $\rho = 10.7$ again at $t = 8.70$/$8.75$ and run away near the box centre, the patch
-run $0.1$ earlier (Figs.~\ref{fig:clump_mhd} and \ref{fig:clump_mhd_maps}). The uniform
-run's density at $t = 9.8$ peaks at $5.7\rho_0$, at the $x_1$ boundary. Unlike the hydro
-clump, which oscillates at $200$--$400\rho_0$, the magnetized one runs through the
-level-3 Jeans limit (683) and the level-3 Truelove limit ($1.1\times10^4$) within
+uniform run already at $t \le 7$. They cross $\rho = 10.7$ again at $t = 8.70$/$8.75$
+and run away near the box centre, the patch run $0.1$ earlier
+(Figs.~\ref{fig:clump_mhd} and \ref{fig:clump_mhd_maps}).
+
+\emph{The uniform runs collapse later, and elsewhere.} The uniform $128^2$ run has not
+collapsed by $t = 10$ (peak $17.4\rho_0$, rising); the uniform $256^2$ run collapses at
+$t = 10.9$ ($\rho > 100$), $1.2$--$1.3$ time units after the refined runs, and runs away to
+$1.4\times10^5\rho_0$ by $t = 11.85$, past its own Truelove limit (683). The order is the
+hydro order: more resolution, later collapse, with the refined runs earliest; their winding
+wave departs from the $256^2$ run sooner than the uniform $128^2$ run's does ($0.6$ against
+$0.4$ in $d_{\cos}/A$ by $t = 7$). Both uniform runs collapse on the shear-periodic $x_1$
+boundary --- the $256^2$ clump as an inversion-symmetric pair at $(\pm3.13, \pm1.56)$, the
+$128^2$ peak at $(3.12, -3.02)$ --- while both refined runs collapse at the centre.
+Invariant I1 forbids refinement on the $x_1$ boundary, so the refined runs keep the boundary
+site at $128^2$ and refine the central one, which then wins. In hydro all runs collapse near
+$x \approx 0$ and this does not arise; in MHD the refined runs are wrong in both the time and
+the place of the collapse, and the place is set by the mesh policy. Following a clump that
+forms on the $x_1$ boundary needs refinement there, i.e.\ lifting I1 (shear-periodic
+exchange between faces at different levels), beyond this work.
+
+Unlike the hydro
+clump, which oscillates at $200$--$400\rho_0$, the magnetized clump of the refined runs runs
+through the level-3 Jeans limit (683) and the level-3 Truelove limit ($1.1\times10^4$) within
 $0.25$ time units: with \code{num\_levels = 4} and no sink, the last $0.1$--$0.2$ of these
 runs is unresolved, and the two meshes differ there in shape (a symmetric pair of knots on
 rings, a central clump with two arms on patches, Fig.~\ref{fig:clump_mhd_maps}). At
@@ -763,9 +782,11 @@ arises only after $t = 9.5$, when the clumps are already running away.
 \begin{figure}[htb]
   \centering
   \includegraphics[width=\textwidth]{figures/fargo_amr_clump_mhd_maps.png}
-  \caption{Midplane density of the $B_0 = 0.5$ runs at $t = 9.8$, as
-  Fig.~\ref{fig:clump_maps}. The refined runs collapse near the centre, the uniform run
-  not at all.}
+  \caption{Midplane density of the $B_0 = 0.5$ runs, as Fig.~\ref{fig:clump_maps}: the
+  refined runs at $t = 9.8$ and the uniform $256^2$ run at $t = 11$ (each near
+  $400\rho_0$), the uniform $128^2$ run at $t = 10$. The uniform runs collapse on the
+  shear-periodic $x_1$ boundary (the zooms stop at $x = \pi$), the refined runs at the
+  centre.}
   \label{fig:clump_mhd_maps}
 \end{figure}
 
@@ -785,9 +806,11 @@ arises only after $t = 9.5$, when the clumps are already running away.
       shared faces differ by $10^{-7}$--$10^{-3}$ after regrids, with or without orbital
       advection; reproducer in \file{run/fargo\_amr/mhd/twolev}. Probably the same root as
       the derefinement $\nabla\!\cdot\!B$ jumps.
-\item \textbf{Converged collapse.} Hydro refined runs collapse a time unit before the
-      uniform $256^2$ run, MHD refined runs before the uniform $128^2$ one; a $256^2$ MHD
-      run, a finer root grid or a crest criterion would settle which clock is right.
+\item \textbf{Converged collapse.} Refined runs collapse 1--1.3 time units before the
+      uniform $256^2$ runs, hydro and MHD; a finer root grid or a criterion that refines
+      the crests is needed, and a $512^2$ run to check $256^2$.
+\item \textbf{Refinement on the shear-periodic $x_1$ boundary} (invariant I1). The $256^2$
+      MHD clump forms there, out of reach of the refined runs.
 \item \textbf{Non-FARGO refinement with $x_2$ level jumps} fails in the parent code
       (\S\ref{sec:shwave}); not addressed here.
 \end{itemize}
