@@ -384,7 +384,9 @@ common times.)
   a static ring, a static patch ($|y| < \pi/2$, \S\ref{sec:mhdB}) and a moving ring (AMR);
   dashed, the Phase-4 ring without orbital advection. Bottom: deviation from the uniform
   twin in the same frame (orbital advection or not), normalized by the twin's maximum
-  $|c_y|$ over $t \le 10$ (the tables use $t \le 6$). Script
+  $|c_y|$ over $t \le 10$ (the tables use $t \le 6$). The growing drift of all runs from
+  theory after $t \approx 6$ is numerical damping of the wave as the shear winds it to
+  14 cells per wavelength by $t = 10$; it converges at second order (see text). Script
   \file{figures/plot\_fargo\_amr\_mhd.jl}.}
   \label{fig:mhd}
 \end{figure}
@@ -465,6 +467,43 @@ $c_y$ deviation is $1.7\%$ and $2.6\%$. The moving ring (64--176 MeshBlocks; 448
 392 destroyed) also ran to $t = 10$: $1.9\%$ and $2.3\%$ to $t \le 8$, with
 $\nabla\!\cdot\!B \le 5\times10^{-15}$ throughout. All on 3 MPI ranks; inputs and runs in
 \file{validation/run/fargo\_amr/mhd/swing/}.
+
+\paragraph{The late drift from linear theory.} After $t \approx 6$ every run in
+Fig.~\ref{fig:mhd}, uniform and refined, falls increasingly below theory. This is numerical
+damping of the wound-up wave, not an error of the coupling. The shear keeps winding the wave,
+$k_x(t) = -6 + 1.5\,t$, so at $t = 10$ its wavelength is $14$ cells of the $128^2$ grid, and
+the scheme's dissipation grows as the wave is less well resolved. The peaks of $c_y$ after
+the swing, uniform runs at $B_0 = 0.5$ (Phase 4, \code{uF\_b0.5} and \code{uF\_b0.5\_256}):
+
+\begin{center}
+\small
+\begin{tabular}{@{}ccccc@{}}
+\toprule
+& \multicolumn{2}{c}{$128^2$} & \multicolumn{2}{c}{$256^2$} \\
+peak at $t$ & cells per wavelength & $|c_y|/|c_y^{\rm theory}|$ &
+  cells per wavelength & $|c_y|/|c_y^{\rm theory}|$ \\
+\midrule
+6.5  & 33 & 0.969 & 66 & 0.990 \\
+7.7  & 23 & 0.955 & 46 & 0.986 \\
+8.6  & 18 & 0.933 & 37 & 0.981 \\
+9.3  & 16 & 0.893 & 32 & 0.973 \\
+10.0 & 14 & 0.822 & 28 & 0.959 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The loss is in amplitude only: every peak falls within one output interval ($0.02$) of
+theory's. It converges at second order (an 18\% loss at $t = 10$ becomes 4.1\% at $256^2$,
+a factor $4.4$), and it is set by the resolution of the wave, not by the elapsed time: at
+about 32 cells per wavelength the loss is $3.1\%$ at $128^2$ ($t = 6.5$) and $2.7\%$ at
+$256^2$ ($t = 9.3$). $B_0 = 1.0$ behaves the same way (19--24\% by $t = 9.5$--$10$ at
+$128^2$). The refined runs keep most of the wave on the root grid and so damp like their
+uniform twins, which is why the comparison with the twin (Fig.~\ref{fig:mhd}, bottom) stays
+at the per-cent level while both drift from theory, and why the tables stop at $t \le 6$ or
+$8$. A shearing wave winds without end, so any fixed grid eventually under-resolves it;
+following one to a given $|k_x|$ with less than about 3\% loss needs about 30 cells per
+wavelength there.
 
 So with orbital advection, refined MHD shearing boxes are validated on rings, with and
 without self-gravity; the refined-mesh field error of Phase 4 remains a property of the
