@@ -1237,12 +1237,16 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
                           int fj = ngh_l + 2*(sj - sj0);
                           int fk = ngh_l + 2*(sk - sk0);
                           Real cc = cbuf(m,v,sk,sj,si);
-                          int sjm = (sj > ngh_l) ? sj-1 : sj;
-                          int sjp = (sj < ngh_l+half-1) ? sj+1 : sj;
-                          int skm = (sk > ngh_l) ? sk-1 : sk;
-                          int skp = (sk < ngh_l+half-1) ? sk+1 : sk;
-                          Real gy = 0.125*(cbuf(m,v,sk,sjp,si)-cbuf(m,v,sk,sjm,si));
-                          Real gz = 0.125*(cbuf(m,v,skp,sj,si)-cbuf(m,v,skm,sj,si));
+                          // transverse slopes: the received coarse buffer holds ngh halo
+                          // cells on the side of the parent's interior (parity f = 0: above,
+                          // f = 1: below; icoar recv extents), so only the other edge needs a
+                          // one-sided slope. Quarter-cell offset = slope/4 per coarse cell.
+                          int sjm = (sj > ngh_l || f1 == 1) ? sj-1 : sj;
+                          int sjp = (sj < ngh_l+half-1 || f1 == 0) ? sj+1 : sj;
+                          int skm = (sk > ngh_l || f2 == 1) ? sk-1 : sk;
+                          int skp = (sk < ngh_l+half-1 || f2 == 0) ? sk+1 : sk;
+                          Real gy = 0.25*(cbuf(m,v,sk,sjp,si)-cbuf(m,v,sk,sjm,si))/(sjp-sjm);
+                          Real gz = 0.25*(cbuf(m,v,skp,sj,si)-cbuf(m,v,skm,sj,si))/(skp-skm);
                           u(m,v,fk  ,fj  ,fig)=ot*(2.0*(cc-gy-gz)+u(m,v,fk  ,fj  ,fi));
                           u(m,v,fk  ,fj+1,fig)=ot*(2.0*(cc+gy-gz)+u(m,v,fk  ,fj+1,fi));
                           u(m,v,fk+1,fj  ,fig)=ot*(2.0*(cc-gy+gz)+u(m,v,fk+1,fj  ,fi));
@@ -1262,12 +1266,12 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
                           int fi = ngh_l + 2*(si - si0);
                           int fk = ngh_l + 2*(sk - sk0);
                           Real cc = cbuf(m,v,sk,sj,si);
-                          int sim = (si > ngh_l) ? si-1 : si;
-                          int sip = (si < ngh_l+half-1) ? si+1 : si;
-                          int skm = (sk > ngh_l) ? sk-1 : sk;
-                          int skp = (sk < ngh_l+half-1) ? sk+1 : sk;
-                          Real gx = 0.125*(cbuf(m,v,sk,sj,sip)-cbuf(m,v,sk,sj,sim));
-                          Real gz = 0.125*(cbuf(m,v,skp,sj,si)-cbuf(m,v,skm,sj,si));
+                          int sim = (si > ngh_l || f1 == 1) ? si-1 : si;
+                          int sip = (si < ngh_l+half-1 || f1 == 0) ? si+1 : si;
+                          int skm = (sk > ngh_l || f2 == 1) ? sk-1 : sk;
+                          int skp = (sk < ngh_l+half-1 || f2 == 0) ? sk+1 : sk;
+                          Real gx = 0.25*(cbuf(m,v,sk,sj,sip)-cbuf(m,v,sk,sj,sim))/(sip-sim);
+                          Real gz = 0.25*(cbuf(m,v,skp,sj,si)-cbuf(m,v,skm,sj,si))/(skp-skm);
                           u(m,v,fk  ,fjg,fi  )=ot*(2.0*(cc-gx-gz)+u(m,v,fk  ,fj,fi  ));
                           u(m,v,fk  ,fjg,fi+1)=ot*(2.0*(cc+gx-gz)+u(m,v,fk  ,fj,fi+1));
                           u(m,v,fk+1,fjg,fi  )=ot*(2.0*(cc-gx+gz)+u(m,v,fk+1,fj,fi  ));
@@ -1287,12 +1291,12 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
                           int fi = ngh_l + 2*(si - si0);
                           int fj = ngh_l + 2*(sj - sj0);
                           Real cc = cbuf(m,v,sk,sj,si);
-                          int sim = (si > ngh_l) ? si-1 : si;
-                          int sip = (si < ngh_l+half-1) ? si+1 : si;
-                          int sjm = (sj > ngh_l) ? sj-1 : sj;
-                          int sjp = (sj < ngh_l+half-1) ? sj+1 : sj;
-                          Real gx = 0.125*(cbuf(m,v,sk,sj,sip)-cbuf(m,v,sk,sj,sim));
-                          Real gy = 0.125*(cbuf(m,v,sk,sjp,si)-cbuf(m,v,sk,sjm,si));
+                          int sim = (si > ngh_l || f1 == 1) ? si-1 : si;
+                          int sip = (si < ngh_l+half-1 || f1 == 0) ? si+1 : si;
+                          int sjm = (sj > ngh_l || f2 == 1) ? sj-1 : sj;
+                          int sjp = (sj < ngh_l+half-1 || f2 == 0) ? sj+1 : sj;
+                          Real gx = 0.25*(cbuf(m,v,sk,sj,sip)-cbuf(m,v,sk,sj,sim))/(sip-sim);
+                          Real gy = 0.25*(cbuf(m,v,sk,sjp,si)-cbuf(m,v,sk,sjm,si))/(sjp-sjm);
                           u(m,v,fkg,fj  ,fi  )=ot*(2.0*(cc-gx-gy)+u(m,v,fk,fj  ,fi  ));
                           u(m,v,fkg,fj  ,fi+1)=ot*(2.0*(cc+gx-gy)+u(m,v,fk,fj  ,fi+1));
                           u(m,v,fkg,fj+1,fi  )=ot*(2.0*(cc-gx+gy)+u(m,v,fk,fj+1,fi  ));
