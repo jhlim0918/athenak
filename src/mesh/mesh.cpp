@@ -211,10 +211,34 @@ Mesh::Mesh(ParameterInput *pin) :
   //      x2-face neighbours one level coarser or finer.
   // AMR is not supported with a shearing box yet (static boundary GID lists);
   // MHD orbital advection (face-centered B remap) does not support refinement yet.
+  //
+  // Exception (port of R. Li's amrSG_dev shear-face machinery): a HYDRO shearing box
+  // with orbital advection on a refined 3-D mesh, without MHD, gravity or particles,
+  // lets the blocks on the shear-periodic x1 faces change level along x2
+  // (sbox_face_levels).  Their x1 ghost zones are then collected from the opposite face
+  // (ShearingBox::PlanPull), the x1 fluxes are matched across the boundary
+  // (ShearingBoxCC::PlanFluxPair), and AMR obeys the shear-face level rule
+  // (MeshRefinement::ShearFaceLevelLimit).  <shearing_box> x1_face_levels = false keeps
+  // the uniform-level policy for such runs too.  MHD (face-centred fields), multigrid
+  // gravity (shear planes) and particles (shear routing) still need the uniform level.
+  if (multilevel && pin->DoesBlockExist("shearing_box") && three_d &&
+      mesh_bcs[BoundaryFace::inner_x1] == BoundaryFlag::shear_periodic &&
+      mesh_bcs[BoundaryFace::outer_x1] == BoundaryFlag::shear_periodic &&
+      !pin->DoesBlockExist("mhd") && !pin->DoesBlockExist("gravity") &&
+      !pin->DoesBlockExist("particles") && !pin->DoesBlockExist("radiation") &&
+      pin->GetOrAddBoolean("shearing_box", "orbital_advection", true)) {
+    sbox_face_levels = pin->GetOrAddBoolean("shearing_box", "x1_face_levels", true);
+  }
   if (multilevel && pin->DoesBlockExist("shearing_box") && global_variable::my_rank==0) {
-    std::cout << "### WARNING in " << __FILE__ << " at line " << __LINE__ << std::endl
-        << "Shearing box with mesh refinement: both x1 boundary faces must share one "
-        << "uniform level (enforced with a fatal error)." << std::endl;
+    if (sbox_face_levels) {
+      std::cout << "### NOTE: shearing box with mesh refinement: the shear-periodic x1 "
+          << "faces may change level along x2 (hydro, collected x1 ghost zones and "
+          << "x1 flux matching)." << std::endl;
+    } else {
+      std::cout << "### WARNING in " << __FILE__ << " at line " << __LINE__ << std::endl
+          << "Shearing box with mesh refinement: both x1 boundary faces must share one "
+          << "uniform level (enforced with a fatal error)." << std::endl;
+    }
   }
 
   // error check physical size of mesh (root level) from input file.

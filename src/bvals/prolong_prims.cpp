@@ -207,12 +207,24 @@ void MeshBoundaryValuesCC::PrimToConsFineBndry(const DvceArray5D<Real> &prim,
   Real &gamma = pmy_pack->phydro->peos->eos_data.gamma;
   int &nhyd  = pmy_pack->phydro->nhydro;
   int &nscal = pmy_pack->phydro->nscalars;
+  // x1-face levels in the shearing box: the x1 ghosts across a shear-periodic face are
+  // collected by the shearing box (conserved), not prolongated; keep them
+  const bool skip_shr = skip_shear_x1_prol && three_d;
+  auto &mbbcs = pmy_pack->pmb->mb_bcs;
 
   // Outer loop over (# of MeshBlocks)*(# of buffers)
   Kokkos::TeamPolicy<> policy(DevExeSpace(), (nmb*nnghbr), Kokkos::AUTO);
   Kokkos::parallel_for("ProlCC", policy, KOKKOS_LAMBDA(TeamMember_t tmember) {
     const int m = tmember.league_rank()/nnghbr;
     const int n = tmember.league_rank() - m*nnghbr;
+    if (skip_shr) {
+      const int ox = ShearSlotOx1(n);
+      if ((ox == -1 && mbbcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::shear_periodic)
+          || (ox == 1 &&
+              mbbcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::shear_periodic)) {
+        return;
+      }
+    }
 
     // only prolongate when neighbor exists and is at coarser level
     if ((nghbr.d_view(m,n).gid >= 0) && (nghbr.d_view(m,n).lev < mblev.d_view(m))) {

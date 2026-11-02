@@ -28,6 +28,13 @@ TaskStatus ShearingBox::InitRecv(Real time) {
   Real lx = (mesh_size.x1max - mesh_size.x1min);
   yshear = (qshear*omega0)*lx*time;
 
+  // x1-face blocks on several levels (face_levels): collected ghost zones; plan with
+  // this yshear and post their receives (shearing_box_pull.cpp)
+  if (face_levels) {
+    PlanPull();
+    return TaskStatus::complete;
+  }
+
 #if MPI_PARALLEL_ENABLED
   // post non-blocking receives
   bool no_errors=true;
@@ -167,6 +174,14 @@ TaskStatus ShearingBox::InitRecv(Real time) {
 //! boundaries to complete before allowing execution to continue
 
 TaskStatus ShearingBox::ClearRecv() {
+  if (face_levels) {
+    if (!WaitPull()) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "MPI error in clearing (x1-face levels)" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    return TaskStatus::complete;
+  }
 #if MPI_PARALLEL_ENABLED
   bool no_errors=true;
   const int &ng = pmy_pack->pmesh->mb_indcs.ng;
@@ -243,6 +258,14 @@ TaskStatus ShearingBox::ClearRecv() {
 //! boundaries to complete before allowing execution to continue
 
 TaskStatus ShearingBox::ClearSend() {
+  if (face_levels) {
+    if (!WaitPull()) {
+      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                << std::endl << "MPI error in clearing (x1-face levels)" << std::endl;
+      std::exit(EXIT_FAILURE);
+    }
+    return TaskStatus::complete;
+  }
 #if MPI_PARALLEL_ENABLED
   bool no_errors=true;
   const int &ng = pmy_pack->pmesh->mb_indcs.ng;

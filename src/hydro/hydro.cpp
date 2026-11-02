@@ -173,6 +173,40 @@ Hydro::Hydro(MeshBlockPack *ppack, ParameterInput *pin) :
       porb_u = nullptr;
     }
     psbox_u = new ShearingBoxCC(ppack, pin, (nhydro+nscalars));
+    Mesh *pm = ppack->pmesh;
+    const bool shear_x1 = pm->three_d &&
+        pm->mesh_bcs[BoundaryFace::inner_x1] == BoundaryFlag::shear_periodic &&
+        pm->mesh_bcs[BoundaryFace::outer_x1] == BoundaryFlag::shear_periodic;
+    // x1 faces whose MeshBlocks change level along x2 (Mesh::sbox_face_levels): the x1
+    // ghost zones of the face blocks (and of their coarse arrays) are collected from the
+    // opposite face; AthenaK's flux correction, unpacking, restriction and prolongation
+    // stay out of the neighbour slots across the shear-periodic faces
+    if (pm->sbox_face_levels) {
+      // the coarse arrays are collected too: their x2 rows are split as the fine ones
+      if (pm->mb_indcs.cnx2 < 2*pm->mb_indcs.ng) {
+        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "Shearing box with x1-face levels: meshblock/nx2 = "
+                  << pm->mb_indcs.nx2 << " must be at least 4*nghost = "
+                  << 4*pm->mb_indcs.ng << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
+      psbox_u->face_levels = true;
+      psbox_u->coarse_on = true;
+      pbval_u->skip_shear_x1_flux = true;
+      pbval_u->skip_shear_x1_prol = true;
+    }
+    // matching of the x1 fluxes across the shear-periodic boundary (mass and momentum
+    // conserved to round-off): with orbital advection, on by default on refined meshes
+    // (x1-face levels or one uniform face level), off by default on a uniform mesh (whose
+    // results then stay those of AthenaK); <shearing_box> x1_flux_match sets it.  Not in
+    // the non-FARGO mode (the x1 fluxes of y-momentum and energy differ by the shear
+    // boost between the two faces).
+    if (shear_x1 && porb_u != nullptr) {
+      psbox_u->flux_on = pin->GetOrAddBoolean("shearing_box", "x1_flux_match",
+                                              pm->multilevel);
+    }
+    psbox_u->x1_plans = psbox_u->face_levels || psbox_u->flux_on;
+    if (psbox_u->x1_plans) psbox_u->BuildCandidates();
   } else {
     porb_u = nullptr;
     psbox_u = nullptr;

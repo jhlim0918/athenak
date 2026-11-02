@@ -40,6 +40,7 @@ ShearingBox::ShearingBox(MeshBlockPack *ppack, ParameterInput *pin) :
   }
   // create unique communicators for shearing box
   MPI_Comm_dup(MPI_COMM_WORLD, &comm_sbox);
+  MPI_Comm_dup(MPI_COMM_WORLD, &comm_pull);   // collected x1 ghosts (face_levels)
 #endif
 
   // build lists of MBs touching the shear-periodic x1 boundaries
@@ -55,6 +56,8 @@ ShearingBox::~ShearingBox() {
     delete [] sendbuf[n].vars_req;
     delete [] recvbuf[n].vars_req;
   }
+  delete [] psreq_;
+  delete [] prreq_;
 #endif
 }
 
@@ -137,6 +140,10 @@ void ShearingBox::SetX1BndryMBs() {
 void ShearingBox::ReinitAfterMeshUpdate() {
   SetX1BndryMBs();
   AllocateBuffers();
+  // face levels / x1 flux matching: candidate partners on the new mesh; new or moved
+  // blocks hold no collected x1 ghosts yet
+  pull_ghost_valid = false;
+  if (x1_plans) BuildCandidates();
 }
 
 //----------------------------------------------------------------------------------------

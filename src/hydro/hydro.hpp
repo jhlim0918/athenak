@@ -91,6 +91,7 @@ class Hydro {
   // Orbital advection and shearing box BCs
   OrbitalAdvectionCC *porb_u = nullptr;
   ShearingBoxCC *psbox_u = nullptr;
+  bool flux_unpacked = false;   // the flux correction of this stage is already unpacked
 
   // Object(s) for extra physics (viscosity, thermal conduction, srcterms)
   Viscosity *pvisc = nullptr;

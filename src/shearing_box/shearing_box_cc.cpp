@@ -30,8 +30,24 @@
 ShearingBoxCC::ShearingBoxCC(MeshBlockPack *pp, ParameterInput *pin, int nv) :
     ShearingBox(pp, pin),
     nvar(nv) {
+  nvar_pull = nv;
+#if MPI_PARALLEL_ENABLED
+  MPI_Comm_dup(MPI_COMM_WORLD, &comm_qflx);   // flux matching by cell pairs (face_levels)
+#endif
   // Allocate boundary buffers
   AllocateBuffers();
+}
+
+//----------------------------------------------------------------------------------------
+// ShearingBoxCC destructor: MPI requests of the x1 flux matching
+
+ShearingBoxCC::~ShearingBoxCC() {
+#if MPI_PARALLEL_ENABLED
+  delete [] fsreq_;
+  delete [] frreq_;
+  delete [] qsreq_;
+  delete [] qrreq_;
+#endif
 }
 
 //----------------------------------------------------------------------------------------
@@ -61,6 +77,8 @@ void ShearingBoxCC::AllocateBuffers() {
 //! Called on the physics_bcs task after purely periodic BC communication is finished.
 
 TaskStatus ShearingBoxCC::PackAndSendCC(DvceArray5D<Real> &a, ReconstructionMethod rcon) {
+  // x1-face levels along x2: the collected ghost zones (shearing_box_pull.cpp)
+  if (face_levels) {rcon_pull = rcon; return PullSend(a);}
   const auto &indcs = pmy_pack->pmesh->mb_indcs;
   const auto &ie = indcs.ie;
   const auto &js = indcs.js, &je = indcs.je;
@@ -300,7 +318,14 @@ TaskStatus ShearingBoxCC::PackAndSendCC(DvceArray5D<Real> &a, ReconstructionMeth
 //! then copy buffers into ghost zones. Shift has already been performed in
 //! PackAndSendCC() function
 
+TaskStatus ShearingBoxCC::RecvAndUnpackCoarseCC(DvceArray5D<Real> &ca) {
+  if (face_levels && coarse_on) return PullRecv(ca, true);
+  return TaskStatus::complete;
+}
+
 TaskStatus ShearingBoxCC::RecvAndUnpackCC(DvceArray5D<Real> &a) {
+  // x1-face levels along x2: the collected ghost zones (shearing_box_pull.cpp)
+  if (face_levels) return PullRecv(a, false);
   // create local references for variables in kernel
   const auto &indcs = pmy_pack->pmesh->mb_indcs;
   const int &ng = indcs.ng;

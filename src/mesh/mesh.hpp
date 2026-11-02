@@ -115,6 +115,10 @@ class Mesh {
   bool multi_d;               // flag to indicate 2D and 3D calculations
   bool multilevel;            // true for SMR and AMR
   bool adaptive;              // true only for AMR
+  // shearing box with mesh refinement whose shear-periodic x1 faces may change level
+  // along x2 (hydro only: see Mesh::Mesh).  False: both x1 faces must share one uniform
+  // level (CheckShearingBoxRefinement), the stock same-level shear exchange is used.
+  bool sbox_face_levels = false;
 
   int nmb_rootx1, nmb_rootx2, nmb_rootx3; // # of MeshBlocks at root level in each dir
   int nmb_total;           // total number of MeshBlocks across all levels/ranks

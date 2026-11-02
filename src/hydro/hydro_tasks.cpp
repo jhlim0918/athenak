@@ -108,6 +108,7 @@ void Hydro::AssembleHydroTasks(std::map<std::string, std::shared_ptr<TaskList>> 
 //! initialize all boundary receive status flags to waiting (with or without MPI).
 
 TaskStatus Hydro::InitRecv(Driver *pdrive, int stage) {
+  flux_unpacked = false;   // RecvFlux unpacks the flux correction once per stage
   // post receives for U
   TaskStatus tstat = pbval_u->InitRecv(nhydro+nscalars);
   if (tstat != TaskStatus::complete) return tstat;
@@ -139,6 +140,11 @@ TaskStatus Hydro::InitRecv(Driver *pdrive, int stage) {
         time += pmy_pack->pmesh->dt;
       }
       tstat = psbox_u->InitRecv(time);
+      // the pieces of the x1 flux matching with this yshear; posts its receives
+      if (stage >= 0 && psbox_u->flux_on) {
+        psbox_u->PlanFluxMatch();
+        psbox_u->flux_planned = true;
+      }
     }
   }
 
@@ -152,6 +158,7 @@ TaskStatus Hydro::InitRecv(Driver *pdrive, int stage) {
 TaskStatus Hydro::InitRecvParabolic(Driver *pdrive, int stage) {
   (void) pdrive;
   (void) stage;
+  flux_unpacked = false;   // RecvFlux unpacks the flux correction once per stage
   TaskStatus tstat = pbval_u->InitRecv(nhydro+nscalars);
   if (tstat != TaskStatus::complete) return tstat;
   if (pmy_pack->pmesh->multilevel) {
@@ -252,6 +259,11 @@ TaskStatus Hydro::SendFlux(Driver *pdrive, int stage) {
   if (pmy_pack->pmesh->multilevel) {
     tstat = pbval_u->PackAndSendFluxCC(uflx);
   }
+  // matching of the x1 fluxes across the shear-periodic boundary (planned in InitRecv
+  // of the main stages only, not in the parabolic STS stages)
+  if (tstat == TaskStatus::complete && psbox_u != nullptr && psbox_u->flux_planned) {
+    tstat = psbox_u->SendFluxMatch(uflx);
+  }
   return tstat;
 }
 
@@ -263,8 +275,17 @@ TaskStatus Hydro::SendFlux(Driver *pdrive, int stage) {
 TaskStatus Hydro::RecvFlux(Driver *pdrive, int stage) {
   TaskStatus tstat = TaskStatus::complete;
   // Only execute BoundaryValues function with SMR/SMR
-  if (pmy_pack->pmesh->multilevel) {
+  // once per stage: while the x1 flux matching below is still waiting this task is
+  // called again, and the unpack must not run each time
+  if (pmy_pack->pmesh->multilevel && !flux_unpacked) {
     tstat = pbval_u->RecvAndUnpackFluxCC(uflx);
+    if (tstat != TaskStatus::complete) return tstat;
+  }
+  flux_unpacked = true;
+  // the x1 flux matching across the shear-periodic boundary (after the flux correction:
+  // different faces)
+  if (psbox_u != nullptr && psbox_u->flux_planned) {
+    tstat = psbox_u->RecvFluxMatch(uflx, recon_method);
   }
   return tstat;
 }
@@ -402,6 +423,14 @@ TaskStatus Hydro::SendU_Shr(Driver *pdrive, int stage) {
   if (psbox_u != nullptr) {
     // only execute if (3D OR 2d_r_phi)
     if (pmy_pack->pmesh->three_d || psbox_u->shearing_box_r_phi) {
+      // collected ghost zones (x1-face levels): the senders' slopes read their x3 ghost
+      // rows, which at a physical x3 boundary are otherwise set only after this exchange
+      // (one stage old); set them now (the boundary conditions run again after the
+      // exchange, as usual)
+      if (psbox_u->face_levels &&
+          pmy_pack->pmesh->mesh_bcs[BoundaryFace::inner_x3] != BoundaryFlag::periodic) {
+        (void) ApplyPhysicalBCs(pdrive, stage);
+      }
       tstat = psbox_u->PackAndSendCC(u0, recon_method);
     }
   }
@@ -419,6 +448,11 @@ TaskStatus Hydro::RecvU_Shr(Driver *pdrive, int stage) {
     // only execute if (3D OR 2d_r_phi)
     if (pmy_pack->pmesh->three_d || psbox_u->shearing_box_r_phi) {
       tstat = psbox_u->RecvAndUnpackCC(u0);
+      // x1-face levels: the coarse arrays' x1 ghosts, before the prolongation of the
+      // fine ghost zones
+      if (tstat == TaskStatus::complete && psbox_u->coarse_on) {
+        tstat = psbox_u->RecvAndUnpackCoarseCC(coarse_u0);
+      }
     }
   }
   return tstat;
@@ -526,6 +560,12 @@ TaskStatus Hydro::ClearSend(Driver *pdrive, int stage) {
         (pmy_pack->pmesh->three_d || psbox_u->shearing_box_r_phi)) {
       tstat = psbox_u->ClearSend();
       if (tstat != TaskStatus::complete) return tstat;
+    }
+    // the x1 flux matching of this stage
+    if (stage >= 0 && psbox_u->flux_planned) {
+      tstat = psbox_u->ClearFluxMatch();
+      if (tstat != TaskStatus::complete) return tstat;
+      psbox_u->flux_planned = false;
     }
   }
 
