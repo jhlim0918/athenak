@@ -1158,7 +1158,11 @@ $L_2$ ratios & & $3.94,\ 3.94$ & & $3.96,\ 3.97$ \\
 \end{center}
 $L_2$ is cleanly second order at both phases --- the same interface behavior Tomida
 \& Stone report (their rms metric) --- while the interface \emph{peak} converges at
-first order, the known local property of the mass-conserving level-boundary stencil.
+first order, which we took for the known local property of the mass-conserving
+level-boundary stencil. \textbf{Correction (November 2026):} it was mostly a bug in the
+fine ghost cells (a halved transverse slope); with the fix of \S\ref{sec:fcfix} the
+interface peak converges at second order ($3.35\times10^{-3}$, $8.19\times10^{-4}$,
+$2.03\times10^{-4}$ at $\mathrm{qomt} = 0$).
 The shear remap contributes only the small, second-order-converging difference
 between the two $L_2$ columns. Figure~\ref{fig:p2a_shwave} shows all of this at
 once: the error concentrates in the fine region (the reference uses the root-grid
@@ -1185,7 +1189,8 @@ $x = \pm1/2$. Third: the \emph{same} metric on the uniform Phase-1 run --- pure
 remap truncation at $5\times10^{-6}$, three decades below the interface and
 eigenvalue structure. Fourth: error vs.\ resolution at both shear phases ---
 $L_2$ second order, interface peak first order, the two phases nearly
-coincident.}
+coincident. (Before the fine-ghost fix of \S\ref{sec:fcfix}; after it the interface peak is
+second order too.)}
 \label{fig:p2a_shwave}
 \end{figure}
 
@@ -1544,6 +1549,181 @@ gravitationally unstable regime; the Gammie (2001) gravitoturbulence program
 (cooling, $Q$/$\alpha$ diagnostics) follows.
 
 %=======================================================================
+\section{The fine-ghost fix: a converging force at level jumps (November 2026)}
+\label{sec:fcfix}
+This section concerns the multigrid solver on \emph{any} refined mesh, shearing box or
+not. Until November 2026 the gravitational force did not converge within a few cells of a
+level jump; the cause was a halved transverse slope in the fine ghost cells, and the fix
+makes the potential second-order and the force first-order accurate there. Every
+refined-mesh potential in Phases 2--4 of this document was computed before the fix;
+\S\ref{sec:fcfix_regr} measures how much that matters.
+
+\subsection{The trigger: a solver that converges where ours did not}
+R.~Li's multigrid on the \code{amrSG\_dev} branch of \code{athenak-dust} (a composite
+finite-volume operator solved by FGMRES) passes his \code{self\_gravity\_wave} Poisson test
+--- $\rho = 1 + 0.1\,S\cos(2\pi(2x + y) + 0.37)$ on the periodic unit square, $4\pi G = 1$,
+a level-1 square over $[0.25, 0.75]^2$, 4-cell blocks, root $N = 16$--$256$, $S$ the cell
+average of the cosine --- with the maximum force error in the cells touching a level jump
+falling from $2.7\times10^{-4}$ to $1.2\times10^{-6}$, about $4\times$ per doubling ($4\%$ to
+$0.02\%$ of the peak force $0.1/|k| = 7.1\times10^{-3}$). We had measured the opposite in
+September 2026 in a 3-D test (a $\sim\!9\%$ relative error flat from $32^3$ to $128^3$), and
+had attributed it to the conservative level-boundary stencil, as \S\ref{sec:p2a_static}
+did for the potential.
+
+\paragraph{The same test on our solver.} The problem generator \code{mg\_interface\_wave}
+(\file{src/pgen/tests/mg\_interface\_wave.cpp}) is a port of his \code{poisson} mode: the
+same density, exact potential $-4\pi G\rho_0 A\cos\theta/k^2$, gauge and definition of
+interface cells (the first or last active cell of a block on a face whose neighbor is on
+another level). Our multigrid needs logically cubic 3-D blocks, so the 2-D problem is run
+as a periodic slab one $4^3$ block thick ($x_3 \in [0, 4/N]$; the solution does not depend
+on $x_3$). The force is the one the gas feels, the centred difference of $\Phi$ through the
+ghost zones the solver fills (\fn{SourceTerms::AddSelfGravity}). The solves are converged
+(30 and 80 fixed V-cycles agree to 7 digits). Before the fix the interface force error was
+$1.0\times10^{-3}$, $8.1\times10^{-4}$, $7.4\times10^{-4}$, $7.1\times10^{-4}$,
+$7.0\times10^{-4}$ for $N = 16$--$256$: about $10\%$ of the peak force and not converging, so
+that the refined mesh as a whole was \emph{worse} than the uniform root grid (table below).
+
+\subsection{The cause}
+At a face whose neighbor is coarser, \fn{MultigridBoundaryValues::ProlongateFCMG}
+(\file{src/multigrid/multigrid\_bvals.cpp}) fills each fine ghost cell from the coarse value
+$c$ across the face and the first fine cell $u_f$,
+\begin{equation}
+u_g = \tfrac13\left[2\,(c \pm g_t \pm g_s) + u_f\right],
+\end{equation}
+where $g_t$, $g_s$ are the offsets of the fine ghost's centre from the coarse centre in the
+two transverse directions: a quarter of a coarse cell times the transverse slope,
+$g_t = \tfrac18(c_{t+1} - c_{t-1})$ for a centred difference. The code clamped that difference
+one-sided at \emph{both} ends of the coarse patch facing the fine block
+($c_{t-1} \to c_t$ at the low end, $c_{t+1} \to c_t$ at the high end) and kept the centred
+weight $\tfrac18$, so at every clamped cell the offset was half of what it should be. The
+resulting ghost error, $\tfrac23\cdot\tfrac{h_f}{4}\,\partial_t\Phi = h_f\,\partial_t\Phi/6$, is $O(h)$, and the one-cell difference of
+the force turns it into an $O(1)$ error. The $\pm$ pairs cancel in the face flux, so the
+operator stayed conservative and the defect still converged to round-off; the error showed up
+only as a sign-alternating flux perturbation along the interface, an $O(h)$ potential error
+decaying over a few cells, which is everything measured in September. With 4-cell blocks every
+ghost cell at a jump is clamped; with 16-cell blocks only the edges of each coarse patch are.
+
+\paragraph{The fix.} The clamp threw data away: the coarse buffer received from the coarser
+neighbor already holds \code{ngh} cells beyond the patch on the side of the parent's interior
+(the \code{icoar} receive extents grow by \code{ngh} toward that side, chosen by the fine
+block's child parity, which is also the slot index $(f_1, f_2)$ of a coarser neighbor). The
+slope is now centred wherever that halo exists and one-sided only at the genuine outer edge,
+with the correct one-cell weight:
+\begin{equation}
+g_t = \tfrac14\,\frac{c_{t^+} - c_{t^-}}{t^+ - t^-},
+\qquad t^- = t-1 \text{ unless } (t = t_{\rm lo}\ \&\ f = 0),\quad
+t^+ = t+1 \text{ unless } (t = t_{\rm hi}\ \&\ f = 1).
+\end{equation}
+About fifteen lines in the three face branches of \fn{ProlongateFCMG}; uniform meshes do not
+take this path and are unchanged. Commits \code{d86c16ac} (the fix) and \code{57a70d8d} (the
+test problem) on branch \code{fargo-amr-mhd}; the fix is on \code{dust-multigrid} as \code{e1e0a072}
+(cherry-picked; the Phase-2a test above gives the same numbers to every printed digit there). Implementation details: \file{multigrid\_sb\_implementation.pdf},
+\S``Phase 2d''.
+
+\subsection{Results}
+\paragraph{Li's Poisson test.} Maximum force error in the interface cells, its fraction of the
+peak force, the volume-weighted relative $L_2$ error of the force over the whole mesh, and the
+same $L_2$ error on the uniform root grid:
+\begin{center}
+\small
+\begin{tabular}{@{}rccccccc@{}}
+\toprule
+& \multicolumn{2}{c}{interface max, before} & \multicolumn{2}{c}{interface max, after} &
+  \multicolumn{3}{c}{global $L_2$ (relative)} \\
+$N$ & abs. & of peak & abs. & of peak & before & after & uniform \\
+\midrule
+16  & $1.0\times10^{-3}$ & $14\%$ & $6.0\times10^{-4}$ & $8.5\%$  & $7.4\times10^{-2}$ & $7.1\times10^{-2}$ & $8.0\times10^{-2}$ \\
+32  & $8.1\times10^{-4}$ & $11\%$ & $2.6\times10^{-4}$ & $3.7\%$  & $2.2\times10^{-2}$ & $1.8\times10^{-2}$ & $2.0\times10^{-2}$ \\
+64  & $7.4\times10^{-4}$ & $10\%$ & $1.2\times10^{-4}$ & $1.8\%$  & $9.3\times10^{-3}$ & $4.6\times10^{-3}$ & $5.1\times10^{-3}$ \\
+128 & $7.1\times10^{-4}$ & $10\%$ & $6.1\times10^{-5}$ & $0.86\%$ & $5.7\times10^{-3}$ & $1.2\times10^{-3}$ & $1.3\times10^{-3}$ \\
+256 & $7.0\times10^{-4}$ & $9.9\%$ & $3.0\times10^{-5}$ & $0.43\%$ & $3.9\times10^{-3}$ & $3.1\times10^{-4}$ & $3.2\times10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+After the fix the interface force converges at first order ($2.0$--$2.3\times$ per doubling)
+and the potential at second order (maximum error $1.5\times10^{-5} \to 7.1\times10^{-8}$,
+$4\times$ per doubling; before, first order), and the refined mesh is as accurate as or more
+accurate than the uniform root grid everywhere. With $8^3$ blocks ($x_3 \in [0, 8/N]$) the
+interface error is $1.9\times10^{-4}$, $1.2\times10^{-4}$, $6.0\times10^{-5}$,
+$3.0\times10^{-5}$ for $N = 32$--$256$ (the same $0.43\%$ at $256$). Li's solver is still
+$25\times$ better at $N = 256$ ($1.2\times10^{-6}$): it is second order at the interface.
+Runs, logs and commands: \file{validation/run/mg\_interface/} of the \code{fargo-amr} worktree.
+
+\paragraph{This document's own interface test.} The Phase-2a static shearing-wave test
+(\S\ref{sec:p2a_static}; $8^3$, $16^3$, $32^3$ blocks at $32^3$, $64^3$, $128^3$, fixed 30
+V-cycles), rerun with the code before the fix reproduces that table to every printed digit;
+after the fix (relative to the root-grid closed form, eq.~\ref{eq:disc_eig}):
+\begin{center}
+\small
+\begin{tabular}{@{}lcccccccc@{}}
+\toprule
+& \multicolumn{4}{c}{$\mathrm{qomt}=0$} & \multicolumn{4}{c}{generic phase $t_0=0.37$} \\
+& \multicolumn{2}{c}{max rel.} & \multicolumn{2}{c}{$L_2$ rel.} & \multicolumn{2}{c}{max rel.} &
+  \multicolumn{2}{c}{$L_2$ rel.} \\
+& before & after & before & after & before & after & before & after \\
+\midrule
+$32^3$  & $1.18\times10^{-2}$ & $3.35\times10^{-3}$ & $5.05\times10^{-3}$ & $3.73\times10^{-3}$ &
+          $1.44\times10^{-2}$ & $6.57\times10^{-3}$ & $8.14\times10^{-3}$ & $7.13\times10^{-3}$ \\
+$64^3$  & $5.51\times10^{-3}$ & $8.19\times10^{-4}$ & $1.28\times10^{-3}$ & $9.27\times10^{-4}$ &
+          $5.66\times10^{-3}$ & $1.61\times10^{-3}$ & $2.06\times10^{-3}$ & $1.78\times10^{-3}$ \\
+$128^3$ & $2.66\times10^{-3}$ & $2.03\times10^{-4}$ & $3.25\times10^{-4}$ & $2.31\times10^{-4}$ &
+          $2.68\times10^{-3}$ & $4.02\times10^{-4}$ & $5.18\times10^{-4}$ & $4.45\times10^{-4}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+The interface peak, first order before ($2.1\times$ and $2.1\times$ per doubling), is now second
+order ($4.1\times$, $4.0\times$ at $\mathrm{qomt} = 0$) and no longer stands above the $L_2$
+error: what remains is mostly the fine region being more accurate than the root-grid reference
+(the $6\times10^{-4}$ eigenvalue plateau at $64^3$). The ``known local property of the
+mass-conserving level-boundary stencil'' of \S\ref{sec:p2a_static} was, for the most part, this
+bug.
+
+\subsection{Regression}
+\label{sec:fcfix_regr}
+Each case run with the committed code before the fix and with the fix (binaries
+\file{athena\_before}, \file{athena\_after}; runs in \file{validation/run/mg\_fixA\_regress/} of
+the \code{fargo-amr} worktree):
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+case & before & after \\
+\midrule
+uniform swing, $128^2$ (\file{swing\_selfgrav\_smr}, refinement off) & \multicolumn{2}{c}{history bit-identical} \\
+uniform Poisson, $N = 64$ (\code{mg\_interface\_wave}) & \multicolumn{2}{c}{identical to all printed digits} \\
+swing, static ring: peak $d_{\cos}/A$ (vs uniform $256^2$) & $-3.583481$ ($-0.976\%$) & $-3.584414$ ($-0.950\%$) \\
+swing, static patch & $-3.532422$ ($-2.387\%$) & $-3.533085$ ($-2.369\%$) \\
+swing, moving-ring AMR & $-3.510989$ ($-2.979\%$) & $-3.511909$ ($-2.954\%$) \\
+MHD swing, static ring, $B_0 = 1$: $c_y$ vs theory, $t \le 6$ & $2.66\%$ & $2.65\%$ \\
+slab sheet on SMR (\S\ref{sec:p3_smr}): max rel.\ error & $8.7269\times10^{-2}$ & $8.7270\times10^{-2}$ \\
+refined Poisson $N = 64$, 1 vs 4 ranks & --- & identical to all printed digits \\
+swing ring, 4 vs 1 rank: $\max|\Delta d_{\cos}|/\max|d_{\cos}|$ & $1.0\times10^{-12}$ & $4.8\times10^{-13}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+(The rank dependence of the dynamic swing run is round-off that predates the fix; the static
+solves are rank-independent.) The refined swing runs move toward the uniform $256^2$ answer by $0.02$--$0.03\%$ of the peak
+(the swing is smooth on the scale of a block, where the error was smallest); the phase lock
+($\max|d_{\sin}|/A \approx 10^{-13}$ on the static meshes) is unchanged. The conclusions of
+Phases 2--4 stand; numbers that measure the interface itself (\S\ref{sec:p2a_static}, the
+Phase-2b annulus maximum) were set by the bug.
+
+\subsection{What remains}
+\begin{itemize}\itemsep2pt
+\item \emph{First order at the interface.} The ghost is a linear interpolation in the direction
+      normal to the jump, $\tfrac13(2c + u_f)$, and the coarse-side ghost $\tfrac13(4\bar u - u)$ is
+      linear too, so the interface force stays first order. Li's solver is second order there.
+      A quadratic normal interpolation with a flux-matched coarse ghost (about 200--300 lines
+      behind an input flag) would close the gap; the operator then becomes nonsymmetric and the
+      red-black Gauss--Seidel V-cycle's contraction must be watched.
+\item \emph{The $k_\perp = 0$ slab offset} of the sheet test (\S\ref{sec:p3_smr}) comes from
+      the same normal stencil, not from the transverse slopes, and is unchanged by this fix.
+\item \emph{Edge and corner neighbors} at a coarser level still take simple injection; they do not
+      enter the face flux and did not show in any test here.
+\item The unused \fn{FillFineCoarseMGGhosts} carries the old clamp; it is not in any task list.
+\end{itemize}
+
+%=======================================================================
 \section{Into the unstable regime: the swing-run compendium and first collapse}
 \label{sec:collapse}
 
@@ -1854,6 +2034,7 @@ $5.8\times10^{-3}$ / $1.5\times10^{-3}$ / $3.7\times10^{-4}$ at $32/64/128^3$,
 with MG-slab and FFT-open agreeing to every printed digit at $n=64$.
 
 \subsection{Refined meshes, and what the mass sector revealed}
+\label{sec:p3_smr}
 
 With a level-1 slab spanning the middle half of $z$
 (\file{tests/mg\_poisson\_slab\_smr.athinput}), the screened mode sector converges

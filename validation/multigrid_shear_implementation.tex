@@ -125,6 +125,9 @@ Commit & Phase & Content \\
 \code{008cb5a2} & 2c & AMR $+$ multigrid gravity (rebuild on remesh) \\
 \code{89904070} & --- & Rank-desync fix: \fn{ConsistentDx2}, sender and unpack \\
 \code{ca63f727} & --- & Same fix, recv-posting sites (completes all seven) \\
+\code{e1e0a072} & 2d & Centred transverse slopes in the fine ghosts at level jumps \\
+\code{d86c16ac} & 2d & The same, on \code{fargo-amr-mhd} \\
+\code{57a70d8d} & 2d & \code{mg\_interface\_wave} test problem (\code{fargo-amr-mhd}) \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -1029,6 +1032,74 @@ Finally, the swing problem generator gains the moving-ring criterion of
 \S\ref{sec:movingring}, so that AMR $+$ shear $+$ multigrid gravity can be exercised
 on a problem with a known analytic reference.
 
+\subsection{Phase 2d: transverse slopes of the fine ghosts at level jumps}
+\label{sec:phase2d}
+
+A correction to the general multigrid solver (any refined mesh, shearing box or not), made in
+November 2026 after R.~Li's solver was seen to converge at a level jump where ours did not. Commits
+\code{d86c16ac} and \code{57a70d8d} on branch \code{fargo-amr-mhd}; the fix is cherry-picked to
+\code{dust-multigrid} as \code{e1e0a072} (the test problem is not).
+Validation: \file{multigrid\_sb\_validation.pdf}, \S``The fine-ghost fix''.
+
+\paragraph{Where the fine ghosts come from.} Between V-cycle smoothing passes and after the final
+pass, \fn{MultigridBoundaryValues::ProlongateFCMG} (\file{src/multigrid/multigrid\_bvals.cpp}) is
+the only fill of a fine block's ghost cells on a face whose neighbor is coarser. The coarse values
+arrive in \code{coarse\_buf\_} (\code{cbuf}) through the \code{icoar} receive, laid out as the
+coarse patch facing the block (indices $\code{ngh}\ldots\code{ngh}+\code{half}-1$ in each
+transverse direction, \code{half} = \code{ncells}/2) \emph{plus} \code{ngh} cells on one side: the
+receive extents grow by \code{ngh} toward the parent's interior (\code{bje += ngh} for parity
+$f = 0$, \code{bjs -= ngh} for $f = 1$), since that is where the coarse neighbor continues. A
+coarser neighbor is stored in the slot \fn{NeighborIndex}$(o_1,o_2,o_3,f_1,f_2)$ with $(f_1,f_2)$
+the block's own child parity in the two transverse directions (\file{mesh/meshblock.cpp}), so the
+loop variables $f_1$, $f_2$ of the face branch are those parities. For an $x_1$ face, with $c$ the
+coarse cell across it and $u_f$ the first fine cell,
+\begin{verbatim}
+u(fk+a, fj+b, fig) = (2*(c + (2b-1)*gy + (2a-1)*gz) + u(fk+a, fj+b, fi)) / 3
+\end{verbatim}
+for the four fine ghosts $(a,b)$ facing $c$; the $x_2$ and $x_3$ branches are the same with the
+directions permuted. $g_y$, $g_z$ are the transverse offsets of the fine ghost centres from the
+coarse centre, a quarter of a coarse cell times the slope.
+
+\paragraph{The defect.} The slope was formed as
+\begin{verbatim}
+int sjm = (sj > ngh) ? sj-1 : sj;   int sjp = (sj < ngh+half-1) ? sj+1 : sj;
+Real gy = 0.125*(cbuf(..,sjp,..) - cbuf(..,sjm,..));
+\end{verbatim}
+clamping to a one-sided difference at both ends of the patch while keeping the centred weight, so
+the offset was halved at every clamped cell. With 4-cell blocks (\code{half} $= 2$) that is every
+ghost at the jump; with 16-cell blocks the patch edges. The error, $h_f\,\partial\Phi/6$ in the
+ghost, is $O(h)$, an $O(1)$ error in the centred force difference; the operator stays conservative
+because the $\pm$ offsets cancel in the face flux.
+
+\paragraph{The change.} In each of the three face branches:
+\begin{verbatim}
+int sjm = (sj > ngh || f1 == 1) ? sj-1 : sj;       // halo below when parity 1
+int sjp = (sj < ngh+half-1 || f1 == 0) ? sj+1 : sj; // halo above when parity 0
+Real gy = 0.25*(cbuf(..,sjp,..) - cbuf(..,sjm,..)) / (sjp - sjm);
+\end{verbatim}
+(and the same with $f_2$ for the second transverse direction; for an $x_2$ face the transverse
+directions are $x_1$ with $f_1$ and $x_3$ with $f_2$, for an $x_3$ face $x_1$ with $f_1$ and $x_2$
+with $f_2$). The slope is centred wherever the halo exists and one-sided with the one-cell weight
+$\tfrac14$ only at the outer edge. Nothing else changes: the normal interpolation, the coarse-side
+ghost $\tfrac13(4\bar u - u)$, octets (\fn{ProlongateOctetBoundariesFluxCons}, which already used
+full centred slopes), edge and corner injection, buffer sizes and messages. Uniform meshes do not
+reach this code (\code{nreflevel} $= 0$). The unused \fn{FillFineCoarseMGGhosts} still has the old
+clamp.
+
+\paragraph{Effect.} On a static level jump the potential becomes second order and the force first
+order at the interface (from a non-converging $\sim\!10\%$ of the peak force to $0.43\%$ at a
+$256^2$ root), and the refined mesh is no longer less accurate than its uniform root grid.
+Second order in the force needs a quadratic normal interpolation with a flux-matched coarse
+ghost (\S\ref{sec:limits}).
+
+\paragraph{Test problem.} \code{pgen\_name = mg\_interface\_wave}
+(\file{src/pgen/tests/mg\_interface\_wave.cpp}): R.~Li's \code{self\_gravity\_wave} Poisson mode
+for our solver --- a cell-averaged single mode, one solve in the problem generator, and the errors
+of $\Phi$ and of the centred-difference force against the exact solution, globally and in the
+interface cells, printed as one \verb|# MG_INTERFACE_WAVE {...}| line. Parameters
+\code{rho0}, \code{amp}, \code{phase}, \code{nwx}, \code{nwy}, \code{nwz}; a 2-D problem is
+run as a 3-D slab one block thick.
+
 \subsection{End-to-end control flow}
 
 \begin{figure}[htb]
@@ -1877,6 +1948,15 @@ boundary & Unreachable under the invariant above; defensive \\
       per solve, in exchange for bit-identical planes on every rank. A
       partial-spectrum reduction (per-rank slice FFTs, reduce only the two face
       spectra) would cut this to $\sim$1\,MB if profiling ever demands it.
+
+\item \textbf{First-order force at level jumps.} After the fix of \S\ref{sec:phase2d} the
+      potential is second order and the force first order in the cells next to a level jump
+      ($0.43\%$ of the peak force at a $256^2$ root on the Poisson test); R.~Li's composite
+      solver is second order there. A quadratic normal interpolation of the fine ghost,
+      $\tfrac{8}{15}\tilde c + \tfrac23 u_1 - \tfrac15 u_2$ with $\tilde c$ the transversely
+      quadratic coarse value, and a flux-matched coarse ghost would close the gap; the face
+      \code{icoar} extents would grow by one layer, and the then nonsymmetric operator needs a
+      check of the V-cycle contraction.
 
 \item \textbf{The $k_\perp = 0$ interface offset.} On refined meshes the conservative
       level interface leaves a constant $O(h^2)$ potential offset inside enclosed
