@@ -329,6 +329,50 @@ deviation of its own (Fig.~\ref{fig:swing}).
   \label{fig:swing_mesh}
 \end{figure}
 
+\paragraph{Where the error is.} Figure~\ref{fig:swing_errmap} differences the maps of
+Fig.~\ref{fig:swing_mesh} against the two uniform runs. Every map is first averaged onto
+the $128^2$ root grid ($2\times2$ means of the level-1 cells, which conserve mass), so the
+difference is taken cell by cell at one resolution and the sub-cell structure of the finer
+maps does not count as error. Mean $|\Delta|$ in units of $\rho_0 A$ (the wave is
+$\approx 3.6$), in the band within two root cells of a level change and in the rest of
+each level:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+vs uniform $256^2$ & band at level jumps & rest of level 1 & rest of level 0 & rms \\
+\midrule
+uniform $128^2$ & --- & --- & 0.070 & 0.079 \\
+ring            & 0.047 & 0.022 & 0.053 & 0.038 \\
+patch           & 0.070 & 0.050 & 0.079 & 0.080 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+No error collects at the level jumps: on both meshes the band lies between the two
+interiors, and the maps show no stripe along the block outlines. The error is the wave's
+own small phase and amplitude error, striped like the wave, as in the uniform $128^2$ run;
+the refined interiors cut it to a third (ring) and two thirds (patch). The patch differs
+from the ring in one way: its $x_2$ edges at $y = \pm\pi/2$ cut each wave crest into a
+fine and a coarse part that travel at slightly different phase speeds, so the crests bend
+at the edges (top right of Fig.~\ref{fig:swing_errmap}) and the shear carries the
+mismatch into the coarse region, which ends slightly farther from the $256^2$ run (0.079)
+than the uniform $128^2$ run (0.070), although the patch's peak amplitude is closer to it.
+All of it is at the 1--4\% level of the wave.
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fargo_amr_errmap_hydro.png}
+  \caption{Error maps of the runs of Fig.~\ref{fig:swing_mesh} at $t = 8$: midplane
+  density perturbation of each run minus that of uniform $128^2$ (top) and of uniform
+  $256^2$ (bottom), in units of $\rho_0 A$ (wave amplitude $\approx 3.6$; color range
+  $\pm 0.15$), all averaged onto the $128^2$ root grid, with the MeshBlock outlines (gray
+  level 0, purple level 1). Script \file{figures/plot\_fargo\_amr\_errmaps.jl}.}
+  \label{fig:swing_errmap}
+\end{figure}
+
 %=========================================================================================
 \section{The timestep limit}
 \label{sec:dtlimit}
@@ -401,11 +445,12 @@ common times.)
   (\file{inputs/tests/swing\_mhd.athinput}: $128^2\times16$ root, multigrid gravity with
   $4\pi G\rho_0 = 1.9$, amplitude $10^{-4}$), $B_0 = 0.5$ (left) and $1.0$ (right). Top:
   azimuthal field perturbation $c_y$ against linear theory (black; \file{swing\_ode.py},
-  7-point Laplacian at the root spacing) for the uniform run and, with orbital advection,
-  a static ring, a static patch ($|y| < \pi/2$, \S\ref{sec:mhdB}) and a moving ring (AMR);
-  dashed, the Phase-4 ring without orbital advection. Bottom: deviation from the uniform
-  twin in the same frame (orbital advection or not), normalized by the twin's maximum
-  $|c_y|$ over $t \le 10$ (the tables use $t \le 6$). The growing drift of all runs from
+  7-point Laplacian at the root spacing) for the uniform $128^2$ and $256^2$ runs and, with
+  orbital advection, a static ring, a static patch ($|y| < \pi/2$, \S\ref{sec:mhdB}) and a
+  moving ring (AMR); dashed, the Phase-4 ring without orbital advection. Bottom: deviation
+  from the uniform $256^2\times32$ run (the refined runs' finest resolution), interpolated to
+  each run's output times and normalized by its maximum $|c_y|$ over $t \le 10$ (the tables
+  use $t \le 6$). The growing drift of all runs from
   theory after $t \approx 6$ is numerical damping of the wave as the shear winds it to
   14 cells per wavelength by $t = 10$; it converges at second order (see text). Script
   \file{figures/plot\_fargo\_amr\_mhd.jl}.}
@@ -426,6 +471,51 @@ common times.)
   flow. (These snapshots come from reruns of the same inputs with density dumps; the runs
   of Fig.~\ref{fig:mhd} kept only histories.)}
   \label{fig:mhd_mesh}
+\end{figure}
+
+\paragraph{Where the error is.} Figure~\ref{fig:mhd_errmap} differences the maps of
+Fig.~\ref{fig:mhd_mesh} against a uniform $128^2$ twin (\file{mesh\_smr.athinput} with
+refinement off), averaged onto the root grid as in Fig.~\ref{fig:swing_errmap}. The twin
+must take the refined runs' time step: they step at the level-1 limit, half the uniform
+one, and uniform runs at CFL 0.3 and 0.15 differ by rms 0.004--0.013 (units of
+$\rho_0 A$) at equal times, as much as the refined-minus-uniform differences; so the twin
+runs at CFL 0.15. Mean $|\Delta|$ (the density wave is 0.2--0.9 here):
+
+\begin{center}
+\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+run & $t$ & band at level jumps & rest of level 1 & rest of level 0 & max \\
+\midrule
+static ring  & 6.30 & 0.0031 & 0.0018 & 0.0035 & 0.015 \\
+static patch & 6.30 & 0.0040 & 0.0026 & 0.0022 & 0.016 \\
+moving ring  & 0.79 & 0.0038 & 0.0043 & 0.0011 & 0.013 \\
+moving ring  & 1.57 & 0.0028 & 0.0020 & 0.0018 & 0.010 \\
+moving ring  & 3.14 & 0.0013 & 0.0013 & 0.0023 & 0.008 \\
+moving ring  & 4.72 & 0.0043 & 0.0052 & 0.0044 & 0.012 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The MHD runs are within 0.3--1\% of the wave of their twin. One error is tied to the
+level jumps: at the static patch's $x_2$ edges ($y = \pm\pi/2$, near $x = \pm0.6$) the
+band averages 1.5--1.8 times the interiors, with peaks of 0.016, about 3\% of the wave at
+$t = 6.3$. The static ring shows short marks on its $x_1$ edges, but its band is no worse
+than its coarse region. The moving ring's error starts inside the refined strip and turns
+into a wave-shaped pattern over the box; the blocks it creates and destroys leave no
+stripe behind.
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\textwidth]{figures/fargo_amr_errmap_mhd.png}
+  \caption{Error maps of the runs of Fig.~\ref{fig:mhd_mesh} ($B_0 = 1$): midplane density
+  perturbation of each refined run minus that of the uniform $128^2$ twin at CFL 0.15, in
+  units of $\rho_0 A$ (color range $\pm 0.03$; the wave is 0.2--0.9), averaged onto the
+  $128^2$ root grid. Outlines: gray level 0, purple level 1. Twin runs in
+  \file{validation/run/fargo\_amr/mhd/swing/mesh\_uni\_cfl15}. Script
+  \file{figures/plot\_fargo\_amr\_errmaps.jl}.}
+  \label{fig:mhd_errmap}
 \end{figure}
 
 \subsection{Shared faces stay consistent}
@@ -506,6 +596,35 @@ $c_y$ deviation is $1.7\%$ and $2.6\%$. The moving ring (64--176 MeshBlocks; 448
 $\nabla\!\cdot\!B \le 5\times10^{-15}$ throughout. All on 3 MPI ranks; inputs and runs in
 \file{validation/run/fargo\_amr/mhd/swing/}.
 
+\paragraph{Against a uniform $256^2$ run.} The uniform runs at the refined runs' finest
+resolution (\code{uF\_b0.5\_256}, \code{uF\_b1.0\_256}: $256^2\times32$, cubic cells, same input,
+to $t = 10$; 1.6--1.7 h each on 8 MPI ranks of a shared workstation) give the reference of the bottom row of
+Fig.~\ref{fig:mhd}. Maximum deviation of $c_y$, normalized by the maximum of the reference:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+& \multicolumn{2}{c}{vs linear theory, $t \le 6$} & \multicolumn{2}{c}{vs $256^2$, $t \le 6$} &
+  \multicolumn{2}{c}{vs $256^2$, $t \le 10$} \\
+run & $B_0 = 0.5$ & $1.0$ & $0.5$ & $1.0$ & $0.5$ & $1.0$ \\
+\midrule
+uniform $128^2$ & 0.049 & 0.040 & 0.033 & 0.026 & 0.095 & 0.206 \\
+static ring     & 0.032 & 0.027 & 0.015 & 0.013 & 0.068 & 0.152 \\
+static patch    & 0.034 & 0.029 & 0.018 & 0.016 & 0.079 & 0.178 \\
+moving ring     & ---   & 0.028 & ---   & 0.015 & ---   & 0.164 \\
+uniform $256^2$ & 0.017 & 0.013 & ---   & ---   & ---   & ---   \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+From $128^2$ to $256^2$ the error against theory falls by a factor 2.9--3.0. Every refined
+run lies between the two uniform runs and through $t = 6$ closes about half the gap (the
+rings and patch refine the central quarter of the box, $|x| < \pi/4$). After the swing
+the deviations from $256^2$ grow toward those of the uniform $128^2$ run, since three
+quarters of each refined box damp the wound-up wave at the root resolution (next paragraph).
+
 \paragraph{The late drift from linear theory.} After $t \approx 6$ every run in
 Fig.~\ref{fig:mhd}, uniform and refined, falls increasingly below theory. This is numerical
 damping of the wound-up wave, not an error of the coupling. The shear keeps winding the wave,
@@ -535,8 +654,10 @@ The loss is in amplitude only: every peak falls within one output interval ($0.0
 theory's. It converges at second order (an 18\% loss at $t = 10$ becomes 4.1\% at $256^2$,
 a factor $4.4$), and it is set by the resolution of the wave, not by the elapsed time: at
 about 32 cells per wavelength the loss is $3.1\%$ at $128^2$ ($t = 6.5$) and $2.7\%$ at
-$256^2$ ($t = 9.3$). $B_0 = 1.0$ behaves the same way (19--24\% by $t = 9.5$--$10$ at
-$128^2$). The refined runs keep most of the wave on the root grid and so damp like their
+$256^2$ ($t = 9.3$). The new $256^2\times32$ run (cubic cells; the Phase-4 run had
+$256^2\times16$) reproduces this column to $0.001$: the wave has $k_z = 0$. $B_0 = 1.0$
+behaves the same way: the peak at $t = 9.75$ loses 19\% at $128^2$ and 3.6\% at $256^2$
+(\code{uF\_b1.0\_256}). The refined runs keep most of the wave on the root grid and so damp like their
 uniform twins, which is why the comparison with the twin (Fig.~\ref{fig:mhd}, bottom) stays
 at the per-cent level while both drift from theory, and why the tables stop at $t \le 6$ or
 $8$. A shearing wave winds without end, so any fixed grid eventually under-resolves it;

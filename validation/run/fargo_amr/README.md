@@ -61,6 +61,9 @@ static ring |x| < pi/4); `fargo.athinput` is that input with orbital advection o
 (all with output1/data_format=%.15e). Or: python3 validation/run/swing_mhd_repro/repro.py
 6 base fargo fargo_nofc. History columns 12/13 (0-based) are bmis/bnrm.
 Full magnetized swing with gravity, directory mhd/swing (3 MPI ranks):
+    uF_b0.5_256, uF_b1.0_256 (2026-11-02, uniform 256^2 x 32 reference of Fig. 6; binary athena_0583ec1a):
+        mpirun -np 8 ../athena_0583ec1a -i inputs/tests/swing_mhd.athinput problem/b0=... shearing_box/orbital_advection=true \
+        mhd_srcterms/self_gravity=true mesh/nx1=256 mesh/nx2=256 mesh/nx3=32
     smrF_b0.5, smrF_b1.0  mpirun -np 3 $ATH -i smr.athinput shearing_box/orbital_advection=true problem/b0=...
     amrF_b1.0             mpirun -np 3 $ATH -i amr.athinput shearing_box/orbital_advection=true problem/b0=1.0
 Twins: the uniform runs uF_b0.5, uF_b1.0 of validation/run/swing_mhd/runs (uniform MHD with
@@ -107,3 +110,9 @@ meshfig/hydro_{unif,ring}; patch: swing/patch/bin/SwingSGpatch.hydro_w.00001.bin
 MHD (Fig. 4 meshes, B0 = 1, rerun with density dumps every pi/4 to t = 6.3, 3 ranks):
 mhd/swing/mesh_{smr,ypatch,amr}.athinput, run from mhd/swing/mesh_NAME/; slices
 meshfig/mhd_{smr,ypatch}_last (t = 6.3) and meshfig/mhd_amr_{1,2,4,6} (t = k pi/4).
+Error maps (plot_fargo_amr_errmaps.jl, 2026-11-02): hydro 256^2 slice
+    python3 slice.py swing/unif256/bin/SwingSG.hydro_w.00001.bin meshfig/hydro_unif256
+MHD uniform twins with the same dumps, from mhd/swing/mesh_uni and mhd/swing/mesh_uni_cfl15:
+    mpirun -np 3 $ATH -i ../mesh_smr.athinput -d . mesh_refinement/refinement=none [time/cfl_number=0.15]
+    slices meshfig/mhd_uni_{1,2,4,6,last} (CFL 0.3), meshfig/mhd_uni15_{1,2,4,6,last} (CFL 0.15; used:
+    the refined runs step at the level-1 limit, and the CFL 0.3/0.15 twins differ by rms 0.004-0.013)

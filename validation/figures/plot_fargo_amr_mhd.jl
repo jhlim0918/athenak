@@ -62,17 +62,20 @@ for (col_i, b0) in enumerate((0.5, 1.0))
     u = p4("uF_b" * tb)
     lines!(a, u[:, 1], u[:, 9] ./ A0, color=:gray45, linestyle=:dot, linewidth=2,
            label="uniform 128²")
-    runs = [("smr_b" * tb, true, "ring, no orbital advection (Phase 4)", :gray60, :dash),
+    u2 = grav("uF_b" * tb * "_256")                # uniform 256^2 x 32, the finest level
+    lines!(a, u2[:, 1], u2[:, 9] ./ A0, color=:black, linestyle=:dashdot, linewidth=1.8,
+           label="uniform 256²")
+    runs = [("uF_b" * tb, true, "uniform 128²", :gray45, :dot),
+            ("smr_b" * tb, true, "ring, no orbital advection (Phase 4)", :gray60, :dash),
             ("smrF_b" * tb, false, "static ring", C1, :solid),
             ("ypF_b" * tb, false, "static patch", C3, :solid)]
     b0 == 1.0 && push!(runs, ("amrF_b1.0", false, "moving ring (AMR)", C2, :solid))
-    b = Axis(fig[2, col_i], xlabel="t Ω", ylabel=(col_i == 1 ? "(c_y − c_y,uniform) / max|c_y|" : ""),
-             title="deviation from the uniform twin")
+    b = Axis(fig[2, col_i], xlabel="t Ω", ylabel=(col_i == 1 ? "(c_y − c_y,256) / max|c_y,256|" : ""),
+             title="deviation from the uniform 256² run")
     for (d, phase4, lab, c, ls) in runs
         h = phase4 ? p4(d) : grav(d)
-        lines!(a, h[:, 1], h[:, 9] ./ A0, color=c, linestyle=ls, linewidth=1.8, label=lab)
-        tw = phase4 ? p4("uN_b" * tb) : u              # twin: same frame, uniform
-        t, r = rel(h, tw[:, 1], tw[:, 9])
+        d == "uF_b" * tb || lines!(a, h[:, 1], h[:, 9] ./ A0, color=c, linestyle=ls, linewidth=1.8, label=lab)
+        t, r = rel(h, u2[:, 1], u2[:, 9])              # every run against uniform 256^2
         lines!(b, t, r, color=c, linestyle=ls, linewidth=1.6, label=lab)
     end
     hlines!(b, [0.0], color=:black, linewidth=0.8)
