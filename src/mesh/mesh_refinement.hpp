@@ -111,6 +111,25 @@ class MeshRefinement {
   void CheckForRefinement(MeshBlockPack* pmbp);
   void AdaptiveMeshRefinement(Driver *pdrive, ParameterInput *pin);
   void UpdateMeshBlockTree(int &nnew, int &ndel);
+  // Levels across the shear-periodic x1 faces with x1-face levels (Mesh::sbox_face_levels;
+  // port of R. Li's amrSG_dev 804d8005): at most one level between a face block and the
+  // opposite blocks it reads, whatever the refinement criteria.  The flags of this rank's
+  // blocks after all criteria (ShearFaceLevelLimit), the tree after its refinement and
+  // 2:1 balance (ShearFaceTreeRefine), each derefinement (ShearFaceDerefineOK), and a
+  // check of every new mesh (CheckShearFaceLevels; CheckShearFaceRule also for static
+  // meshes at the tree build, over all x2 offsets).  No-ops without sbox_face_levels.
+  void ShearFaceLevelLimit(MeshBlockPack* pmbp);
+  int ShearFaceTreeRefine(int &nnew);
+  bool ShearFaceDerefineOK(const LogicalLocation &parent);
+  void CheckShearFaceLevels(const double twin = -1.0);
+  static void CheckShearFaceRule(Mesh *pm, const double twin);
+  // the time until which the shear-face rule holds on the current mesh; between the mesh
+  // checks a check of that rule alone runs when the next step could pass it.  shear_twin:
+  // the window of the check of this cycle (ShearWindow at a mesh check, 2 dt between them)
+  double shear_checked_until = -1.0e300;
+  double shear_twin = 0.0;
+  double ShearWindow() const;
+  bool ShearFaceCheckDue() const;
   void RedistAndRefineMeshBlocks(ParameterInput *pin, int nnew, int ndel);
 
   void DerefineCCSameRank(DvceArray5D<Real> &a, DvceArray5D<Real> &ca);

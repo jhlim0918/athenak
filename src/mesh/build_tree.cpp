@@ -17,6 +17,7 @@
 #include "globals.hpp"
 #include "parameter_input.hpp"
 #include "mesh.hpp"
+#include "mesh_refinement.hpp"
 #include "coordinates/cell_locations.hpp"
 #include "hydro/hydro.hpp"
 #include "mhd/mhd.hpp"
@@ -528,6 +529,14 @@ void Mesh::CheckShearingBoxRefinement(ParameterInput *pin) {
   // (FindTargetMB, per-block dx2 arithmetic) operates among same-size blocks.
   // That common level may exceed root: refining both boundary faces uniformly
   // (full x2 and x3 extent, same level) is allowed.
+  // Hydro shearing box with x1-face levels (sbox_face_levels, see Mesh::Mesh): the x1
+  // faces may change level along x2; instead of the uniform level, the shear-face level
+  // rule (MeshRefinement::CheckShearFaceRule, at most one level between a face block and
+  // the opposite blocks it reads) is checked here for static meshes over all x2 offsets,
+  // and after every regrid with AMR (MeshRefinement::CheckShearFaceLevels).
+  if (sbox_face_levels) {
+    if (!adaptive) {MeshRefinement::CheckShearFaceRule(this, 0.0);}
+  } else {
   int bndry_lev_min = std::numeric_limits<int>::max();
   int bndry_lev_max = std::numeric_limits<int>::min();
   for (int m=0; m<nmb_total; ++m) {
@@ -547,6 +556,7 @@ void Mesh::CheckShearingBoxRefinement(ParameterInput *pin) {
       << "uniformly (full x2/x3 extent, same level)." << std::endl;
     std::exit(EXIT_FAILURE);
   }
+  }  // end of the uniform-level policy (!sbox_face_levels)
 
   // Optional annular policy for orbital advection (FARGO) on a refined mesh: refinement
   // in complete x2-rings, so every refined MeshBlock has same-level neighbors along the
