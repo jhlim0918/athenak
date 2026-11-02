@@ -45,6 +45,8 @@ MPI: the same with `mpirun -np 3|4|7` and the MPI build; all bin dumps bit-ident
     ring       $ATH -i inputs/tests/swing_selfgrav_smr.athinput
     patch      $ATH -i inputs/tests/swing_selfgrav_smr_ypatch.athinput
     *_nog      the same with hydro_srcterms/self_gravity=false
+    unif256    mpirun -np 8 $ATH -i inputs/tests/swing_selfgrav_smr.athinput mesh/nx1=256 mesh/nx2=256 mesh/nx3=32 mesh_refinement/refinement=none
+               (2026-11-02; the uniform run at the refined runs' finest resolution; unif256_nog without gravity)
 (all with output1/data_format=%.15e). Analysis: `python3 swing/cmp.py` from `swing/`.
 
 ## MHD with orbital advection on rings (branch fargo-amr-mhd), directory mhd

@@ -4,8 +4,8 @@
 #       (AMR), with and without the orbital-advection flux correction; right: MeshBlock
 #       count of the vortical-shwave moving-box and moving-ring AMR runs.
 #   fargo_amr_swing.png -- swing amplification with multigrid gravity: d_cos/A for the
-#       uniform, ring and patch meshes, and the deviations from the uniform run with and
-#       without gravity.
+#       uniform (128^2 and 256^2), ring and patch meshes, and the deviations from the uniform
+#       256^2 run (the refined runs' finest resolution) with and without gravity.
 # Run directories: FARGO_AMR_RUNS (default validation/run/fargo_amr).
 # Run from validation/: julia figures/plot_fargo_amr_tests.jl
 using CairoMakie
@@ -67,25 +67,37 @@ println("wrote fargo_amr_conservation.png")
 # swing
 A = 1e-4
 sw(d) = hst(joinpath("swing", d), ".user.hst")
-u, r, p = sw("unif"), sw("ring"), sw("patch")
-un, pn = sw("unif_nog"), sw("patch_nog")
+u, r, p, u2 = sw("unif"), sw("ring"), sw("patch"), sw("unif256")
+un, pn, u2n = sw("unif_nog"), sw("patch_nog"), sw("unif256_nog")
 fig = Figure(size=(1100, 420))
 ax = Axis(fig[1, 1], xlabel="t Ω", ylabel="d_cos / A",
           title="swing amplification, multigrid gravity")
 lines!(ax, u[:, 1], u[:, 3] ./ A, color=:black, linewidth=2, label="uniform 128²")
+lines!(ax, u2[:, 1], u2[:, 3] ./ A, color=C3, linewidth=2, label="uniform 256²")
 lines!(ax, r[:, 1], r[:, 3] ./ A, color=C1, linewidth=2, linestyle=:dash, label="ring (all y)")
 lines!(ax, p[:, 1], p[:, 3] ./ A, color=C2, linewidth=2, linestyle=:dot, label="patch (part of y)")
 axislegend(ax, position=:lb, framevisible=false, labelsize=11)
-ax2 = Axis(fig[1, 2], xlabel="t Ω", ylabel="(d − d_uniform) / max|d_uniform|",
-           title="deviation from the uniform run")
+ax2 = Axis(fig[1, 2], xlabel="t Ω", ylabel="(d − d_256) / max|d_256|",
+           title="deviation from the uniform 256² run")
 nrm(x) = maximum(abs, x)
-lines!(ax2, r[:, 1], (r[:, 3] .- u[:, 3]) ./ nrm(u[:, 3]), color=C1, linewidth=2,
+# deviations at each run's own output times, with the 256^2 reference linearly interpolated
+# (the uniform 128^2 run takes twice the time step, so its outputs fall up to 0.007 apart)
+function at(ref, t)
+    map(t) do x
+        k = clamp(searchsortedlast(ref[:, 1], x), 1, size(ref, 1) - 1)
+        w = (x - ref[k, 1]) / (ref[k+1, 1] - ref[k, 1])
+        (1 - w) * ref[k, 3] + w * ref[k+1, 3]
+    end
+end
+lines!(ax2, u[:, 1], (u[:, 3] .- at(u2, u[:, 1])) ./ nrm(u2[:, 3]), color=:black, linewidth=2,
+       label="uniform 128², gravity on")
+lines!(ax2, r[:, 1], (r[:, 3] .- at(u2, r[:, 1])) ./ nrm(u2[:, 3]), color=C1, linewidth=2,
        label="ring, gravity on")
-lines!(ax2, p[:, 1], (p[:, 3] .- u[:, 3]) ./ nrm(u[:, 3]), color=C2, linewidth=2,
+lines!(ax2, p[:, 1], (p[:, 3] .- at(u2, p[:, 1])) ./ nrm(u2[:, 3]), color=C2, linewidth=2,
        label="patch, gravity on")
-lines!(ax2, pn[:, 1], (pn[:, 3] .- un[:, 3]) ./ nrm(un[:, 3]), color=C2, linewidth=2,
+lines!(ax2, pn[:, 1], (pn[:, 3] .- at(u2n, pn[:, 1])) ./ nrm(u2n[:, 3]), color=C2, linewidth=2,
        linestyle=:dash, label="patch, gravity off")
 axislegend(ax2, position=:lb, framevisible=false, labelsize=11)
 save(joinpath(HERE, "fargo_amr_swing.png"), fig, px_per_unit=2)
-@printf("wrote fargo_amr_swing.png; patch peak %.6f, ring %.6f, uniform %.6f\n",
-        minimum(p[:, 3])/A, minimum(r[:, 3])/A, minimum(u[:, 3])/A)
+@printf("wrote fargo_amr_swing.png; patch peak %.6f, ring %.6f, uniform %.6f, uniform 256 %.6f\n",
+        minimum(p[:, 3])/A, minimum(r[:, 3])/A, minimum(u[:, 3])/A, minimum(u2[:, 3])/A)
