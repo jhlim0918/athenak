@@ -87,6 +87,7 @@ class ProblemGenerator {
   void BECollapse(ParameterInput *pin, const bool restart);
   void FFTPoisson(ParameterInput *pin, const bool restart);
   void SwingAmplification(ParameterInput *pin, const bool restart);
+  void KOSDisk(ParameterInput *pin, const bool restart);
   void MGInterfaceWave(ParameterInput *pin, const bool restart);
   void GravitoTurb(ParameterInput *pin, const bool restart);
 

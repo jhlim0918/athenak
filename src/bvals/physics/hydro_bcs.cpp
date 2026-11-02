@@ -257,7 +257,8 @@ void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Rea
 
   // hse_outflow (Booth & Clarke 2019): the ghost density follows the hydrostatic,
   // isothermal extrapolation of the edge cell under the shearing box's vertical gravity
-  // -Omega^2 z, rho(z) = rho_e exp(-Omega^2 (z^2 - z_e^2) / (2 a^2)), a^2 = P_e/rho_e;
+  // -Omega^2 z (or <shearing_box> vertical_gravity_coef),
+  // rho(z) = rho_e exp(-Omega^2 (z^2 - z_e^2) / (2 a^2)), a^2 = P_e/rho_e;
   // velocities are copied and the normal one clamped outward (diode); the energy is
   // rebuilt from a^2 and the ghost velocity.  A plain diode ghost is a flat reservoir at
   // the edge density with dP/dz = 0 across the face, so gravity accelerates the edge cell
@@ -290,7 +291,7 @@ void BCHelperHydro(MeshBlockPack *ppack, DualArray2D<Real> u_in, DvceArray5D<Rea
   const Real dfloor = eos.dfloor;
   Real om2 = 0.0;
   if (psbox != nullptr && psbox->is_stratified) {
-    om2 = SQR(psbox->omega0);
+    om2 = psbox->vert_grav;   // g_z = -vert_grav*z (default omega0^2)
   }
   const int nk = ke - ks + 1;
 

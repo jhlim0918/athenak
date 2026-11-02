@@ -43,7 +43,7 @@ void ShearingBoxCC::SourceTermsCC(const DvceArray5D<Real> &w0, const EOS_Data &e
       Real coef1 = 2.0*bdt*omega0;
       Real coef2 = (2.0-qshear)*bdt*omega0;
       Real qo = qshear*omega0;
-      Real coef3 = bdt*SQR(omega0);
+      Real coef3 = bdt*vert_grav;
       par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
       KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
         Real &den = w0(m,IDN,k,j,i);
@@ -72,7 +72,7 @@ void ShearingBoxCC::SourceTermsCC(const DvceArray5D<Real> &w0, const EOS_Data &e
       // so apply the full Coriolis force plus the radial tidal force 2*q*Omega^2*x
       Real coef1 = 2.0*bdt*omega0;
       Real qo2 = 2.0*bdt*qshear*SQR(omega0);
-      Real coef3 = bdt*SQR(omega0);
+      Real coef3 = bdt*vert_grav;
       par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
       KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
         Real &x1min = size.d_view(m).x1min;
@@ -171,7 +171,7 @@ void ShearingBoxCC::SourceTermsCC(
       Real coef1 = 2.0*bdt*omega0;
       Real coef2 = (2.0-qshear)*bdt*omega0;
       Real qo = qshear*omega0;
-      Real coef3 = bdt*SQR(omega0);
+      Real coef3 = bdt*vert_grav;
       par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
       KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
         Real &den = w0(m,IDN,k,j,i);
@@ -199,7 +199,7 @@ void ShearingBoxCC::SourceTermsCC(
       // Full-velocity (non-FARGO) frame: full Coriolis + radial tidal force
       Real coef1 = 2.0*bdt*omega0;
       Real qo2 = 2.0*bdt*qshear*SQR(omega0);
-      Real coef3 = bdt*SQR(omega0);
+      Real coef3 = bdt*vert_grav;
       par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
       KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
         Real &x1min = size.d_view(m).x1min;

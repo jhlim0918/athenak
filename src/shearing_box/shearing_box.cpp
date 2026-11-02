@@ -30,6 +30,7 @@ ShearingBox::ShearingBox(MeshBlockPack *ppack, ParameterInput *pin) :
   qshear = pin->GetReal("shearing_box","qshear");
   omega0 = pin->GetReal("shearing_box","omega0");
   is_stratified = pin->GetOrAddBoolean("shearing_box","stratified",false);
+  vert_grav = pin->GetOrAddReal("shearing_box","vertical_gravity_coef",SQR(omega0));
   orbital_advection = pin->GetOrAddBoolean("shearing_box","orbital_advection",true);
 
 #if MPI_PARALLEL_ENABLED

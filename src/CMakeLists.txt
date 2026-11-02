@@ -164,6 +164,7 @@ add_executable(
         pgen/tests/be_collapse.cpp
         pgen/tests/fft_poisson.cpp
         pgen/tests/swing.cpp
+        pgen/tests/kos_disk.cpp
         pgen/tests/mg_interface_wave.cpp
         pgen/fluids/gravito_turb.cpp
 

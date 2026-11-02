@@ -59,6 +59,9 @@ class ShearingBox {
   Real qshear, omega0;             // Copies needed for all SB funcs
   bool shearing_box_r_phi;         // NOT YET IMPLEMENTED
   bool is_stratified;              // true for stratified shearing box
+  Real vert_grav;                  // stratified: g_z = -vert_grav*z (default omega0^2;
+                                   // <shearing_box> vertical_gravity_coef, e.g. a stellar
+                                   // disk g_*/H_* independent of the rotation rate)
   bool orbital_advection;          // false = non-FARGO mode: velocities include the
                                    // background shear, full-velocity source terms, and
                                    // shear-periodic BCs offset azimuthal momentum
