@@ -140,9 +140,22 @@ TaskStatus Hydro::InitRecv(Driver *pdrive, int stage) {
         time += pmy_pack->pmesh->dt;
       }
       tstat = psbox_u->InitRecv(time);
-      // the pieces of the x1 flux matching with this yshear; posts its receives
+      // the pieces of the x1 flux matching; posts its receives.  The fluxes of this
+      // stage are computed from ghost zones exchanged in the previous stage, i.e. with
+      // the offset yshear(mesh time) in every stage (InitRecv above uses time + dt in
+      // the last stage, for the exchange at the END of this stage).  By default the
+      // matching maps the authoritative face onto the other with that same offset
+      // (R. Li's original used the offset of this stage's exchange, one step of shear
+      // too far in the last stage; see validation/x1face_port_notes.md).
       if (stage >= 0 && psbox_u->flux_on) {
+        const Real ys = psbox_u->yshear;
+        if (flux_match_offset_ghost) {
+          const auto &msz = pmy_pack->pmesh->mesh_size;
+          psbox_u->yshear = (psbox_u->qshear*psbox_u->omega0)*(msz.x1max - msz.x1min)*
+                            pmy_pack->pmesh->time;
+        }
         psbox_u->PlanFluxMatch();
+        psbox_u->yshear = ys;
         psbox_u->flux_planned = true;
       }
     }

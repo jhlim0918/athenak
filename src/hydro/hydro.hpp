@@ -92,6 +92,10 @@ class Hydro {
   OrbitalAdvectionCC *porb_u = nullptr;
   ShearingBoxCC *psbox_u = nullptr;
   bool flux_unpacked = false;   // the flux correction of this stage is already unpacked
+  // x1 flux matching: map the faces with the shear offset of the ghost zones the fluxes
+  // were computed from (true, default) or with that of this stage's exchange (false:
+  // R. Li's original; <shearing_box> x1_flux_match_offset = exchange)
+  bool flux_match_offset_ghost = true;
 
   // Object(s) for extra physics (viscosity, thermal conduction, srcterms)
   Viscosity *pvisc = nullptr;

@@ -205,6 +205,16 @@ Hydro::Hydro(MeshBlockPack *ppack, ParameterInput *pin) :
       psbox_u->flux_on = pin->GetOrAddBoolean("shearing_box", "x1_flux_match",
                                               pm->multilevel);
     }
+    if (psbox_u->flux_on) {
+      std::string off = pin->GetOrAddString("shearing_box", "x1_flux_match_offset", "ghost");
+      if (off != "ghost" && off != "exchange") {
+        std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                  << std::endl << "<shearing_box>/x1_flux_match_offset must be ghost or "
+                  << "exchange" << std::endl;
+        std::exit(EXIT_FAILURE);
+      }
+      flux_match_offset_ghost = (off == "ghost");
+    }
     psbox_u->x1_plans = psbox_u->face_levels || psbox_u->flux_on;
     if (psbox_u->x1_plans) psbox_u->BuildCandidates();
   } else {
