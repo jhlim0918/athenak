@@ -1074,6 +1074,8 @@ void ProblemGenerator::CallProblemGenerator(ParameterInput *pin, bool is_restart
     FFTPoisson(pin, is_restart);
   } else if (pgen_fun_name.compare("swing") == 0) {
     SwingAmplification(pin, is_restart);
+  } else if (pgen_fun_name.compare("mg_interface_wave") == 0) {
+    MGInterfaceWave(pin, is_restart);
   } else if (pgen_fun_name.compare("gravito_turb") == 0) {
     GravitoTurb(pin, is_restart);
 
