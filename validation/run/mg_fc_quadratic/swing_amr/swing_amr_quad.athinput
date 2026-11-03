@@ -1,0 +1,118 @@
+# AthenaK input file: swing amplification with multigrid self-gravity under AMR
+# (Phase 2c: adaptive refinement + shear-periodic multigrid gravity). The swing pgen
+# enrolls the prescribed moving-ring criterion (same as the shwave pgen's):
+# xc(t) = ring_xamp*sin(ring_freq*t), refining MeshBlocks overlapping
+# [xc-hwidth, xc+hwidth] and derefining all others, so rings are created and
+# destroyed continuously through the swing. PrepareForAMR rebuilds the multigrid
+# shear planes, per-block offsets, and octet face flags after every remesh.
+#
+# Validation (validation/multigrid_selfgravity_validation.pdf sec. 12): full run
+# with 392 MeshBlocks created / 280 destroyed; peak -3.510989 at t=7.804 (-0.01%
+# vs the static uniform run: the thin transient ring adds negligible net
+# resolution); max|d_sin|/A ~ 1e-4 is hydro REGRIDDING truncation, not gravity
+# (the gravity-off control shows the same at 3.7e-5, scaling with wave amplitude,
+# and dominates the trajectory deviation: 5.1e-2 vs 2.9e-2 gravity-on).
+# The fixed-ring variant (ring_xamp=0, ring_hwidth=pi/2) reproduces the static-SMR
+# ring mesh with no mid-run remesh (see the notebook for its comparison).
+# Gravity uses FMG + fixed niteration (stopping-rule note, PDF sec. 10.6).
+<comment>
+problem   = Swing amplification with self-gravity
+
+<job>
+basename  = SwingSG
+
+<mesh>
+nghost    = 4
+nx1       = 128
+x1min     = -3.14159265358979
+x1max     =  3.14159265358979
+ix1_bc    = shear_periodic
+ox1_bc    = shear_periodic
+
+nx2       = 128
+x2min     = -3.14159265358979
+x2max     =  3.14159265358979
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 16
+x3min     = -0.39269908169872
+x3max     =  0.39269908169872
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 16
+nx2       = 16
+nx3       = 16
+
+<time>
+evolution  = dynamic
+integrator = rk2
+cfl_number = 0.3
+nlim       = -1
+tlim       = 8.0        # 2 x t_swing
+ndiag      = 100
+
+<hydro>
+eos             = isothermal
+reconstruct     = plm
+rsolver         = hlle
+iso_sound_speed = 1.0
+
+<shearing_box>
+qshear = 1.5
+omega0 = 1.0
+orbital_advection = true  # false = non-FARGO: integrate the full shear flow
+
+<gravity>
+solver    = multigrid
+four_pi_G = 1.9
+vert_bc   = periodic
+fft_remap = ppmx
+# multigrid-solver settings (active only with solver=multigrid; ignored by fft)
+threshold = -1        # fixed-count mode: stagnation control (0.0) can hit the 40-cycle
+                      # cap mid-run on refined meshes (CF~0.55 for the wound-up kx~0 mode
+                      # whose coarse-grid correction crosses the sheared x1 wrap)
+niteration = 10       # used when threshold = -1 (fixed V-cycle count)
+full_multigrid = true
+fmg_ncycle = 1
+mg_fc_interp = quadratic
+mg_remap  = ppmx
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+amr_moving_ring = true
+ring_xc0     = 0.0
+ring_xamp    = 0.78539816339745   # pi/4; set 0.0 for the fixed-ring bit-identity test
+ring_freq    = 1.0
+ring_hwidth  = 0.19634954084936   # pi/16
+pgen_name = swing
+rho0      = 1.0
+amp       = 1.0e-4      # small enough to stay linear through the amplification
+nwx       = -6          # leading wave (kx0 < 0)
+nwy       = 1
+user_hist = true
+
+<output1>
+file_type      = hst
+dt             = 0.02
+data_format    = %14.7e
+user_hist_only = true
+
+<mesh_refinement>
+refinement = adaptive          # Phase 2c: AMR + multigrid gravity + shear
+num_levels = 2
+refinement_interval = 5
+max_nmb_per_rank = 384
+
+<amr_criterion1>
+method = user                  # SwingMovingRingRefine enrolled by the swing pgen
+
+
+<output2>
+file_type      = bin
+variable       = hydro_w
+dt             = 8.0     # t=0 and final density snapshot (doc figure / notebook)
