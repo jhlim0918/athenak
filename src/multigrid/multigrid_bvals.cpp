@@ -1227,7 +1227,8 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
   // -h/2): g_f = (8/15) c~ + (2/3) f1 - (1/5) f2. Coarse ghost (at +h; flux-matched to
   // the four fine faces, = the quadratic through c1, A1, A2 corrected for the face
   // averages' transverse bias): g_c = -(1/15) c1 + [(2/3) A1 + (2/5) A2]
-  // - (1/30)(d2_a + d2_b) c1, the bracket received from the fine side.
+  // - (1/30)(d2_a + d2_b), d2 = transverse second differences of the layer c1; the
+  // bracket is received from the fine side.
   constexpr Real qfc = 8.0/15.0, qf1 = 2.0/3.0, qf2 = -0.2;
   constexpr Real qcc = -1.0/15.0, qcd = -1.0/30.0;
 
