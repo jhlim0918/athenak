@@ -1058,6 +1058,13 @@ void MultigridBoundaryValues::FillCoarseMG(const DvceArray5D<Real> &u) {
   // Face-aligned restriction: store 2x2 face averages in coarse_buf_ ghost cells.
   // These are consumed by PackAndSendMG for fine-to-coarse face sends.
   // face_id: 0=x-left, 1=x-right, 2=y-left, 3=y-right, 4=z-left, 5=z-right
+  // Linear level-jump ghosts send the first-layer average A1 (the coarse side sets
+  // its ghost to (4 A1 - c1)/3). Quadratic ghosts (mg_fc_interp = quadratic, >= 4
+  // cells per block on this MG level) need A1 and the second-layer average A2 only
+  // in the combination (2/3) A1 + (2/5) A2 (ProlongateFCMG, finer-neighbour branch),
+  // so that one value is sent in the same slot: no change to buffers or messages.
+  const bool quad = (pmy_mg->GetFCInterp() == 1) && (cnc >= 2);
+  constexpr Real wa1 = 2.0/3.0, wa2 = 0.4;
   Kokkos::parallel_for("FillCoarseMG_faces",
     Kokkos::MDRangePolicy<Kokkos::Rank<4>, DevExeSpace>(
       {0, 0, 0, 0}, {nmb * nvar, 6, cnc, cnc}),
@@ -1071,6 +1078,13 @@ void MultigridBoundaryValues::FillCoarseMG(const DvceArray5D<Real> &u) {
         Real fav = 0.25 * (
           u(m,v,fk,  fj,  fi) + u(m,v,fk,  fj+1,fi) +
           u(m,v,fk+1,fj,  fi) + u(m,v,fk+1,fj+1,fi));
+        if (quad) {
+          int fi2 = (face == 0) ? fi + 1 : fi - 1;
+          Real fav2 = 0.25 * (
+            u(m,v,fk,  fj,  fi2) + u(m,v,fk,  fj+1,fi2) +
+            u(m,v,fk+1,fj,  fi2) + u(m,v,fk+1,fj+1,fi2));
+          fav = wa1*fav + wa2*fav2;
+        }
         // The send-to-coarser (icoar) face extent spans ngh coarse ghost cells, so
         // every one of them must carry the face average; otherwise the message
         // carries stale data for ngh > 1.
@@ -1085,6 +1099,13 @@ void MultigridBoundaryValues::FillCoarseMG(const DvceArray5D<Real> &u) {
         Real fav = 0.25 * (
           u(m,v,fk,  fj,fi  ) + u(m,v,fk,  fj,fi+1) +
           u(m,v,fk+1,fj,fi  ) + u(m,v,fk+1,fj,fi+1));
+        if (quad) {
+          int fj2 = (face == 2) ? fj + 1 : fj - 1;
+          Real fav2 = 0.25 * (
+            u(m,v,fk,  fj2,fi  ) + u(m,v,fk,  fj2,fi+1) +
+            u(m,v,fk+1,fj2,fi  ) + u(m,v,fk+1,fj2,fi+1));
+          fav = wa1*fav + wa2*fav2;
+        }
         for (int d = 0; d < ngh; ++d) {
           int cjd = (face == 2) ? ngh - 1 - d : ngh + cnc + d;
           cbuf(m, v, ngh + c1, cjd, ngh + c0) = fav;
@@ -1096,6 +1117,13 @@ void MultigridBoundaryValues::FillCoarseMG(const DvceArray5D<Real> &u) {
         Real fav = 0.25 * (
           u(m,v,fk,fj,  fi  ) + u(m,v,fk,fj,  fi+1) +
           u(m,v,fk,fj+1,fi  ) + u(m,v,fk,fj+1,fi+1));
+        if (quad) {
+          int fk2 = (face == 4) ? fk + 1 : fk - 1;
+          Real fav2 = 0.25 * (
+            u(m,v,fk2,fj,  fi  ) + u(m,v,fk2,fj,  fi+1) +
+            u(m,v,fk2,fj+1,fi  ) + u(m,v,fk2,fj+1,fi+1));
+          fav = wa1*fav + wa2*fav2;
+        }
         for (int d = 0; d < ngh; ++d) {
           int ckd = (face == 4) ? ngh - 1 - d : ngh + cnc + d;
           cbuf(m, v, ckd, ngh + c1, ngh + c0) = fav;
@@ -1103,6 +1131,57 @@ void MultigridBoundaryValues::FillCoarseMG(const DvceArray5D<Real> &u) {
       }
     });
 }
+
+namespace {
+//----------------------------------------------------------------------------------------
+//! Quadratic level-jump ghosts (<gravity> mg_fc_interp = quadratic), coarse values at the
+//! four fine-ghost positions facing one coarse cell. w[ia][ib] holds the coarse layer
+//! across the face on a 3x3 transverse patch (a, b = the two transverse directions,
+//! consecutive cells), the coarse cell itself at (ca, cb): 1 = centred, 0 = the patch
+//! lies on the + side only (lower edge of the received coarse data), 2 = - side only.
+//! With the 3-point derivative D (the slope of the quadratic through the 3 cells at
+//! the centre), second difference d2 = w0 - 2 w1 + w2 and mixed term m = Da Db w, the
+//! value at the quarter-cell offset (xi, eta) = (+-1/4, +-1/4) in coarse units is
+//!   c~ = c + xi Da c + eta Db c + (xi^2/2) d2_a + (eta^2/2) d2_b + xi eta m,
+//! exact for quadratics. Its mean over the four is c + (d2_a + d2_b)/32 (slopes and m
+//! cancel), which the coarse side reproduces from its own interior (same 3-cell stencils:
+//! the one-sided cases sit at the coarse neighbour's transverse block edges).
+//! out[sb][sa], sa/sb = 0 for the - offset, 1 for the + offset.
+
+KOKKOS_INLINE_FUNCTION
+void FCQuadCoarseAtGhosts(const Real w[3][3], const int ca, const int cb,
+                          Real out[2][2]) {
+  const Real ha = static_cast<Real>(ca) - 0.5;
+  const Real hb = static_cast<Real>(cb) - 0.5;
+  const Real da[3] = {-1.0 + ha, 1.0 - 2.0*ha, ha};
+  const Real db[3] = {-1.0 + hb, 1.0 - 2.0*hb, hb};
+  const Real c = w[ca][cb];
+  Real sa = 0.0, sb = 0.0, mx = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    sa += da[i]*w[i][cb];
+    sb += db[i]*w[ca][i];
+    for (int j = 0; j < 3; ++j) mx += da[i]*db[j]*w[i][j];
+  }
+  const Real d2 = (w[0][cb] - 2.0*w[1][cb] + w[2][cb])
+                + (w[ca][0] - 2.0*w[ca][1] + w[ca][2]);
+  const Real c0 = c + d2/32.0;
+  for (int ib = 0; ib < 2; ++ib) {
+    for (int ia = 0; ia < 2; ++ia) {
+      const Real xa = (ia == 0) ? -0.25 : 0.25;
+      const Real xb = (ib == 0) ? -0.25 : 0.25;
+      out[ib][ia] = c0 + xa*sa + xb*sb + xa*xb*mx;
+    }
+  }
+}
+
+//! start of the 3-cell transverse stencil of a coarse face cell at index t of a block
+//! with cells lo..hi: centred inside, one-sided at the block edges (the same stencils
+//! the fine neighbours use for FCQuadCoarseAtGhosts, see above)
+KOKKOS_INLINE_FUNCTION
+int FCQuadStencilStart(const int t, const int lo, const int hi) {
+  return (t == lo) ? t : ((t == hi) ? t - 2 : t - 1);
+}
+}  // namespace
 
 //----------------------------------------------------------------------------------------
 //! \fn TaskStatus MultigridBoundaryValues::ProlongateFCMG()
@@ -1136,6 +1215,18 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
   int ncells_l = ncells;
   int half = ncells / 2;
   constexpr Real ot = 1.0/3.0;
+  // Quadratic level-jump ghosts (mg_fc_interp = quadratic) need >= 4 cells per block on
+  // this MG level (3 coarse cells transversally on each fine block's patch); the
+  // 2-cell level keeps the linear pair on both sides (consistent: every block of an MG
+  // level has the same cell count). FillCoarseMG applies the same switch.
+  const bool quad = (pmy_mg->GetFCInterp() == 1) && (half >= 2);
+  // Fine ghost (normal nodes: coarse c~ at -h, fine f1 at h/2, f2 at 3h/2; ghost at
+  // -h/2): g_f = (8/15) c~ + (2/3) f1 - (1/5) f2. Coarse ghost (at +h; flux-matched to
+  // the four fine faces, = the quadratic through c1, A1, A2 corrected for the face
+  // averages' transverse bias): g_c = -(1/15) c1 + [(2/3) A1 + (2/5) A2]
+  // - (1/30)(d2_a + d2_b) c1, the bracket received from the fine side.
+  constexpr Real qfc = 8.0/15.0, qf1 = 2.0/3.0, qf2 = -0.2;
+  constexpr Real qcc = -1.0/15.0, qcd = -1.0/30.0;
 
   Kokkos::parallel_for("ProlongateFCMG",
     Kokkos::RangePolicy<DevExeSpace>(0, nmb),
@@ -1205,6 +1296,36 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
                     gke = ngh_l + sub_z*half + half - 1;
                   }
 
+                  if (quad) {
+                    // ghost holds (2/3) A1 + (2/5) A2 (FillCoarseMG, quadratic). The
+                    // transverse second differences of the interior layer c1 use the
+                    // fine side's stencils: centred, one-sided at this block's edges.
+                    const int lo = ngh_l, hi = ngh_l + ncells_l - 1;
+                    for (int v = 0; v < nvar_l; ++v) {
+                      for (int gk = gks; gk <= gke; ++gk) {
+                        for (int gj = gjs; gj <= gje; ++gj) {
+                          for (int gi = gis; gi <= gie; ++gi) {
+                            const int ck = gk+ok, cj = gj+oj, ci = gi+oi;
+                            Real d2 = 0.0;
+                            if (ox1 == 0) {
+                              int t = FCQuadStencilStart(ci, lo, hi);
+                              d2 += u(m,v,ck,cj,t) - 2.0*u(m,v,ck,cj,t+1) + u(m,v,ck,cj,t+2);
+                            }
+                            if (ox2 == 0) {
+                              int t = FCQuadStencilStart(cj, lo, hi);
+                              d2 += u(m,v,ck,t,ci) - 2.0*u(m,v,ck,t+1,ci) + u(m,v,ck,t+2,ci);
+                            }
+                            if (ox3 == 0) {
+                              int t = FCQuadStencilStart(ck, lo, hi);
+                              d2 += u(m,v,t,cj,ci) - 2.0*u(m,v,t+1,cj,ci) + u(m,v,t+2,cj,ci);
+                            }
+                            u(m,v,gk,gj,gi) = qcc*u(m,v,ck,cj,ci) + u(m,v,gk,gj,gi) + qcd*d2;
+                          }
+                        }
+                      }
+                    }
+                    continue;
+                  }
                   for (int v = 0; v < nvar_l; ++v) {
                     for (int gk = gks; gk <= gke; ++gk) {
                       for (int gj = gjs; gj <= gje; ++gj) {
@@ -1224,7 +1345,62 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
 
                 // Face neighbor from coarser: flux-conserving prolongation
                 // from coarse_buf_ into fine ghost cells of u
-                if (nface == 1) {
+                if (nface == 1 && quad) {
+                  // Quadratic fine ghosts. The received coarse patch spans half cells
+                  // plus ngh halo cells on the parity side (f = 0: above, f = 1: below)
+                  // in each transverse direction (a = first, b = second transverse
+                  // index; (f1, f2) = this block's child parity in (a, b)).
+                  const int tlo = ngh_l, thi = ngh_l + half - 1;
+                  int fig, fi, fi2, si;   // normal: ghost, f1, f2, coarse layer
+                  int nrm = ngh_l + ncells_l;   // ghost index on the + side
+                  int oxn = (ox1 != 0) ? ox1 : ((ox2 != 0) ? ox2 : ox3);
+                  fig = (oxn < 0) ? ngh_l - 1 : nrm;
+                  fi  = (oxn < 0) ? ngh_l : nrm - 1;
+                  fi2 = fi - oxn;
+                  si  = (oxn < 0) ? ngh_l - 1 : ngh_l + half;
+                  for (int v = 0; v < nvar_l; ++v) {
+                    for (int sb = tlo; sb <= thi; ++sb) {
+                      for (int sa = tlo; sa <= thi; ++sa) {
+                        bool am = (sa > tlo || f1 == 1), ap = (sa < thi || f1 == 0);
+                        bool bm = (sb > tlo || f2 == 1), bp = (sb < thi || f2 == 0);
+                        int ca = am ? (ap ? 1 : 2) : 0;
+                        int cb = bm ? (bp ? 1 : 2) : 0;
+                        Real w[3][3];
+                        for (int ia = 0; ia < 3; ++ia) {
+                          for (int ib = 0; ib < 3; ++ib) {
+                            int ta = sa + ia - ca, tb = sb + ib - cb;
+                            if (ox1 != 0) {
+                              w[ia][ib] = cbuf(m,v,tb,ta,si);
+                            } else if (ox2 != 0) {
+                              w[ia][ib] = cbuf(m,v,tb,si,ta);
+                            } else {
+                              w[ia][ib] = cbuf(m,v,si,tb,ta);
+                            }
+                          }
+                        }
+                        Real ct[2][2];
+                        FCQuadCoarseAtGhosts(w, ca, cb, ct);
+                        int fa = ngh_l + 2*(sa - tlo);
+                        int fb = ngh_l + 2*(sb - tlo);
+                        for (int ib = 0; ib < 2; ++ib) {
+                          for (int ia = 0; ia < 2; ++ia) {
+                            int a = fa + ia, b = fb + ib;
+                            if (ox1 != 0) {
+                              u(m,v,b,a,fig) = qfc*ct[ib][ia] + qf1*u(m,v,b,a,fi)
+                                             + qf2*u(m,v,b,a,fi2);
+                            } else if (ox2 != 0) {
+                              u(m,v,b,fig,a) = qfc*ct[ib][ia] + qf1*u(m,v,b,fi,a)
+                                             + qf2*u(m,v,b,fi2,a);
+                            } else {
+                              u(m,v,fig,b,a) = qfc*ct[ib][ia] + qf1*u(m,v,fi,b,a)
+                                             + qf2*u(m,v,fi2,b,a);
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                } else if (nface == 1) {
                   if (ox1 != 0) {
                     int fig = (ox1 < 0) ? ngh_l - 1 : ngh_l + ncells_l;
                     int fi  = (ox1 < 0) ? ngh_l : ngh_l + ncells_l - 1;

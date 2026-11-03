@@ -248,6 +248,10 @@ class Multigrid {
   auto GetCurrentSource_h() { return src_[current_level_].h_view; }
   auto GetCurrentOldData_h() { return uold_[current_level_].h_view; }
   bool OnHost() const { return on_host_; }
+  // ghost interpolation at mesh-refinement level jumps (face neighbours on another
+  // level): 0 = linear (default), 1 = quadratic (<gravity> mg_fc_interp)
+  void SetFCInterp(int fci) { fc_interp_ = fci; }
+  int GetFCInterp() const { return fc_interp_; }
 
 
   // actual implementations of Multigrid operations (templated on view type)
@@ -331,6 +335,7 @@ class Multigrid {
   // annuli: the shear planes span the y-z extent at the boundary blocks' level;
   // 0 on uniform grids and for interior-only refinement)
   int shear_reflev_ = 0;
+  int fc_interp_ = 0;   // 0 linear, 1 quadratic level-jump ghosts (see SetFCInterp)
   int nmmb_;
   bool on_host_;
 
