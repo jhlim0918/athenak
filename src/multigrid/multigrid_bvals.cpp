@@ -1059,11 +1059,12 @@ void MultigridBoundaryValues::FillCoarseMG(const DvceArray5D<Real> &u) {
   // These are consumed by PackAndSendMG for fine-to-coarse face sends.
   // face_id: 0=x-left, 1=x-right, 2=y-left, 3=y-right, 4=z-left, 5=z-right
   // Linear level-jump ghosts send the first-layer average A1 (the coarse side sets
-  // its ghost to (4 A1 - c1)/3). Quadratic ghosts (mg_fc_interp = quadratic, >= 4
-  // cells per block on this MG level) need A1 and the second-layer average A2 only
-  // in the combination (2/3) A1 + (2/5) A2 (ProlongateFCMG, finer-neighbour branch),
-  // so that one value is sent in the same slot: no change to buffers or messages.
-  const bool quad = (pmy_mg->GetFCInterp() == 1) && (cnc >= 2);
+  // its ghost to (4 A1 - c1)/3). Quadratic ghosts (on the MG levels selected by
+  // Multigrid::FCQuadratic, see ProlongateFCMG) need A1 and the second-layer average
+  // A2 only in the combination (2/3) A1 + (2/5) A2 (ProlongateFCMG, finer-neighbour
+  // branch), so that one value is sent in the same slot: no change to buffers or
+  // messages.
+  const bool quad = pmy_mg->FCQuadratic(shift, ncells);
   constexpr Real wa1 = 2.0/3.0, wa2 = 0.4;
   Kokkos::parallel_for("FillCoarseMG_faces",
     Kokkos::MDRangePolicy<Kokkos::Rank<4>, DevExeSpace>(
@@ -1215,11 +1216,13 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
   int ncells_l = ncells;
   int half = ncells / 2;
   constexpr Real ot = 1.0/3.0;
-  // Quadratic level-jump ghosts (mg_fc_interp = quadratic) need >= 4 cells per block on
-  // this MG level (3 coarse cells transversally on each fine block's patch); the
-  // 2-cell level keeps the linear pair on both sides (consistent: every block of an MG
-  // level has the same cell count). FillCoarseMG applies the same switch.
-  const bool quad = (pmy_mg->GetFCInterp() == 1) && (half >= 2);
+  // Quadratic level-jump ghosts on the MG levels selected by Multigrid::FCQuadratic
+  // (mg_fc_interp = quadratic: the finest MG level only; the coarser levels only drive
+  // convergence and keep the symmetric linear pair, which converges more regularly).
+  // They need >= 4 cells per block (3 coarse cells transversally on each fine block's
+  // patch). Both sides of a level jump take the same decision (every block of an MG
+  // level has the same cell count); FillCoarseMG applies the same switch.
+  const bool quad = pmy_mg->FCQuadratic(shift, ncells);
   // Fine ghost (normal nodes: coarse c~ at -h, fine f1 at h/2, f2 at 3h/2; ghost at
   // -h/2): g_f = (8/15) c~ + (2/3) f1 - (1/5) f2. Coarse ghost (at +h; flux-matched to
   // the four fine faces, = the quadratic through c1, A1, A2 corrected for the face
@@ -1309,17 +1312,21 @@ TaskStatus MultigridBoundaryValues::ProlongateFCMG(DvceArray5D<Real> &u) {
                             Real d2 = 0.0;
                             if (ox1 == 0) {
                               int t = FCQuadStencilStart(ci, lo, hi);
-                              d2 += u(m,v,ck,cj,t) - 2.0*u(m,v,ck,cj,t+1) + u(m,v,ck,cj,t+2);
+                              d2 += u(m,v,ck,cj,t) - 2.0*u(m,v,ck,cj,t+1)
+                                  + u(m,v,ck,cj,t+2);
                             }
                             if (ox2 == 0) {
                               int t = FCQuadStencilStart(cj, lo, hi);
-                              d2 += u(m,v,ck,t,ci) - 2.0*u(m,v,ck,t+1,ci) + u(m,v,ck,t+2,ci);
+                              d2 += u(m,v,ck,t,ci) - 2.0*u(m,v,ck,t+1,ci)
+                                  + u(m,v,ck,t+2,ci);
                             }
                             if (ox3 == 0) {
                               int t = FCQuadStencilStart(ck, lo, hi);
-                              d2 += u(m,v,t,cj,ci) - 2.0*u(m,v,t+1,cj,ci) + u(m,v,t+2,cj,ci);
+                              d2 += u(m,v,t,cj,ci) - 2.0*u(m,v,t+1,cj,ci)
+                                  + u(m,v,t+2,cj,ci);
                             }
-                            u(m,v,gk,gj,gi) = qcc*u(m,v,ck,cj,ci) + u(m,v,gk,gj,gi) + qcd*d2;
+                            u(m,v,gk,gj,gi) = qcc*u(m,v,ck,cj,ci) + u(m,v,gk,gj,gi)
+                                            + qcd*d2;
                           }
                         }
                       }

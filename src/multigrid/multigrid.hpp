@@ -249,9 +249,15 @@ class Multigrid {
   auto GetCurrentOldData_h() { return uold_[current_level_].h_view; }
   bool OnHost() const { return on_host_; }
   // ghost interpolation at mesh-refinement level jumps (face neighbours on another
-  // level): 0 = linear (default), 1 = quadratic (<gravity> mg_fc_interp)
+  // level), <gravity> mg_fc_interp: 0 = linear (default), 1 = quadratic on the finest
+  // MG level (the coarser levels keep linear), 2 = quadratic on every MG level with
+  // >= 4 cells per block (diagnostic: same converged answer, less regular V-cycles)
   void SetFCInterp(int fci) { fc_interp_ = fci; }
   int GetFCInterp() const { return fc_interp_; }
+  // quadratic level-jump ghosts on the MG level with this shift and cell count?
+  bool FCQuadratic(int shift, int ncells) const {
+    return ncells >= 4 && (fc_interp_ == 2 || (fc_interp_ == 1 && shift == 0));
+  }
 
 
   // actual implementations of Multigrid operations (templated on view type)
@@ -335,7 +341,7 @@ class Multigrid {
   // annuli: the shear planes span the y-z extent at the boundary blocks' level;
   // 0 on uniform grids and for interior-only refinement)
   int shear_reflev_ = 0;
-  int fc_interp_ = 0;   // 0 linear, 1 quadratic level-jump ghosts (see SetFCInterp)
+  int fc_interp_ = 0;   // level-jump ghosts: 0 linear, 1/2 quadratic (SetFCInterp)
   int nmmb_;
   bool on_host_;
 

@@ -264,21 +264,25 @@ MGGravityDriver::MGGravityDriver(MeshBlockPack *pmbp, ParameterInput *pin)
   }
   // Ghost interpolation at mesh-refinement level jumps (MultigridBoundaryValues::
   // FillCoarseMG / ProlongateFCMG): "linear" (default; first-order force at the jump)
-  // or "quadratic" (second-order force; flux-matched coarse ghost; MG levels with
-  // fewer than 4 cells per block keep the linear pair).
+  // or "quadratic" (second-order force; flux-matched coarse ghost) on the finest MG
+  // level, the coarser MG levels keeping the linear pair (they only drive convergence).
+  // "quadratic_all_levels" (diagnostic) uses it on every MG level with >= 4 cells per
+  // block: same converged answer, less regular V-cycle contraction.
   std::string fci_str = pin->GetOrAddString("gravity", "mg_fc_interp", "linear");
   int fc_interp = 0;
   if (fci_str == "linear") {
     fc_interp = 0;
   } else if (fci_str == "quadratic") {
     fc_interp = 1;
+  } else if (fci_str == "quadratic_all_levels") {
+    fc_interp = 2;
   } else {
     std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
               << "<gravity> mg_fc_interp = '" << fci_str << "' not recognized "
-              << "(must be 'linear' or 'quadratic')" << std::endl;
+              << "(must be 'linear', 'quadratic' or 'quadratic_all_levels')" << std::endl;
     std::exit(EXIT_FAILURE);
   }
-  if (fc_interp == 1 && nghost != 1) {
+  if (fc_interp != 0 && nghost != 1) {
     std::cout << "### FATAL ERROR in MGGravityDriver" << std::endl
               << "<gravity> mg_fc_interp = quadratic requires mg_nghost = 1."
               << std::endl;
