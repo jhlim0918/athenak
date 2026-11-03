@@ -259,6 +259,39 @@ Driver::Driver(ParameterInput *pin, Mesh *pmesh, Real wtlim, Kokkos::Timer* ptim
       exit(EXIT_FAILURE);
     }
 
+    // The final explicit stage of imex2+ (beta = 0, gam0 = 1, gam1 = 0) leaves u unchanged:
+    // its hydro fluxes, flux corrections, RK update and beta-weighted source terms are
+    // skipped (SkipIdentityStage), unless ATHENA_IMEX_STAGE3_OLD=1 (computed and added with
+    // weight zero, as before).  Skipping drops that stage's flux-correction messages on
+    // refined meshes, so the switch must agree on every rank.
+    {
+      const char *e = std::getenv("ATHENA_IMEX_STAGE3_OLD");
+      skip_identity_stages = !(e != nullptr && e[0] == '1');
+#if MPI_PARALLEL_ENABLED
+      if (global_variable::nranks > 1) {
+        const int a = skip_identity_stages ? 1 : 0;
+        int v[2] = {a, -a};
+        MPI_Allreduce(MPI_IN_PLACE, v, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        if (v[0] != -v[1]) {
+          std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+                    << std::endl << "ATHENA_IMEX_STAGE3_OLD must be set alike on every rank"
+                    << std::endl;
+          std::exit(EXIT_FAILURE);
+        }
+      }
+#endif
+      for (int s=1; s<=nexp_stages; ++s) {
+        if (beta[s-1] == 0.0 && gam0[s-1] == 1.0 && gam1[s-1] == 0.0 &&
+            global_variable::my_rank == 0) {
+          std::cout << "# IMEX_STAGE3 " << integrator << " stage " << s
+                    << " is the identity: its beta-weighted hydro work is "
+                    << (skip_identity_stages ? "skipped"
+                                             : "computed (ATHENA_IMEX_STAGE3_OLD=1)")
+                    << std::endl;
+        }
+      }
+    }
+
     ValidateSTSConfiguration(pmesh);
   }
 }

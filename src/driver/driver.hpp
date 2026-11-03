@@ -65,6 +65,22 @@ class Driver {
   Real gamma;                      // gamma value for the IMEX_new integrator
   Kokkos::Timer* pwall_clock_;     // timer for tracking the wall clock
   Real wall_time;
+  // skip the beta-weighted hydro work of an explicit stage that is the identity (see
+  // SkipIdentityStage); false with ATHENA_IMEX_STAGE3_OLD=1 (the same on every rank)
+  bool skip_identity_stages = true;
+
+  // true on an explicit stage whose update u <- gam0 u + gam1 u1 + beta dt L(u) is the
+  // identity (beta = 0, gam0 = 1, gam1 = 0: the final stage of imex2+), when the hydro
+  // fluxes, their corrections, the RK update and the beta-weighted source terms are
+  // skipped; boundaries, orbital advection and C2P of the stage still run.  Never during
+  // an STS sweep, whose parabolic stages reuse SendFlux/RecvFlux/ClearSend/ClearRecv with
+  // their own stage numbers, nor for stages <= 0 (initialization, ghost refresh).
+  // (Ported from athenak-dust amrSG_dev 4012006a, R. Li.)
+  bool SkipIdentityStage(int stage) const {
+    return skip_identity_stages && sts.sweep == STSSweep::none &&
+           stage >= 1 && stage <= nexp_stages &&
+           beta[stage-1] == 0.0 && gam0[stage-1] == 1.0 && gam1[stage-1] == 0.0;
+  }
 
   // functions
   // (re)build the gamma-dependent imex2+ coefficients; also called by the dust module's

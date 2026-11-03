@@ -42,6 +42,8 @@ void DustGasDrag::AssembleDustGasDragTasks(
 
   // assemble "before_timeintegrator" task list
   id.gswitch = tl["before_timeintegrator"]->AddTask(&DustGasDrag::GammaSwitch,this,none);
+  id.psort   = tl["before_timeintegrator"]->AddTask(&DustGasDrag::SortPoints,this,
+                                                      id.gswitch);
 
   // assemble "before_stagen" task list
   id.h_irecv = tl["before_stagen"]->AddTask(&Hydro::InitRecv, phyd, none);
