@@ -1,0 +1,83 @@
+# AthenaK input file: hydrodynamic Jeans test (hydro + multigrid self-gravity), 2026-11-03.
+# A linear compressive wave in a uniform self-gravitating medium (pgen "gravity",
+# src/pgen/tests/jeans_wave.cpp, hydro path), started as the eigenmode of
+#     w^2 = k^2 cs^2 - 4 pi G rho0
+# (a standing wave from rest if lambda < lambda_J, pure exponential growth if not).  The
+# user history projects the density onto the mode (a_sin); the frequency or growth rate is
+# fitted from it (validation/run/hydro_jeans/hydro_jeans.py).  The hydro counterpart of
+# magneto_jeans.athinput, with the same box, resolution and integrator, so the two suites
+# can be shown together.
+# Quasi-1-D: k along x1 (wave_dir = x1) in a 1 x 1/8 x 1/8 box, 64 x 8 x 8 cells, 8^3
+# MeshBlocks.  Adiabatic, gamma = 5/3, p0 = 0.6 so that cs = 1, rho0 = 1 (isentropic
+# eigenmode); for an isothermal gas override hydro/eos=isothermal (iso_sound_speed = 1).
+# n_jeans = lambda/lambda_J sets 4 pi G = (2 pi n_jeans cs / lambda)^2 rho0^-1.
+
+<comment>
+problem   = hydrodynamic Jeans wave (hydro + self-gravity)
+
+<job>
+basename  = HydroJeans
+
+<mesh>
+nghost    = 4
+nx1       = 64
+x1min     = 0.0
+x1max     = 1.0
+ix1_bc    = periodic
+ox1_bc    = periodic
+
+nx2       = 8
+x2min     = 0.0
+x2max     = 0.125
+ix2_bc    = periodic
+ox2_bc    = periodic
+
+nx3       = 8
+x3min     = 0.0
+x3max     = 0.125
+ix3_bc    = periodic
+ox3_bc    = periodic
+
+<meshblock>
+nx1       = 8
+nx2       = 8
+nx3       = 8
+
+<time>
+evolution  = dynamic
+integrator = rk3
+cfl_number = 0.3
+nlim       = -1
+tlim       = 1.0
+ndiag      = 100
+
+<hydro>
+eos         = ideal
+gamma       = 1.6666666666666667
+iso_sound_speed = 1.0     # used only with eos = isothermal
+reconstruct = ppm4
+rsolver     = hllc
+
+<gravity>
+solver    = multigrid
+four_pi_G = 1.0       # replaced from n_jeans
+threshold = -1        # fixed V-cycles, as in the magneto-Jeans suite
+niteration = 8
+full_multigrid = true
+show_defect = 0
+
+<hydro_srcterms>
+self_gravity = true
+
+<problem>
+pgen_name = gravity
+user_hist = true
+rho0      = 1.0
+p0        = 0.6       # cs^2 = gamma p0/rho0 = 1
+amp       = 1.0e-4    # linear: second-order terms ~1e-8
+n_jeans   = 2.0       # lambda / lambda_Jeans (> 1: unstable)
+wave_dir  = x1
+
+<output1>
+file_type  = hst
+dt         = 0.01

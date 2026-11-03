@@ -97,7 +97,12 @@ printed digit. The companion document
 \code{fft\_selfgravity\_validation.pdf} covers the FFT solver used as the
 machine-precision oracle throughout this program; a Julia notebook
 (\code{multigrid\_validation\_tests.ipynb}) reproduces every test here.
-Phase 4 (\S\ref{sec:phase4}) adds a magnetic field: on the magneto-Jeans wave, ideal MHD
+Phase 4 (\S\ref{sec:phase4}) first closes the hydrodynamic case: the Jeans wave, stable and
+growing ($\lambda/\lambda_J = 0.25$--$3$), follows $\omega^2 = k^2c_s^2 - 4\pi G\rho_0$ to a
+relative error in $\omega$ of at most $5.9\times10^{-3}$ at 64 cells per wavelength (at most
+$1.6\times10^{-3}$ against the dispersion relation of the discrete operators), converging at
+second order, with every statically or adaptively refined run inside the bracket of the
+uniform runs. It then adds a magnetic field: on the magneto-Jeans wave, ideal MHD
 (constrained transport, HLLD) with multigrid gravity reproduces the dispersion relation of a
 magnetized self-gravitating medium at every field angle and on both branches, to a relative
 error in $\omega$ of at most $4.8\times10^{-3}$ at 64 cells per wavelength, converging at
@@ -2397,7 +2402,9 @@ should be.
 Phase 4 adds a magnetic field to the self-gravitating gas. The code pieces (the
 magneto-Jeans mode of \file{pgen/tests/jeans\_wave.cpp}, and the gravito-turbulent box run
 with an \code{<mhd>} block) are described in Phase 4 of the implementation document; this
-section validates them, with two linear problems that have exact answers. The magneto-Jeans
+section validates them, with linear problems that have exact answers. It starts without a
+field: the hydrodynamic Jeans wave (\S\ref{sec:hj}), stable and growing, on uniform and refined
+meshes, with the same box, integrator and meshes as the magneto-Jeans suite. The magneto-Jeans
 wave asks whether the MHD integrator (constrained transport, HLLD) coupled to the multigrid
 gravity source terms reproduces the linear theory of a magnetized, self-gravitating medium;
 on a uniform grid it does, for every field angle, both branches, stable and unstable
@@ -2408,6 +2415,143 @@ does to within the bracket of the uniform runs at the root and the refined resol
 \emph{isothermal} HLLD solver in strong fields (\S\ref{sec:isohlld}); the suites were rerun
 adiabatic. Magnetized swing amplification (\S\ref{sec:swing_mhd}) then puts the field,
 self-gravity and the shear together, on uniform and refined shearing boxes.
+
+\subsection{The hydrodynamic Jeans test}
+\label{sec:hj}
+
+Earlier phases checked the hydrodynamic Jeans wave only indirectly: FFT against multigrid on
+one stable wave (FFT document), and the error convergence of the Tomida \& Stone (2023)
+\S4.3 wave (\S\ref{sec:phase1}), also stable. This suite measures the dispersion relation
+itself, on both sides of $\lambda_J$ and on refined meshes. It is the hydro counterpart of the
+magneto-Jeans suite below (same box, integrator and meshes; the hydro module instead of
+MHD), so the two can be read together, and the $\theta = 0$ magneto-Jeans cases repeat it with
+a field along $\mathbf k$.
+
+\paragraph{Theory.} A uniform self-gravitating gas carries
+\begin{equation}
+  \omega^2 = k^2c_s^2 - 4\pi G\rho_0 ,
+  \label{eq:hj}
+\end{equation}
+a sound wave for $\lambda < \lambda_J$ and pure growth, $\omega^2 = -s^2$, for
+$\lambda > \lambda_J$. The discrete operators change the gravity term. The solver inverts the
+7-point Laplacian, whose eigenvalue is
+$D = \sum_d (2/\Delta x_d)^2 \sin^2(k_d\Delta x_d/2)$, and
+\code{SourceTerms::SelfGravity} applies the centred gradient
+$(\Phi_{i+1}-\Phi_{i-1})/2\Delta x$, whose symbol is $\sin(k\Delta x)/\Delta x$; so
+\begin{equation}
+  \omega^2_{\rm disc} = k^2c_s^2 - 4\pi G\rho_0\,
+  \frac{\sum_d k_d \sin(k_d\Delta x_d)/\Delta x_d}{D}
+  \approx k^2c_s^2 - 4\pi G\rho_0\bigl[1 - (k\Delta x)^2/12\bigr]
+  \label{eq:hjdisc}
+\end{equation}
+for a wave along an axis. Gravity is slightly weaker than in the continuum; the difference
+matters only near marginal stability, where the two terms of eq.~(\ref{eq:hj}) nearly cancel.
+(The hydro fluxes are fourth order in this suite, PPM4, and are not corrected.)
+
+\paragraph{Setup.} \file{inputs/tests/hydro\_jeans.athinput} (with \file{\_smr} and
+\file{\_amr} variants): $\mathbf k$ along $x_1$ in a $1\times\frac18\times\frac18$ periodic box
+of $64\times8\times8$ cells in $8^3$ MeshBlocks; adiabatic hydro, $\gamma = 5/3$,
+$p_0 = 0.6$ ($c_s = 1$), HLLC, PPM4, RK3, CFL $0.3$; full multigrid and eight V-cycles. The
+mode is the exact eigenmode with $\delta\rho = 10^{-4}\rho_0\sin kx$: a standing wave from
+rest, or pure growth with the matching velocity $\delta v = (s/k)\,10^{-4}c_s\cos kx$. Units
+as in \S\ref{sec:mj_test}: $c_s = \rho_0 = \lambda = 1$, $n = \lambda/\lambda_J$ fixes
+$4\pi G = k^2n^2$. The cases:
+\begin{itemize}\itemsep1pt
+\item dispersion: $n = 0.25$, $0.5$, $0.75$, $0.9$, $0.95$, $1.05$, $1.1$, $1.25$, $1.5$, $2$,
+      $3$ at 64 cells per wavelength;
+\item resolution: $n = 0.5$ and $2$ at 16, 32 and 128 cells per wavelength;
+\item isothermal gas ($c_s = 1$, isothermal HLLC): $n = 0.5$, $0.95$, $1.5$, $2$;
+\item 3-D: the wave along the diagonal of a $1\times\frac12\times\frac12$ box,
+      $64\times32\times32$ cells ($\lambda = 1/3$, 21 cells per wavelength), $n = 0.5$, $2$;
+\item refined meshes, $n = 0.5$ and $2$: the six one-dimensional meshes of the magneto-Jeans
+      suite (\S\ref{sec:mj_amr}: uniform 64 and 128, static level-1 and level-2 slabs, the
+      moving window at one and two levels) and, in 3-D, a static central block and the moving
+      window.
+\end{itemize}
+Growing modes are fitted with a straight line in $\ln|a|$ over the last $90\%$ of three
+e-folds, stable ones with $\cos(\omega t)e^{-\gamma t}$ over two periods, as in the
+magneto-Jeans suite. The 35 cases take about 25 minutes, six at a time on a laptop. The
+runner is \file{validation/run/hydro\_jeans/hydro\_jeans.py}; the figure script, for
+Fig.~\ref{fig:hj}, is \file{validation/figures/plot\_hydro\_jeans.jl}. The binary is a clean
+build of \code{dust-multigrid} \code{d0d5f564}.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/hydro_jeans.png}
+\caption{The hydrodynamic Jeans test. (a) Measured $\omega^2/(kc_s)^2$ (points) against
+eq.~(\ref{eq:hj}) (line) for adiabatic and isothermal gas at 64 cells per wavelength and the
+3-D waves along the box diagonal. (b) Relative error in $\omega$ (or $s$) at 64 cells per
+wavelength against the continuum relation and against the discrete one,
+eq.~(\ref{eq:hjdisc}). (c) Convergence for a stable ($n = 0.5$) and a growing ($n = 2$) mode.
+(d) Refined meshes, against the uniform bracket (64 and 128 cells per wavelength).}
+\label{fig:hj}
+\end{figure}
+
+\paragraph{Results.}
+\begin{itemize}\itemsep2pt
+\item \textbf{Dispersion relation} (Fig.~\ref{fig:hj}a,b; Table~\ref{tab:hj}). The error in
+      $\omega$ against eq.~(\ref{eq:hj}) is $3.7\times10^{-4}$ to $5.9\times10^{-3}$, and
+      $|\Delta\omega^2|/k^2 \le 6\times10^{-3}$. The largest errors are next to marginal
+      stability ($n = 0.95$, $1.05$), where $\omega \to 0$. Against eq.~(\ref{eq:hjdisc}) they
+      fall to $1.8\times10^{-5}$--$1.6\times10^{-3}$: most of the near-marginal error is the
+      weaker discrete gravity, not the hydro.
+\item \textbf{Convergence} (Fig.~\ref{fig:hj}c). At 16, 32, 64 and 128 cells per wavelength the
+      error is $1.5\times10^{-2}$, $3.4\times10^{-3}$, $5.9\times10^{-4}$, $1.1\times10^{-4}$
+      for $n = 0.5$ (local orders $2.1$, $2.5$, $2.4$) and $1.2\times10^{-2}$,
+      $2.1\times10^{-3}$, $4.4\times10^{-4}$, $1.2\times10^{-4}$ for $n = 2$ (orders $2.5$,
+      $2.3$, $1.9$). The stable wave damps at $\gamma \approx 5\times10^{-4}$
+      ($\gamma/\omega \approx 10^{-4}$) at 64 cells per wavelength.
+\item \textbf{Equation of state.} The isothermal runs give the adiabatic errors to two or three
+      digits ($5.9\times10^{-4}$, $5.2\times10^{-3}$, $7.2\times10^{-4}$, $4.5\times10^{-4}$
+      at $n = 0.5$, $0.95$, $1.5$, $2$), as they should for an isentropic eigenmode.
+\item \textbf{3-D.} Along the box diagonal, at 21 cells per wavelength, the error is
+      $1.3\times10^{-3}$ ($n = 0.5$) and $1.7\times10^{-3}$ ($n = 2$).
+\item \textbf{Refined meshes} (Fig.~\ref{fig:hj}d; Table~\ref{tab:hj}). Every refined run lies
+      inside the bracket of the uniform runs at 64 and 128 cells per wavelength. The
+      two-level moving window, which creates and destroys 1148 and 1008 MeshBlocks, comes
+      closest to the fine run. In 3-D the central block and the moving window (2016 created,
+      1792 destroyed) both lower the error of the uniform root. The spurious $\cos kx$ density
+      component, reflected at the level interfaces, is at most $7.8\times10^{-4}$ of the mode
+      in 1-D and $9\times10^{-5}$ in 3-D (about $10^{-9}$ on the uniform grid).
+\end{itemize}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Hydrodynamic Jeans test: relative error in $\omega$ (or the growth rate $s$) against
+the continuum relation, eq.~(\ref{eq:hj}), and against the discrete one, eq.~(\ref{eq:hjdisc}).
+Top: dispersion at 64 cells per wavelength (adiabatic). Bottom: refined meshes (continuum).}
+\label{tab:hj}
+\begin{tabular}{rrrrr}
+\toprule
+$\lambda/\lambda_J$ & $\omega^2$ (eq.~\ref{eq:hj}) & $\omega^2$ measured & error (continuum) & error (discrete) \\
+\midrule
+0.25 & $37.011$ & $37.043$ & $4.3\times10^{-4}$ & $4.0\times10^{-4}$ \\
+0.5  & $29.609$ & $29.644$ & $5.9\times10^{-4}$ & $4.6\times10^{-4}$ \\
+0.75 & $17.272$ & $17.310$ & $1.1\times10^{-3}$ & $6.0\times10^{-4}$ \\
+0.9  & $7.501$  & $7.542$  & $2.7\times10^{-3}$ & $1.0\times10^{-3}$ \\
+0.95 & $3.849$  & $3.890$  & $5.3\times10^{-3}$ & $1.6\times10^{-3}$ \\
+1.05 & $-4.047$ & $-3.999$ & $5.9\times10^{-3}$ & $1.5\times10^{-3}$ \\
+1.1  & $-8.290$ & $-8.240$ & $3.1\times10^{-3}$ & $7.5\times10^{-4}$ \\
+1.25 & $-22.207$ & $-22.149$ & $1.3\times10^{-3}$ & $1.8\times10^{-4}$ \\
+1.5  & $-49.348$ & $-49.278$ & $7.1\times10^{-4}$ & $1.8\times10^{-5}$ \\
+2    & $-118.435$ & $-118.331$ & $4.4\times10^{-4}$ & $9.6\times10^{-5}$ \\
+3    & $-315.827$ & $-315.591$ & $3.7\times10^{-4}$ & $7.8\times10^{-5}$ \\
+\midrule
+mesh & \multicolumn{2}{c}{$n = 0.5$} & \multicolumn{2}{c}{$n = 2$} \\
+\midrule
+uniform 64   & \multicolumn{2}{c}{$5.9\times10^{-4}$} & \multicolumn{2}{c}{$4.4\times10^{-4}$} \\
+uniform 128  & \multicolumn{2}{c}{$1.1\times10^{-4}$} & \multicolumn{2}{c}{$1.2\times10^{-4}$} \\
+static, 1 level  & \multicolumn{2}{c}{$4.7\times10^{-4}$} & \multicolumn{2}{c}{$3.5\times10^{-4}$} \\
+static, 2 levels & \multicolumn{2}{c}{$4.7\times10^{-4}$} & \multicolumn{2}{c}{$3.4\times10^{-4}$} \\
+moving, 1 level  & \multicolumn{2}{c}{$4.0\times10^{-4}$} & \multicolumn{2}{c}{$3.5\times10^{-4}$} \\
+moving, 2 levels & \multicolumn{2}{c}{$2.5\times10^{-4}$} & \multicolumn{2}{c}{$2.9\times10^{-4}$} \\
+3-D uniform 64   & \multicolumn{2}{c}{$1.3\times10^{-3}$} & \multicolumn{2}{c}{$1.7\times10^{-3}$} \\
+3-D central block & \multicolumn{2}{c}{$1.1\times10^{-3}$} & \multicolumn{2}{c}{$1.5\times10^{-3}$} \\
+3-D moving, 1 level & \multicolumn{2}{c}{$8.6\times10^{-4}$} & \multicolumn{2}{c}{$1.5\times10^{-3}$} \\
+\bottomrule
+\end{tabular}
+\end{table}
 
 \subsection{The magneto-Jeans test}
 \label{sec:mj_test}
@@ -2890,6 +3034,13 @@ solenoidal.
 
 \subsection{Summary}
 \begin{itemize}\itemsep2pt
+\item Hydro with multigrid self-gravity reproduces the Jeans dispersion relation, stable and
+      growing ($\lambda/\lambda_J = 0.25$--$3$): relative error in $\omega$ (or $s$)
+      $\le 5.9\times10^{-3}$ at 64 cells per wavelength, $\le 1.6\times10^{-3}$ against the
+      dispersion relation of the discrete operators (the rest is the weaker discrete gravity
+      near marginal stability), second-order convergence, the same for an isothermal gas;
+      every statically or adaptively refined run (1-D and 3-D) lies inside the uniform
+      bracket (\S\ref{sec:hj}).
 \item Ideal MHD with multigrid self-gravity reproduces the magneto-Jeans dispersion relation
       on a uniform grid at every angle, on both branches, stable and unstable: relative
       error in $\omega$ $\le 4.8\times10^{-3}$ (median $6.6\times10^{-4}$) at 64 cells per
