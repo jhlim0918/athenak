@@ -165,7 +165,7 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
 
   // (2) read parameters ----------------------------------------------------------------
   back_reaction = pin->GetOrAddBoolean("dust","back_reaction",true);
-  point_sort_interval = std::max(0, pin->GetOrAddInteger("dust","point_sort_interval",0));
+  point_sort_interval = std::max(0, pin->GetOrAddInteger("dust","point_sort_interval",50));
   gamma_switch  = pin->GetOrAddBoolean("dust","gamma_switch",false);
   if (coupling == DustCoupling::hybrid && gamma_switch) {
     if (global_variable::my_rank == 0) {

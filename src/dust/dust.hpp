@@ -261,11 +261,13 @@ class DustGasDrag {
   DvceArray5D<Real> solver_p;   // PCG search direction
   DvceArray5D<Real> solver_ap;  // matrix-free A*x / A*p work field
 
-  // <dust>/point_sort_interval = N (default 0 = off): every N cycles, at the start of the
+  // <dust>/point_sort_interval = N (default 50; 0 = off): every N cycles, at the start of the
   // cycle, the particles are reordered by (MeshBlock, k, j, i) of the cell that holds them,
   // so the deposits and gathers walk memory in cell order (round-off differences only: the
   // order of the atomic deposit sums).  Ported from athenak-dust amrSG_dev 4012006a (R. Li).
-  int point_sort_interval = 0;
+  // A restart from a file written without the key takes the default, so a run continued
+  // with a newer build sorts from then on; set 0 to keep an earlier run's order.
+  int point_sort_interval = 50;
   unsigned long long point_sort_count = 0;
   double point_sort_seconds = 0.0;
   DvceArray1D<std::int64_t> sort_key;      // composite key (block, cell)*npart + p
