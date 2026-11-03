@@ -21,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <cstdint>
 #include <type_traits>
 #include <vector>
 
@@ -95,6 +96,7 @@ void GasKick(const DvceArray5D<Real> &u0, const int m, const int k, const int j,
 struct DustGasDragTaskIDs {
   // "before_timeintegrator" tasks
   TaskID gswitch;
+  TaskID psort;
   // "before_stagen" tasks
   TaskID h_irecv, irecvd;
   // "stagen" tasks
@@ -259,6 +261,17 @@ class DustGasDrag {
   DvceArray5D<Real> solver_p;   // PCG search direction
   DvceArray5D<Real> solver_ap;  // matrix-free A*x / A*p work field
 
+  // <dust>/point_sort_interval = N (default 0 = off): every N cycles, at the start of the
+  // cycle, the particles are reordered by (MeshBlock, k, j, i) of the cell that holds them,
+  // so the deposits and gathers walk memory in cell order (round-off differences only: the
+  // order of the atomic deposit sums).  Ported from athenak-dust amrSG_dev 4012006a (R. Li).
+  int point_sort_interval = 0;
+  unsigned long long point_sort_count = 0;
+  double point_sort_seconds = 0.0;
+  DvceArray1D<std::int64_t> sort_key;      // composite key (block, cell)*npart + p
+  DvceArray2D<Real> sort_spare_r;          // the other buffer of prtcl_rdata
+  DvceArray2D<int>  sort_spare_i;          // the other buffer of prtcl_idata
+
   // Boundary communication objects
   MeshBoundaryValuesDep *pbval_qp;  // additive exchange of (Q,P) ghost deposits
   MeshBoundaryValuesDep *pbval_dm;  // additive exchange of PMBR ghost deposits
@@ -305,6 +318,8 @@ class DustGasDrag {
 
   // ...in "before_timeintegrator" list
   TaskStatus GammaSwitch(Driver *pdrive, int stage);
+  TaskStatus SortPoints(Driver *pdrive, int stage);   // <dust>/point_sort_interval
+  void SortParticles();   // reorder the particles by (MeshBlock, cell); public for NVCC
   // Must be public because NVCC extended host/device lambdas cannot be enclosed by a
   // private or protected member function.
   void RefreshStoppingTimeMaximum();  // validate IPTS; refresh taus_max when requested

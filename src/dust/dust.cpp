@@ -11,6 +11,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <cstdint>
 #include <string>
 
 #include "athena.hpp"
@@ -21,6 +22,7 @@
 #include "eos/eos.hpp"
 #include "hydro/hydro.hpp"
 #include "particles/particles.hpp"
+#include <Kokkos_Sort.hpp>
 #include "gravity/gravity.hpp"
 #include "shearing_box/shearing_box.hpp"
 #include "dust.hpp"
@@ -163,6 +165,7 @@ DustGasDrag::DustGasDrag(MeshBlockPack *ppack, ParameterInput *pin) :
 
   // (2) read parameters ----------------------------------------------------------------
   back_reaction = pin->GetOrAddBoolean("dust","back_reaction",true);
+  point_sort_interval = std::max(0, pin->GetOrAddInteger("dust","point_sort_interval",0));
   gamma_switch  = pin->GetOrAddBoolean("dust","gamma_switch",false);
   if (coupling == DustCoupling::hybrid && gamma_switch) {
     if (global_variable::my_rank == 0) {
@@ -645,6 +648,98 @@ void DustGasDrag::SetDefaultMasses(ParameterInput *pin) {
     pr(IPTS,p) = taus_.d_view(s);
     pr(IPM,p) = d2g*rho0*vol/ppc;
   });
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn DustGasDrag::SortPoints
+//! \brief "before_timeintegrator" task: every <dust>/point_sort_interval cycles reorder the
+//! particles by cell (SortParticles).  At the start of a cycle no particle send list or
+//! deposit is pending, and every per-particle quantity lives in prtcl_rdata/prtcl_idata.
+
+TaskStatus DustGasDrag::SortPoints(Driver *pdrive, int stage) {
+  (void) pdrive; (void) stage;
+  if (point_sort_interval > 0 && pmy_pack->pmesh->ncycle % point_sort_interval == 0) {
+    Kokkos::fence();
+    Kokkos::Timer t;
+    SortParticles();
+    point_sort_seconds += t.seconds();
+    ++point_sort_count;
+  }
+  return TaskStatus::complete;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn DustGasDrag::SortParticles
+//! \brief Reorder this rank's particles by (MeshBlock, k, j, i) of the cell that holds
+//! them (ties in the old order): one composite 64-bit key (block*ncell + cell)*npart + p,
+//! sorted, then the real and integer columns gathered into a spare buffer that becomes the
+//! particle storage (the old one is kept as the next spare).  Ported from athenak-dust
+//! amrSG_dev 4012006a (R. Li, DustGasDrag::SortParticles, point-particle branch).
+
+void DustGasDrag::SortParticles() {
+  particles::Particles *ppar = pmy_pack->ppart;
+  const int npart = ppar->nprtcl_thispack;
+  if (npart < 2) return;
+  auto pr = ppar->prtcl_rdata;
+  auto pi = ppar->prtcl_idata;
+  const int nrdata = ppar->nrdata, nidata = ppar->nidata;
+  auto &indcs = pmy_pack->pmesh->mb_indcs;
+  const int nx1 = indcs.nx1, nx2 = indcs.nx2;
+  const bool z3 = pmy_pack->pmesh->three_d;
+  const int nx3 = z3 ? indcs.nx3 : 1;
+  const int gids = pmy_pack->gids, nmb = pmy_pack->nmb_thispack;
+  auto &mbsize = pmy_pack->pmb->mb_size;
+  const std::int64_t ncell = static_cast<std::int64_t>(nx1)*nx2*nx3;
+  const std::int64_t np = npart;
+  if (static_cast<std::int64_t>(nmb)*ncell >= std::numeric_limits<std::int64_t>::max()/np) {
+    return;   // the composite key would overflow: leave the order as it is
+  }
+  if (sort_key.extent_int(0) < npart) {
+    sort_key = DvceArray1D<std::int64_t>();
+    sort_key = DvceArray1D<std::int64_t>(Kokkos::view_alloc(Kokkos::WithoutInitializing,
+                                         "dust_sort_key"), npart + npart/4);
+  }
+  auto key = sort_key;
+  par_for("dust_sort_keys", DevExeSpace(), 0, (npart-1), KOKKOS_LAMBDA(const int p) {
+    int m = pi(PGID,p) - gids;
+    m = (m < 0) ? 0 : ((m >= nmb) ? nmb - 1 : m);
+    int i = static_cast<int>(Kokkos::floor((pr(IPX,p) - mbsize.d_view(m).x1min)/
+                                           mbsize.d_view(m).dx1));
+    int j = static_cast<int>(Kokkos::floor((pr(IPY,p) - mbsize.d_view(m).x2min)/
+                                           mbsize.d_view(m).dx2));
+    i = (i < 0) ? 0 : ((i >= nx1) ? nx1 - 1 : i);
+    j = (j < 0) ? 0 : ((j >= nx2) ? nx2 - 1 : j);
+    int k = 0;
+    if (z3) {
+      k = static_cast<int>(Kokkos::floor((pr(IPZ,p) - mbsize.d_view(m).x3min)/
+                                         mbsize.d_view(m).dx3));
+      k = (k < 0) ? 0 : ((k >= nx3) ? nx3 - 1 : k);
+    }
+    const std::int64_t cell = (static_cast<std::int64_t>(k)*nx2 + j)*nx1 + i;
+    key(p) = (static_cast<std::int64_t>(m)*ncell + cell)*np + p;
+  });
+  Kokkos::sort(Kokkos::subview(key, std::make_pair(0, npart)));
+  if (sort_spare_r.extent(0) != pr.extent(0) || sort_spare_r.extent(1) != pr.extent(1) ||
+      sort_spare_i.extent(0) != pi.extent(0) || sort_spare_i.extent(1) != pi.extent(1)) {
+    sort_spare_r = DvceArray2D<Real>();
+    sort_spare_i = DvceArray2D<int>();
+    sort_spare_r = DvceArray2D<Real>(Kokkos::view_alloc(Kokkos::WithoutInitializing,
+                                     "prtcl_rdata"), pr.extent(0), pr.extent(1));
+    sort_spare_i = DvceArray2D<int>(Kokkos::view_alloc(Kokkos::WithoutInitializing,
+                                    "prtcl_idata"), pi.extent(0), pi.extent(1));
+  }
+  auto nr = sort_spare_r;
+  auto ni = sort_spare_i;
+  par_for("dust_sort_move", DevExeSpace(), 0, (npart-1), KOKKOS_LAMBDA(const int q) {
+    const int p = static_cast<int>(key(q) % np);
+    for (int c=0; c<nrdata; ++c) nr(c,q) = pr(c,p);
+    for (int c=0; c<nidata; ++c) ni(c,q) = pi(c,p);
+  });
+  Kokkos::fence();
+  ppar->prtcl_rdata = nr;
+  ppar->prtcl_idata = ni;
+  sort_spare_r = pr;
+  sort_spare_i = pi;
 }
 
 } // namespace dust
