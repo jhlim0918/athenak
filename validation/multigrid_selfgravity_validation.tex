@@ -1162,7 +1162,8 @@ first order, which we took for the known local property of the mass-conserving
 level-boundary stencil. \textbf{Correction (November 2026):} it was mostly a bug in the
 fine ghost cells (a halved transverse slope); with the fix of \S\ref{sec:fcfix} the
 interface peak converges at second order ($3.35\times10^{-3}$, $8.19\times10^{-4}$,
-$2.03\times10^{-4}$ at $\mathrm{qomt} = 0$).
+$2.03\times10^{-4}$ at $\mathrm{qomt} = 0$); with \code{mg\_fc\_interp = quadratic}, \S\ref{sec:fcquad},
+$2.64\times10^{-3}$, $6.67\times10^{-4}$, $1.67\times10^{-4}$).
 The shear remap contributes only the small, second-order-converging difference
 between the two $L_2$ columns. Figure~\ref{fig:p2a_shwave} shows all of this at
 once: the error concentrates in the fine region (the reference uses the root-grid
@@ -1554,7 +1555,8 @@ gravitationally unstable regime; the Gammie (2001) gravitoturbulence program
 This section concerns the multigrid solver on \emph{any} refined mesh, shearing box or
 not. Until November 2026 the gravitational force did not converge within a few cells of a
 level jump; the cause was a halved transverse slope in the fine ghost cells, and the fix
-makes the potential second-order and the force first-order accurate there. Every
+makes the potential second-order and the force first-order accurate there. An input option,
+\code{mg\_fc\_interp = quadratic}, then makes the force second order too (\S\ref{sec:fcquad}). Every
 refined-mesh potential in Phases 2--4 of this document was computed before the fix;
 \S\ref{sec:fcfix_regr} measures how much that matters.
 
@@ -1571,21 +1573,21 @@ had attributed it to the conservative level-boundary stencil, as \S\ref{sec:p2a_
 did for the potential.
 
 \paragraph{The same test on our solver.} The problem generator \code{mg\_interface\_wave}
-(\file{src/pgen/tests/mg\_interface\_wave.cpp}) is a port of his \code{poisson} mode: the
+(\file{src/pgen/tests/}\allowbreak\file{mg\_interface\_wave.cpp}, on \code{fargo-amr-mhd}) is a port of his \code{poisson} mode: the
 same density, exact potential $-4\pi G\rho_0 A\cos\theta/k^2$, gauge and definition of
 interface cells (the first or last active cell of a block on a face whose neighbor is on
 another level). Our multigrid needs logically cubic 3-D blocks, so the 2-D problem is run
 as a periodic slab one $4^3$ block thick ($x_3 \in [0, 4/N]$; the solution does not depend
 on $x_3$). The force is the one the gas feels, the centred difference of $\Phi$ through the
-ghost zones the solver fills (\fn{SourceTerms::AddSelfGravity}). The solves are converged
+ghost zones the solver fills (the routine \fn{AddSelfGravity} of \fn{SourceTerms}). The solves are converged
 (30 and 80 fixed V-cycles agree to 7 digits). Before the fix the interface force error was
 $1.0\times10^{-3}$, $8.1\times10^{-4}$, $7.4\times10^{-4}$, $7.1\times10^{-4}$,
 $7.0\times10^{-4}$ for $N = 16$--$256$: about $10\%$ of the peak force and not converging, so
 that the refined mesh as a whole was \emph{worse} than the uniform root grid (table below).
 
 \subsection{The cause}
-At a face whose neighbor is coarser, \fn{MultigridBoundaryValues::ProlongateFCMG}
-(\file{src/multigrid/multigrid\_bvals.cpp}) fills each fine ghost cell from the coarse value
+At a face whose neighbor is coarser, the routine \fn{ProlongateFCMG} of
+\fn{MultigridBoundaryValues}, in \file{src/multigrid/multigrid\_bvals.cpp}, fills each fine ghost cell from the coarse value
 $c$ across the face and the first fine cell $u_f$,
 \begin{equation}
 u_g = \tfrac13\left[2\,(c \pm g_t \pm g_s) + u_f\right],
@@ -1654,7 +1656,7 @@ Runs, logs and commands: \file{validation/run/mg\_interface/} of the \code{fargo
 V-cycles), rerun with the code before the fix reproduces that table to every printed digit;
 after the fix (relative to the root-grid closed form, eq.~\ref{eq:disc_eig}):
 \begin{center}
-\small
+\footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabular}{@{}lcccccccc@{}}
 \toprule
 & \multicolumn{4}{c}{$\mathrm{qomt}=0$} & \multicolumn{4}{c}{generic phase $t_0=0.37$} \\
@@ -1684,7 +1686,7 @@ Each case run with the committed code before the fix and with the fix (binaries
 \file{athena\_before}, \file{athena\_after}; runs in \file{validation/run/mg\_fixA\_regress/} of
 the \code{fargo-amr} worktree):
 \begin{center}
-\small
+\footnotesize\setlength{\tabcolsep}{3pt}
 \begin{tabular}{@{}lll@{}}
 \toprule
 case & before & after \\
@@ -1708,16 +1710,105 @@ solves are rank-independent.) The refined swing runs move toward the uniform $25
 Phases 2--4 stand; numbers that measure the interface itself (\S\ref{sec:p2a_static}, the
 Phase-2b annulus maximum) were set by the bug.
 
+\subsection{Second order: quadratic level-jump ghosts (\code{mg\_fc\_interp = quadratic})}
+\label{sec:fcquad}
+With the slopes fixed, the interface force is first order because both ghosts are linear
+interpolations in the direction normal to the jump: the fine ghost $\tfrac13(2c + u_f)$ and the
+coarse-side ghost $\tfrac13(4\bar u - u)$. The input option
+\code{<gravity> mg\_fc\_interp = quadratic} replaces them with a quadratic pair (default
+\code{linear}, bit-identical to the code above; implementation: \file{multigrid\_sb\_implementation.pdf},
+\S``Phase 2e''). Normal to the jump (fine cells of width $h$ at $h/2$ and $3h/2$, coarse cell
+of width $2h$ at $-h$), the fine ghost at $-h/2$ is the quadratic through the coarse value and the
+first two fine cells,
+\begin{equation}
+g_f = \tfrac{8}{15}\,\tilde c + \tfrac23\,f_1 - \tfrac15\,f_2,
+\end{equation}
+with $\tilde c$ the coarse layer evaluated at the fine ghost's transverse position from a
+quadratic fit on $3\times3$ coarse cells (slopes, second differences $\delta^2$ and the mixed
+term, which averages out over the four fine ghosts but is needed pointwise). Flux matching
+(the coarse face flux equals the sum of the four fine fluxes) then fixes the coarse ghost,
+\begin{equation}
+g_c = -\tfrac{1}{15}\,c_1 + \tfrac23\,A_1 + \tfrac25\,A_2 - \tfrac{1}{30}\,(\delta^2_a + \delta^2_b),
+\end{equation}
+with $A_{1,2}$ the $2\times2$ averages of the first and second fine layers; it is also the
+quadratic interpolant at the coarse ghost's centre, and the $\delta^2$ term removes the $O(h^2)$
+transverse bias of the face averages. Both sides use the same transverse stencils (one-sided only
+at the coarse neighbor's block edges), so the operator stays exactly conservative. The coarse
+side needs $A_1$ and $A_2$ only as $\tfrac23 A_1 + \tfrac25 A_2$, which is packed into the slot
+that carried $A_1$: no buffer, index or MPI-message change. The quadratic pair is used on the
+finest multigrid level only; the coarser block levels, octets and levels with fewer than 4 cells
+per block keep the linear pair (they set the convergence rate, not the answer). Commits:
+\code{aad3deb7}, \code{917b93bc}, \code{5808b2fd} on \code{dust-multigrid}; \code{ddae4ca6},
+\code{64a9e22e}, \code{c9eb45e2} on \code{fargo-amr-mhd}, with the test inputs and notes
+(\file{validation/mg\_fc\_quadratic\_notes.md} there).
+
+\paragraph{Li's Poisson test.} Maximum force error in the interface cells (4 ranks, 40 FMG
+V-cycles; numbers in parentheses: convergence order from the previous row):
+\begin{center}
+\small
+\begin{tabular}{@{}rccccc@{}}
+\toprule
+& \multicolumn{2}{c}{slab, $4^3$ blocks} & slab, $8^3$ blocks & \multicolumn{2}{c}{refined cube, $8^3$ blocks} \\
+$N$ & linear & quadratic & quadratic & linear & quadratic \\
+\midrule
+16  & $6.0\times10^{-4}$ & $5.77\times10^{-4}$ & --- & --- & --- \\
+32  & $2.6\times10^{-4}$ & $1.52\times10^{-4}$ (1.92) & $1.51\times10^{-4}$ & $4.57\times10^{-4}$ & $1.43\times10^{-4}$ \\
+64  & $1.2\times10^{-4}$ & $3.93\times10^{-5}$ (1.95) & $3.90\times10^{-5}$ (1.96) & $2.23\times10^{-4}$ & $3.60\times10^{-5}$ (1.99) \\
+128 & $6.1\times10^{-5}$ & $9.87\times10^{-6}$ (1.99) & $9.76\times10^{-6}$ (2.00) & $1.10\times10^{-4}$ & $9.10\times10^{-6}$ (1.98) \\
+256 & $3.0\times10^{-5}$ & $2.49\times10^{-6}$ (1.98) & $2.47\times10^{-6}$ (1.98) & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+The interface force now converges at second order (0.035\% of the peak force at $N = 256$, from
+0.43\% with the linear pair), as in Li's solver ($2.7\times10^{-4} \to 1.2\times10^{-6}$; ours
+$5.8\times10^{-4} \to 2.5\times10^{-6}$, the same factor of $\sim\!230$ over four doublings; our
+interface $L_2$ at 256, $1.37\times10^{-6}$, is close to his maximum). The refined cube
+(\file{inputs/tests/mg\_interface\_wave\_cube.athinput} on \code{fargo-amr-mhd}: $[0.25,0.75]^3$
+in a periodic unit cube, wave $(2,1,1)$) exercises all six faces and the mixed transverse term;
+$16^3$ blocks and a nested level-2 cube give the same numbers. What remains at the interface is
+the ordinary second-order error of the coarse level: the refined mesh's global force error is now
+below the uniform root grid's at every $N$ ($2.80\times10^{-4}$ vs $3.20\times10^{-4}$ relative
+$L_2$ at 256), and the potential is second order everywhere.
+
+\paragraph{The other interface tests.} The Phase-2a shearing-wave test (\S\ref{sec:p2a_static};
+reference = the root-grid discrete solution, so the fine region's own accuracy is not measured):
+maximum relative error $3.35\times10^{-3}$, $8.19\times10^{-4}$, $2.03\times10^{-4}$ (linear) $\to$
+$2.64\times10^{-3}$, $6.67\times10^{-4}$, $1.67\times10^{-4}$ (quadratic) at $32^3$--$128^3$,
+$\mathrm{qomt} = 0$; 24--26\% lower at the generic phase. The slab-open sheet on SMR
+(\S\ref{sec:p3_smr}): $1.84\times10^{-1}$, $8.73\times10^{-2}$, $4.24\times10^{-2}$ $\to$
+$1.64\times10^{-2}$, $4.56\times10^{-3}$, $1.20\times10^{-3}$ --- the quadratic ghosts are exact for
+the background's $\Phi \propto z^2$, so the constant $k_\perp = 0$ offset
+$\tfrac34(4\pi G\rho_0)h_f^2$ vanishes and the error equals the pure-mode sector's (19$\times$ lower
+at $64^3$, second order).
+
+\paragraph{Convergence and regressions.} The composite operator is nonsymmetric in quadratic
+mode. With the quadratic pair on the finest level only, the red-black V-cycle contracts as with the
+linear pair (defect reduction per V-cycle, quadratic vs linear: 0.19 vs 0.19 on the $64^3$ cube, 0.23 vs 0.23 at $128^3$,
+0.19 vs 0.18 on the sheared shearing-wave test) and reaches round-off in the same number of cycles;
+quadratic ghosts on every level (\code{mg\_fc\_interp = quadratic\_all\_levels}, kept as a
+diagnostic) give the same answer but an alternating contraction up to 0.45. FMG, plain V-cycles
+and the stagnation exit agree to 10 digits; 1 vs 4 ranks agree to the last printed digit.
+Linear mode is bit-identical to the code before the option (all ladder, cube and shearing-wave
+outputs; the refined swing history byte for byte); uniform meshes are identical in both modes.
+Dynamic runs barely move: refined swing peaks $-3.584414 \to -3.584413$ (ring) and
+$-3.533085 \to -3.533080$ (patch), the AMR moving ring $4\times10^{-7}$ of the amplitude, the MHD ring
+swing $1.9\times10^{-6}$ with $\nabla\!\cdot\!B$ unchanged --- there the refined-vs-uniform
+difference is set by the hydrodynamics. The benefit is in the force at the jumps themselves and
+in the $k_\perp = 0$ sector. On \code{dust-multigrid} (\code{5808b2fd}) the shearing-wave test at
+$64^3$ reproduces the same numbers (linear identical to \code{e1e0a072}, quadratic
+$6.667\times10^{-4}$). Not yet tested: GPU builds, restarts, dust self-gravity runs.
+\textbf{Recommendation:} use \code{mg\_fc\_interp = quadratic} where the self-gravity force at
+level jumps matters (collapse and fragmentation with AMR, dust self-gravity on refined meshes); it
+costs no extra V-cycles or communication. The option must be written in the input file (a
+command-line override cannot add a new parameter).
+
 \subsection{What remains}
 \begin{itemize}\itemsep2pt
-\item \emph{First order at the interface.} The ghost is a linear interpolation in the direction
-      normal to the jump, $\tfrac13(2c + u_f)$, and the coarse-side ghost $\tfrac13(4\bar u - u)$ is
-      linear too, so the interface force stays first order. Li's solver is second order there.
-      A quadratic normal interpolation with a flux-matched coarse ghost (about 200--300 lines
-      behind an input flag) would close the gap; the operator then becomes nonsymmetric and the
-      red-black Gauss--Seidel V-cycle's contraction must be watched.
-\item \emph{The $k_\perp = 0$ slab offset} of the sheet test (\S\ref{sec:p3_smr}) comes from
-      the same normal stencil, not from the transverse slopes, and is unchanged by this fix.
+\item \emph{The default is still linear} (first order at the interface), for bit-for-bit
+      continuity of existing runs; switching it is a one-line change once production setups have
+      been compared.
+\item \emph{Nonsymmetric operator in quadratic mode.} Fine for the red-black FAS V-cycle here,
+      but any future symmetric Krylov wrapper (CG) would need care.
 \item \emph{Edge and corner neighbors} at a coarser level still take simple injection; they do not
       enter the face flux and did not show in any test here.
 \item The unused \fn{FillFineCoarseMGGhosts} carries the old clamp; it is not in any task list.

@@ -128,6 +128,9 @@ Commit & Phase & Content \\
 \code{e1e0a072} & 2d & Centred transverse slopes in the fine ghosts at level jumps \\
 \code{d86c16ac} & 2d & The same, on \code{fargo-amr-mhd} \\
 \code{57a70d8d} & 2d & \code{mg\_interface\_wave} test problem (\code{fargo-amr-mhd}) \\
+\code{aad3deb7} & 2e & Quadratic level-jump ghosts (\code{mg\_fc\_interp}) \\
+\code{917b93bc} & 2e & Quadratic pair on the finest MG level only \\
+\code{5808b2fd} & 2e & Comment fix (the same three on \code{fargo-amr-mhd}: \code{ddae4ca6}, \code{64a9e22e}, \code{c9eb45e2}) \\
 \bottomrule
 \end{tabular}
 \caption{Implementation commits covered by this document.}
@@ -1100,6 +1103,58 @@ interface cells, printed as one \verb|# MG_INTERFACE_WAVE {...}| line. Parameter
 \code{rho0}, \code{amp}, \code{phase}, \code{nwx}, \code{nwy}, \code{nwz}; a 2-D problem is
 run as a 3-D slab one block thick.
 
+\subsection{Phase 2e: quadratic level-jump ghosts (\code{mg\_fc\_interp})}
+\label{sec:phase2e}
+
+After Phase 2d the potential is second order at a level jump but the force is first order,
+because both ghosts are linear interpolations normal to the jump. The option
+\code{<gravity> mg\_fc\_interp} selects the pair:
+\code{linear} (default; the code of \S\ref{sec:phase2d}, bit-identical),
+\code{quadratic} (quadratic pair on the finest multigrid level, linear elsewhere), or
+\code{quadratic\_all\_levels} (diagnostic: quadratic on every block level with $\ge 4$ cells).
+Read in the \fn{MGGravityDriver} constructor (\file{src/gravity/mg\_gravity.cpp}) and stored with
+\fn{Multigrid::SetFCInterp}; \fn{Multigrid::FCQuadratic}(shift, ncells) decides per level
+(shift $= 0$ and $\ge 4$ cells per block for \code{quadratic}). Requires \code{mg\_nghost = 1}
+(fatal otherwise); an unknown value is fatal. Validation: \file{multigrid\_sb\_validation.pdf},
+\S``Second order: quadratic level-jump ghosts''; derivation and every table:
+\file{validation/mg\_fc\_quadratic\_notes.md} on \code{fargo-amr-mhd}.
+
+\paragraph{Fine side} (\fn{ProlongateFCMG}, face neighbor coarser). Normal to the face, with fine
+cells $f_1$, $f_2$ at $h/2$, $3h/2$ and the coarse cell at $-h$, the ghost at $-h/2$ is
+\begin{verbatim}
+u_g = (8/15)*ct + (2/3)*u_f1 - (1/5)*u_f2
+\end{verbatim}
+where \code{ct} is the coarse layer at the ghost's transverse offset $(\xi,\eta) = (\pm\tfrac14,
+\pm\tfrac14)$ coarse cells from a total-degree-2 fit on $3\times3$ coarse cells of \code{cbuf}:
+$c + \xi D_a c + \eta D_b c + \tfrac12\xi^2\delta^2_a + \tfrac12\eta^2\delta^2_b + \xi\eta\,m$ (3-point
+slopes, $\delta^2 = w_0 - 2w_1 + w_2$, mixed term $m = D_a D_b c$). The 3-cell stencils are centred
+except at the outer edge of the received data (the coarse neighbor's transverse block edge, chosen
+by the child parity $f_1$, $f_2$ as in \S\ref{sec:phase2d}), where they are one-sided
+(\fn{FCQuadStencilStart}); the transverse corner cells are inside the received box.
+$f_2$ is the block's own second interior cell.
+
+\paragraph{Coarse side} (\fn{ProlongateFCMG}, face neighbor finer, and \fn{FillCoarseMG}).
+Flux matching with the fine ghosts above gives
+\begin{verbatim}
+u_gc = -(1/15)*u_c1 + B - (1/30)*(d2_a + d2_b),   B = (2/3)*A1 + (2/5)*A2
+\end{verbatim}
+($A_{1,2}$: $2\times2$ averages of the fine block's first and second layers; $\delta^2$ of the coarse
+block's own first interior layer, centred, one-sided three cells inward at its transverse block
+edges --- the same stencil the fine side used for that cell, so the flux match is exact,
+\fn{FCQuadCoarseAtGhosts}). In quadratic mode \fn{FillCoarseMG} packs $B$ into the face slot of
+\code{coarse\_buf\_} that carried $A_1$, so the \code{icoar} send, its extents, the buffer sizes,
+the rank-packed metadata, the MPI messages and the same-rank path are all unchanged.
+
+\paragraph{Levels.} The finest block level determines the converged answer; the coarser block
+levels, the octets (\fn{ProlongateOctetBoundariesFluxCons}) and the root grid only drive
+convergence. Using the nonsymmetric quadratic pair on the finest level only keeps the V-cycle's
+contraction equal to the linear operator's; on every level it alternates (up to 0.45 per cycle).
+Levels with fewer than 4 cells per block use the linear pair on both sides (both sides test the
+level's cell count, so they always agree). Edge and corner neighbors (injection) are unchanged;
+the 7-point operator reads face ghosts only. The shear-periodic $x_1$ faces (one level) and the
+slab $x_3$ faces (root level) never meet a level jump, and neither side reads its own ghosts
+transversally, so neither boundary interacts with the new stencils.
+
 \subsection{End-to-end control flow}
 
 \begin{figure}[htb]
@@ -1762,6 +1817,8 @@ Block & Parameter & Default & Meaning \\
                  & \code{mg\_remap} & \code{plm} & Remap order for the shear ghost
                    fill and the slab plane roll/rings \\
                  & \code{mg\_nghost} & 1 & Must be 1 with shear or slab \\
+                 & \code{mg\_fc\_interp} & \code{linear} & \code{quadratic}: second-order
+                   level-jump ghosts on the finest level (\S\ref{sec:phase2e}); input file only \\
                  & \code{root\_on\_host} & \code{false} & Must be false with shear
                    or slab \\
                  & \code{threshold} & --- & $<0$ selects fixed-iteration mode \\
@@ -1949,14 +2006,14 @@ boundary & Unreachable under the invariant above; defensive \\
       partial-spectrum reduction (per-rank slice FFTs, reduce only the two face
       spectra) would cut this to $\sim$1\,MB if profiling ever demands it.
 
-\item \textbf{First-order force at level jumps.} After the fix of \S\ref{sec:phase2d} the
-      potential is second order and the force first order in the cells next to a level jump
-      ($0.43\%$ of the peak force at a $256^2$ root on the Poisson test); R.~Li's composite
-      solver is second order there. A quadratic normal interpolation of the fine ghost,
-      $\tfrac{8}{15}\tilde c + \tfrac23 u_1 - \tfrac15 u_2$ with $\tilde c$ the transversely
-      quadratic coarse value, and a flux-matched coarse ghost would close the gap; the face
-      \code{icoar} extents would grow by one layer, and the then nonsymmetric operator needs a
-      check of the V-cycle contraction.
+\item \textbf{The force at level jumps is first order by default.} With the default
+      \code{mg\_fc\_interp = linear} the force next to a level jump is first order ($0.43\%$ of
+      the peak force at a $256^2$ root on the Poisson test); \code{quadratic}
+      (\S\ref{sec:phase2e}) makes it second order ($0.035\%$, as R.~Li's composite solver).
+      The default stays linear for bit-for-bit continuity of existing runs. In quadratic mode the
+      composite operator is nonsymmetric: fine for the red-black FAS V-cycle, but a symmetric
+      Krylov wrapper would need care. Not yet tested in quadratic mode: GPU builds, restarts,
+      dust self-gravity runs.
 
 \item \textbf{The $k_\perp = 0$ interface offset.} On refined meshes the conservative
       level interface leaves a constant $O(h^2)$ potential offset inside enclosed
