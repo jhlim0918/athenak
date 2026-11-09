@@ -87,6 +87,9 @@
 //!   none          B = 0
 //!   vertical      uniform Bz = B0: net vertical flux
 //!   vertical_znf  Bz = B0 sin(2 pi x/Lx): zero net flux
+//!   toroidal_znf  By = B0 sin(2 pi b_nz z/Lz): zero-net-flux toroidal seed, b_nz whole
+//!                 wavelengths over the box height (<problem>/b_nz, default 1; the seed of
+//!                 Riols & Latter 2018, MNRAS 474, 2212, added to saturated hydro GI)
 //! with B0 from the midplane plasma beta <problem>/plasma_beta = 2 P0/B0^2 (P0 = K rho0^gamma,
 //! Heaviside-Lorentz units, magnetic pressure B^2/2).  The field does not enter the
 //! hydrostatic profile (it is uniform in z).  The tenuous halo makes the Alfven speed,
@@ -715,10 +718,12 @@ void GravitoTurbSetField(ParameterInput *pin, MeshBlockPack *pmbp) {
     bcfg = 1;
   } else if (b_config == "vertical_znf") {
     bcfg = 2;
+  } else if (b_config == "toroidal_znf") {
+    bcfg = 3;
   } else {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
               << std::endl << "gravito_turb: unknown <problem>/b_config = " << b_config
-              << " (none | vertical | vertical_znf)" << std::endl;
+              << " (none | vertical | vertical_znf | toroidal_znf)" << std::endl;
     exit(EXIT_FAILURE);
   }
   Real rho0 = pin->GetOrAddReal("problem", "rho0", 1.0);
@@ -728,16 +733,22 @@ void GravitoTurbSetField(ParameterInput *pin, MeshBlockPack *pmbp) {
   Real p0 = kpoly*std::pow(rho0, gamma);
   Real b0amp = (bcfg == 0) ? 0.0 : std::sqrt(2.0*p0/plasma_beta);
   Real kx = 2.0*M_PI/gt_var.lx;
+  // toroidal_znf: b_nz whole wavelengths over the box height (zero net flux)
+  auto &msize = pmbp->pmesh->mesh_size;
+  int b_nz = (bcfg == 3) ? pin->GetOrAddInteger("problem", "b_nz", 1) : 1;
+  Real kz = 2.0*M_PI*b_nz/(msize.x3max - msize.x3min);
   if (global_variable::my_rank == 0) {
     std::cout << "gravito_turb MHD: b_config = " << b_config << ", plasma_beta = "
               << plasma_beta << ", B0 = " << b0amp << ", midplane v_A = "
-              << b0amp/std::sqrt(rho0) << ", va_max = " << gt_var.va_max << std::endl;
+              << b0amp/std::sqrt(rho0) << ", va_max = " << gt_var.va_max;
+    if (bcfg == 3) std::cout << ", b_nz = " << b_nz;
+    std::cout << std::endl;
   }
   auto &indcs = pmbp->pmesh->mb_indcs;
   int is = indcs.is, ie = indcs.ie;
   int js = indcs.js, je = indcs.je;
   int ks = indcs.ks, ke = indcs.ke;
-  int nx1 = indcs.nx1;
+  int nx1 = indcs.nx1, nx3 = indcs.nx3;
   auto &size = pmbp->pmb->mb_size;
   auto &u0 = pmbp->pmhd->u0;
   auto &b0 = pmbp->pmhd->b0;
@@ -746,13 +757,19 @@ void GravitoTurbSetField(ParameterInput *pin, MeshBlockPack *pmbp) {
     Real &x1min = size.d_view(m).x1min, &x1max = size.d_view(m).x1max;
     Real x1v = CellCenterX(i-is, nx1, x1min, x1max);
     Real bz = (bcfg == 2) ? b0amp*sin(kx*x1v) : b0amp;
+    Real by = 0.0;
+    if (bcfg == 3) {  // By(z) only: divergence-free on the y faces
+      Real &x3min = size.d_view(m).x3min, &x3max = size.d_view(m).x3max;
+      by = b0amp*sin(kz*CellCenterX(k-ks, nx3, x3min, x3max));
+      bz = 0.0;
+    }
     b0.x1f(m,k,j,i) = 0.0;
-    b0.x2f(m,k,j,i) = 0.0;
+    b0.x2f(m,k,j,i) = by;
     b0.x3f(m,k,j,i) = bz;
     if (i == ie) b0.x1f(m,k,j,ie+1) = 0.0;
-    if (j == je) b0.x2f(m,k,je+1,i) = 0.0;
+    if (j == je) b0.x2f(m,k,je+1,i) = by;
     if (k == ke) b0.x3f(m,ke+1,j,i) = bz;
-    u0(m,IEN,k,j,i) += 0.5*SQR(bz);
+    u0(m,IEN,k,j,i) += 0.5*(SQR(by) + SQR(bz));
   });
 }
 

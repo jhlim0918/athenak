@@ -1,0 +1,29 @@
+# AthenaK input file: OVERLAY that restarts a SATURATED HYDRO gravito_turb_l64z16 run as
+# ideal MHD with a weak ZERO-NET-FLUX TOROIDAL seed field, the protocol of Riols & Latter
+# (2018, MNRAS 474, 2212, sec. 4.3.2): seed the hydrodynamic gravito-turbulent state at the
+# same cooling time and let the gravito-turbulence amplify the field (their "spiral wave
+# dynamo", ~200/Omega to saturation at tau_c = 20); shorter cooling times are then reached
+# step by step from the saturated magnetized state.  Not a complete input: pass it WITH the
+# hydro restart file, e.g. the beta-ramp run's t = 100 dump (beta = 10, ramp finished):
+#
+#   athena -r b10ramp_renorm_r4/rst/GravitoTurb.00010.rst -i <this file> -d ./ \
+#          time/tlim=300 output2/dt=2 output3/dt=2
+#
+# See gravito_turb_l64z16_mhd_morph_overlay.athinput for what restart_from_hydro does.
+# Seed: By = B0 sin(2 pi b_nz z/Lz) with b_nz = 3 whole wavelengths over the 16H box height
+# (wavelength 5.3H, peaks at |z| = 1.3H inside the disc, like Riols & Latter's sin z in a
+# 6H box); plasma_beta = 1e6 sets B0 = 2.3e-3 (midplane beta of their B_y0 = 1e-3 seed).
+# va_max = 20 is inactive while the field is weak (floor B^2/400 << dfloor).
+<mhd>
+restart_from_hydro = true
+rsolver   = hlld      # the restart's hllc is a hydro-only solver
+
+<problem>
+b_config  = toroidal_znf
+plasma_beta = 1.0e6
+b_nz      = 3
+va_max    = 20.0
+
+<output2>
+variable  = mhd_w_bcc # the restart's hydro_w does not exist in an MHD run
+id        = mhd_w_bcc # file names (the restart carries id = hydro_w)
