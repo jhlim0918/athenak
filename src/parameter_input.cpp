@@ -432,6 +432,26 @@ bool ParameterInput::DoesParameterExist(std::string block, std::string name) {
 }
 
 //----------------------------------------------------------------------------------------
+//! \fn void ParameterInput::MergeBlockInto(std::string from, std::string to)
+//  \brief copy every parameter of block `from` that block `to` lacks into `to` (created if
+//  needed), then delete block `from`.  Used to restart a hydro run as an MHD run
+//  (<mhd>/restart_from_hydro, see main.cpp), so that only the MHD module is built.
+
+void ParameterInput::MergeBlockInto(std::string from, std::string to) {
+  InputBlock *pfrom = GetPtrToBlock(from);
+  if (pfrom == nullptr) return;
+  Lock();
+  InputBlock *pto = FindOrAddBlock(to);  // list insertion keeps pfrom valid
+  for (auto &l : pfrom->line) {
+    if (pto->GetPtrToLine(l.param_name) == nullptr) {
+      AddParameter(pto, l.param_name, l.param_value, l.param_comment);
+    }
+  }
+  block.remove_if([&](const InputBlock &b) { return b.block_name == from; });
+  Unlock();
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn int ParameterInput::GetInteger(std::string block, std::string name)
 //  \brief returns integer value of string stored in block/name
 

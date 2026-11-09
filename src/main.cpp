@@ -295,6 +295,17 @@ int main(int argc, char *argv[]) {
   }
   pinput->ModifyFromCmdline(argc, argv);
 
+  // Restart a hydro run as an MHD run: <mhd>/restart_from_hydro = true in the overlay
+  // input.  The restart's <hydro> and <hydro_srcterms> parameters fill whatever the
+  // overlay's <mhd> and <mhd_srcterms> leave unset, then are dropped, so only the MHD
+  // module is built; ProblemGenerator reads the hydro variables into it and the problem
+  // generator adds the field (gravito_turb).
+  if (res_flag && pinput->DoesParameterExist("mhd", "restart_from_hydro") &&
+      pinput->GetBoolean("mhd", "restart_from_hydro")) {
+    pinput->MergeBlockInto("hydro", "mhd");
+    pinput->MergeBlockInto("hydro_srcterms", "mhd_srcterms");
+  }
+
   // Dump input parameters and quit if code was run with -n option.
   if (narg_flag) {
     if (global_variable::my_rank == 0) pinput->ParameterDump(std::cout);

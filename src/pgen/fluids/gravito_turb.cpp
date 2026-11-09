@@ -98,6 +98,12 @@
 //! wmax = int -Bx*By dV (Maxwell stress, add to wgrv + wrey for alpha'), emag = int B^2/2 dV,
 //! babs = int |B| dV and divb = int |div B| dx dV (div B from the face fields, dx = the
 //! cell's smallest width): divb/babs is the mean relative divergence, round-off under CT.
+//! Hydro -> MHD restart (2026-11-09): restart a saturated HYDRO run with an overlay that
+//! has an <mhd> block with restart_from_hydro = true (rsolver = hlld etc.; unset <mhd> and
+//! <mhd_srcterms> keys are taken from the restart's <hydro> and <hydro_srcterms>, which
+//! are then dropped, main.cpp), and output variables mhd_*: the hydro conserved
+//! variables become the MHD ones, and the b_config field is added with its energy here.
+//! The flag is cleared after the conversion, so later restarts are plain MHD restarts.
 
 #include <algorithm>
 #include <cfloat>
@@ -132,6 +138,8 @@ void GravitoTurbRefinement(MeshBlockPack *pmbp);
 void GravitoTurbUserSrcs(Mesh *pm, const Real bdt);
 void GravitoTurbAlfvenFloor(Mesh *pm);
 void GravitoTurbRenormalizeMass(Mesh *pm);
+// MHD: the <problem>/b_config field and its energy (t = 0, or a hydro -> MHD restart)
+void GravitoTurbSetField(ParameterInput *pin, MeshBlockPack *pmbp);
 
 namespace {
 struct GravitoTurbVariables {
@@ -323,6 +331,11 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   // then a restart with <particles>/<dust> blocks and restart_insert = true, which
   // inserts the particles into the saturated state here
   if (restart) {
+    // a saturated hydro run restarted as MHD (<mhd>/restart_from_hydro, see main.cpp):
+    // the restart data carry no field, so thread the gas with the <problem>/b_config one
+    if (is_mhd && pin->GetOrAddBoolean("mhd", "restart_from_hydro", false)) {
+      GravitoTurbSetField(pin, pmbp);
+    }
     set_mass_target();
     if (pmbp->ppart != nullptr &&
         pin->GetOrAddBoolean("particles", "restart_insert", false)) {
@@ -464,45 +477,7 @@ void ProblemGenerator::GravitoTurb(ParameterInput *pin, const bool restart) {
   });
 
   // ---- magnetic field (MHD) ------------------------------------------------------------
-  if (is_mhd) {
-    std::string b_config = pin->GetOrAddString("problem", "b_config", "vertical");
-    Real plasma_beta = pin->GetOrAddReal("problem", "plasma_beta", 1.0e3);
-    int bcfg;
-    if (b_config == "none") {
-      bcfg = 0;
-    } else if (b_config == "vertical") {
-      bcfg = 1;
-    } else if (b_config == "vertical_znf") {
-      bcfg = 2;
-    } else {
-      std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
-                << std::endl << "gravito_turb: unknown <problem>/b_config = " << b_config
-                << " (none | vertical | vertical_znf)" << std::endl;
-      exit(EXIT_FAILURE);
-    }
-    Real p0 = kpoly*std::pow(rho0, gamma);
-    Real b0amp = (bcfg == 0) ? 0.0 : std::sqrt(2.0*p0/plasma_beta);
-    Real kx = 2.0*M_PI/gt_var.lx;
-    if (global_variable::my_rank == 0) {
-      std::cout << "gravito_turb MHD: b_config = " << b_config << ", plasma_beta = "
-                << plasma_beta << ", B0 = " << b0amp << ", midplane v_A = "
-                << b0amp/std::sqrt(rho0) << ", va_max = " << gt_var.va_max << std::endl;
-    }
-    auto &b0 = pmbp->pmhd->b0;
-    par_for("gt_binit", DevExeSpace(), 0, (pmbp->nmb_thispack-1), ks, ke, js, je, is, ie,
-    KOKKOS_LAMBDA(int m, int k, int j, int i) {
-      Real &x1min = size.d_view(m).x1min, &x1max = size.d_view(m).x1max;
-      Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
-      Real bz = (bcfg == 2) ? b0amp*sin(kx*x1v) : b0amp;
-      b0.x1f(m,k,j,i) = 0.0;
-      b0.x2f(m,k,j,i) = 0.0;
-      b0.x3f(m,k,j,i) = bz;
-      if (i == ie) b0.x1f(m,k,j,ie+1) = 0.0;
-      if (j == je) b0.x2f(m,k,je+1,i) = 0.0;
-      if (k == ke) b0.x3f(m,ke+1,j,i) = bz;
-      u0(m,IEN,k,j,i) += 0.5*SQR(bz);
-    });
-  }
+  if (is_mhd) GravitoTurbSetField(pin, pmbp);
   set_mass_target();
 
   // pilot runs: the particles go into the laminar state just built (see above)
@@ -720,6 +695,65 @@ void ProblemGenerator::GravitoTurbInsertDust(ParameterInput *pin, bool from_rest
                 << std::endl;
     }
   }
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void GravitoTurbSetField()
+//! \brief MHD: sets the face fields to the <problem>/b_config field (B0 from the midplane
+//! plasma beta, P0 = K rho0^gamma) and adds its energy B^2/2 to u0.  Called on the initial
+//! condition and when a saturated hydro run is restarted as MHD (<mhd>/restart_from_hydro,
+//! where u0 holds the hydro state and the fields start at zero).  Active cells only; the
+//! ghost zones are filled by the first boundary exchange.
+
+void GravitoTurbSetField(ParameterInput *pin, MeshBlockPack *pmbp) {
+  std::string b_config = pin->GetOrAddString("problem", "b_config", "vertical");
+  Real plasma_beta = pin->GetOrAddReal("problem", "plasma_beta", 1.0e3);
+  int bcfg;
+  if (b_config == "none") {
+    bcfg = 0;
+  } else if (b_config == "vertical") {
+    bcfg = 1;
+  } else if (b_config == "vertical_znf") {
+    bcfg = 2;
+  } else {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__
+              << std::endl << "gravito_turb: unknown <problem>/b_config = " << b_config
+              << " (none | vertical | vertical_znf)" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  Real rho0 = pin->GetOrAddReal("problem", "rho0", 1.0);
+  Real cs0 = pin->GetOrAddReal("problem", "cs0", 2.12625);
+  Real gamma = gt_var.gamma;
+  Real kpoly = cs0*cs0/(gamma*std::pow(rho0, gamma - 1.0));
+  Real p0 = kpoly*std::pow(rho0, gamma);
+  Real b0amp = (bcfg == 0) ? 0.0 : std::sqrt(2.0*p0/plasma_beta);
+  Real kx = 2.0*M_PI/gt_var.lx;
+  if (global_variable::my_rank == 0) {
+    std::cout << "gravito_turb MHD: b_config = " << b_config << ", plasma_beta = "
+              << plasma_beta << ", B0 = " << b0amp << ", midplane v_A = "
+              << b0amp/std::sqrt(rho0) << ", va_max = " << gt_var.va_max << std::endl;
+  }
+  auto &indcs = pmbp->pmesh->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  int nx1 = indcs.nx1;
+  auto &size = pmbp->pmb->mb_size;
+  auto &u0 = pmbp->pmhd->u0;
+  auto &b0 = pmbp->pmhd->b0;
+  par_for("gt_binit", DevExeSpace(), 0, (pmbp->nmb_thispack-1), ks, ke, js, je, is, ie,
+  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+    Real &x1min = size.d_view(m).x1min, &x1max = size.d_view(m).x1max;
+    Real x1v = CellCenterX(i-is, nx1, x1min, x1max);
+    Real bz = (bcfg == 2) ? b0amp*sin(kx*x1v) : b0amp;
+    b0.x1f(m,k,j,i) = 0.0;
+    b0.x2f(m,k,j,i) = 0.0;
+    b0.x3f(m,k,j,i) = bz;
+    if (i == ie) b0.x1f(m,k,j,ie+1) = 0.0;
+    if (j == je) b0.x2f(m,k,je+1,i) = 0.0;
+    if (k == ke) b0.x3f(m,ke+1,j,i) = bz;
+    u0(m,IEN,k,j,i) += 0.5*SQR(bz);
+  });
 }
 
 //----------------------------------------------------------------------------------------

@@ -1,0 +1,29 @@
+# AthenaK input file: OVERLAY that restarts a SATURATED HYDRO gravito_turb_l64z16 run as
+# ideal MHD (hydro -> MHD restart, 2026-11-09).  Not a complete input: pass it WITH the
+# hydro restart file, e.g. the beta-ramp run's t = 100 dump,
+#
+#   athena -r b10ramp_renorm_r4/rst/GravitoTurb.00010.rst -i <this file> -d ./ \
+#          hydro_srcterms/bcool_beta=3 time/tlim=300 output2/dt=2 output3/dt=2
+#
+# (the same command-line overrides as the hydro twin b3lad_renorm_r4, so the two runs
+# differ only by the field and the Riemann solver).  restart_from_hydro reads the hydro
+# conserved variables into the MHD ones; the restart's <hydro> and <hydro_srcterms>
+# parameters (reconstruction, FOFC, floors, cooling, the bcool_beta override above) fill
+# whatever <mhd> and <mhd_srcterms> below leave unset and are then dropped; gravito_turb
+# adds the b_config field and its energy.  The flag is cleared after the conversion, so
+# this run's own restarts continue as plain MHD restarts (no overlay needed).
+# Field: net vertical flux, midplane plasma beta 1e3 (B0 = 0.0737; MRI wavelength 0.46 H,
+# unresolved at 4 cells/H); va_max = 20 caps the Alfven speed in the halo (density floor
+# B^2/va_max^2, mass added -> history dm_vafloor).
+<mhd>
+restart_from_hydro = true
+rsolver   = hlld      # the restart's hllc is a hydro-only solver
+
+<problem>
+b_config  = vertical
+plasma_beta = 1.0e3
+va_max    = 20.0
+
+<output2>
+variable  = mhd_w_bcc # the restart's hydro_w does not exist in an MHD run
+id        = mhd_w_bcc # file names (the restart carries id = hydro_w)

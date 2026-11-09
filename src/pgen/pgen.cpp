@@ -142,6 +142,10 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   if (prad != nullptr) {
     nrad = prad->prgeo->nangles;
   }
+  // a hydro restart read into an MHD run (<mhd>/restart_from_hydro, see main.cpp): the
+  // file holds the hydro conserved variables (same count and order as MHD's), no fields
+  const bool mhd_from_hydro = (pmhd != nullptr) && (phydro == nullptr) &&
+                              pin->GetOrAddBoolean("mhd", "restart_from_hydro", false);
   if (pz4c != nullptr) {
     nz4c = pz4c->nz4c;
   } else if (padm != nullptr) {
@@ -303,9 +307,11 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   }
   if (pmhd != nullptr) {
     data_size_ += nout1*nout2*nout3*nmhd*sizeof(Real);   // mhd u0
-    data_size_ += (nout1+1)*nout2*nout3*sizeof(Real);    // mhd b0.x1f
-    data_size_ += nout1*(nout2+1)*nout3*sizeof(Real);    // mhd b0.x2f
-    data_size_ += nout1*nout2*(nout3+1)*sizeof(Real);    // mhd b0.x3f
+    if (!mhd_from_hydro) {
+      data_size_ += (nout1+1)*nout2*nout3*sizeof(Real);    // mhd b0.x1f
+      data_size_ += nout1*(nout2+1)*nout3*sizeof(Real);    // mhd b0.x2f
+      data_size_ += nout1*nout2*(nout3+1)*sizeof(Real);    // mhd b0.x3f
+    }
   }
   if (prad != nullptr) {
     data_size_ += nout1*nout2*nout3*nrad*sizeof(Real);   // rad i0
@@ -422,7 +428,15 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
                       Kokkos::ALL, Kokkos::ALL, Kokkos::ALL), ccin);
     offset_myrank += nout1*nout2*nout3*nmhd*sizeof(Real);   // mhd u0
     myoffset = offset_myrank;
+  }
+  if (mhd_from_hydro) {
+    // a hydro restart has no fields: start from B = 0 (the problem generator adds one)
+    Kokkos::deep_copy(pmhd->b0.x1f, 0.0);
+    Kokkos::deep_copy(pmhd->b0.x2f, 0.0);
+    Kokkos::deep_copy(pmhd->b0.x3f, 0.0);
+  }
 
+  if (pmhd != nullptr && !mhd_from_hydro) {
     Kokkos::realloc(fcin.x1f, nmb, nout3, nout2, nout1+1);
     Kokkos::realloc(fcin.x2f, nmb, nout3, nout2+1, nout1);
     Kokkos::realloc(fcin.x3f, nmb, nout3+1, nout2, nout1);
@@ -727,6 +741,10 @@ ProblemGenerator::ProblemGenerator(ParameterInput *pin, Mesh *pm, IOWrapper resf
   // call problem generator again to re-initialize data, fn ptrs, as needed
   // second argument true since this IS a restart
   CallProblemGenerator(pin, true);
+  // the conversion happens once: restarts written by this run are MHD restarts
+  if (mhd_from_hydro) {
+    pin->SetBoolean("mhd", "restart_from_hydro", false);
+  }
 
   // Check that user defined BCs were enrolled if needed
   if (user_bcs) {

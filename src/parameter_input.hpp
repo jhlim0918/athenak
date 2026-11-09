@@ -83,6 +83,7 @@ class ParameterInput {
   void CheckUnusedParameters(std::ostream& os, bool skip_refinement = false);
   bool DoesBlockExist(std::string name);
   bool DoesParameterExist(std::string block, std::string name);
+  void MergeBlockInto(std::string from, std::string to);
   int  GetInteger(std::string block, std::string name);
   int  GetOrAddInteger(std::string block, std::string name, int value);
   int  SetInteger(std::string block, std::string name, int value);
