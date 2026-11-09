@@ -1,0 +1,641 @@
+\documentclass[11pt]{article}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!60!black,urlcolor=blue!60!black,
+            citecolor=blue!60!black]{hyperref}
+\usepackage[htt]{hyphenat}
+\usepackage{microtype}
+\usepackage{float}
+\emergencystretch=3em
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\file}[1]{\texttt{\small #1}}
+\newcommand{\Om}{\Omega}
+\newcommand{\fig}[2]{\begin{figure}[H]\centering
+  \includegraphics[width=\textwidth]{figures/#1}\caption{#2}\end{figure}}
+
+\newcommand{\finding}[2]{%
+  \par\vspace{0.6em}\noindent
+  \fcolorbox{gray!40}{gray!8}{\parbox{0.97\linewidth}{\textbf{#1}\quad #2}}%
+  \par\vspace{0.6em}}
+
+\title{Fragmentation of a Gravito-Turbulent Disc\\
+       on an Adaptive Mesh in the AthenaK Shearing Box\\[0.4em]
+       \large \textsc{Test Results}\\
+       \large the clump at an interface, mass renormalization, $\beta = 10$, 5 and 3,
+       Jeans-number AMR, a fragment followed to 64 cells/$H$,
+       and $\alpha'$ against $\beta$}
+\author{\code{athenak-multigrid} tree, branch \code{dust-multigrid}\\
+        \small runs on NAS (Turin nodes), TACC Vista and the UNLV h-cluster}
+\date{September 28 -- November 5, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This document records what the code described in
+\file{sc14\_fragmentation\_implementation.pdf} does on its test problems and in the
+production runs of the Shi \& Chiang (2014, SC14) stratified, self-gravitating,
+$\beta$-cooled shearing box. All production runs use the $64H\times64H\times16H$ box at
+4 cells/$H$ on the root grid. Where a run is still going, its state on October 15 is
+given and marked.
+
+\textbf{Test problems.} A bound clump next to a coarse--fine interface drifts toward the
+coarse side under the multigrid force error, $\sim2\times10^{-3}$ of its surface
+gravity; a gap of 8 fine cells cuts the drift $60\times$, which sets the refinement
+buffer. For a moving clump WENO-Z with flux correction and PPMX track the reference
+best, PPM4 worst.
+
+\textbf{The box.} The $16H$-tall box loses 10\% of its mass by $t = 300$ (the $12H$
+box 24\%); renormalization holds the mass exactly and leaves $Q$ unchanged. At
+$\beta = 10$ nothing fragments --- not in four uniform runs to $t = 300$, not in a
+Jeans-AMR run to $t = 1000$. At $\beta = 5$ (Jeans AMR, running) nothing has
+fragmented in $110/\Om$. At $\beta = 3$ the WENO-Z run fragments at $t\approx313$ and
+keeps the fragment to $t = 400$; plm only makes transient knots.
+
+\textbf{Stress against cooling.} Over $\beta = 4$--80 the WENO-Z+FOFC stress matches the
+thermal balance (SC14 eq.~21) to $\alpha'/\mathrm{eq.\,21} = 1.01$--1.07, and the energy budget
+closes once the energy leaving through the vertical boundaries ($0.06$--$0.17$ of the
+cooling) is counted. plm falls short at high $\beta$ (0.90 at $\beta = 40$, 0.82 at 80, with
+negative Reynolds stress); PPM4 overshoots at $\beta = 80$ because its disc loses energy
+and mass through the boundaries (\S\ref{sec:alphabeta}).
+
+\textbf{The fragment followed.} With refinement that follows it, the $\beta = 3$
+fragment contracts on the cooling time without limit ($\rho_{\max}$ doubles per
+$\Om^{-1}$, $687\to4\times10^5$ from $t = 316.8$ to 326.85), pulling levels 4 and 5 in
+behind it until the run slows to $0.08/\Om$ per hour. Its outer structure ($R > 0.5H$)
+matches the uniform run; inside, half its mass sits within $0.25H$ against 8\% on the
+uniform grid, and it spins up: peak $v_\phi/v_K$ rises from 0.45 to 0.83 while the
+densest gas flattens about 4--5:1. By the 45\%-Keplerian criterion of Szulágyi et al.\
+(2017) it has a disc of $\sim330$ mass units, about half its Hill mass, whose inner
+edge is unresolved. A first-core cutoff in the cooling now stops the contraction; that
+run is in progress.
+\end{abstract}
+
+\tableofcontents
+\clearpage
+
+%========================================================================================
+\section{Runs}
+%========================================================================================
+
+\begin{longtable}{@{}p{0.25\linewidth}p{0.12\linewidth}p{0.55\linewidth}@{}}
+\toprule
+run (NAS dir.\ unless noted) & job & setup and state \\
+\midrule
+\endhead
+\code{gt\_sc14\_amr\_b10\_restart\_L2} (Vista) & --- & $12H$ box, 4 cells/$H$, one
+  refined level, $\beta=10$ from $t = 0$ (archived run restarted); done to $t = 300$ \\
+\code{b10}, \code{b10\_renorm} & 244225/6 & $64H$ box, WENO-Z+FOFC, $\beta=10$,
+  $t=0$--300, renormalization off/on; done \\
+\code{b10\_plm}, \code{b10\_plm\_renorm} & 244234/5 & the same with plm, no FOFC; done \\
+\code{b3\_renorm}, \code{b3\_plm\_renorm} & 244909/8 & $\beta=3$ from the renormalized
+  $\beta=10$ runs at $t=300$, to 400; done \\
+\code{b10\_renorm\_amr} & 245022\ldots & Jeans AMR to level 3 (32 cells/$H$),
+  \code{amr\_njeans} 16, $\beta = 10$, $t = 100$--1000; done \\
+\code{b5\_renorm\_amr} & 248988 & the same at $\beta = 5$ from $t = 300$ (cap 256 per
+  rank); \emph{running}, $t = 412$ on October 15 \\
+\code{b3\_renorm\_clumpamr\_nj16\_crashed} & 245052 & fragment-following AMR, $\beta=3$
+  from $t = 300$, \code{amr\_njeans} 16, \code{amr\_cs\_min} 0.3; crashed $t = 307.8$ \\
+\code{b3\_renorm\_clumpamr} & 245227, 247997 & the same with \code{amr\_njeans} 8,
+  \code{amr\_cs\_min} 1, hold $\rho > 100$ at level 3, buffer; $t = 300$--326.85 \\
+\code{b3\_renorm\_clumpamr\_fc} & 250762 & continued from $t = 324.94$ with
+  \code{bcool\_rho\_cut} $= 10^5$, deepest level 4; \emph{running} \\
+\code{b\{20,40,80\}lad\_renorm\_r4} & 259985--7 & WENO-Z ladder from the $\beta$-ramp run
+  \code{b10ramp\_renorm\_r4} at $t = 100$: $\beta = 20$ to $t = 250$, then 40 to 550, then
+  80 to 950; dumps every $2/\Om$; done (November 2026) \\
+\code{b\{5,4\}lad\_renorm\_r4} & 260485/6 & $\beta = 5$ and 4 directly from the same restart,
+  $t = 100$--300; done \\
+\bottomrule
+\end{longtable}
+
+All $64H$-box runs: $256\times256\times64$ root grid, $8^3$ MeshBlocks, 512 ranks,
+WENO-Z+FOFC+HLLC+\code{rk2} unless noted, \code{hse\_outflow} in $z$, dumps every
+$1/\Om$ (the fragment-following runs every $0.1/\Om$).
+$\Sigma_0 = 2.0026$ is the mean initial surface density; $\alpha'$ is SC14 eq.~20, and
+eq.~21 predicts $\alpha' = 4/[9\gamma(\gamma-1)\beta]$ (0.040 at $\beta=10$, 0.080 at 5).
+
+%========================================================================================
+\section{A clump at a coarse--fine interface}
+\label{sec:sgclump}
+%========================================================================================
+
+\subsection{The interface ladder}
+
+\code{sg\_clump}: an $n=1$ polytrope ($R = 1$, $\rho_c = 1$, $4\pi G = 1$, mean
+free-fall time 3.5) in a $\pm4R$ periodic box whose half $x>0$ is refined by one level
+($R/\Delta x = 8$ coarse, 16 fine; plm), with the centre at $x_0$ relative to the
+interface, to $t = 30$ ($\sim9$ free-fall times). Uniform coarse and fine twins
+bracket it.
+
+\fig{sg_clump_interface.png}{Clump at a coarse--fine interface: centre-of-mass drift,
+spurious acceleration, aspect ratio and peak density against the position of the
+centre relative to the interface plane, with the uniform twins.}
+
+\begin{itemize}
+\item The clump always drifts \textbf{toward the coarse side}, with a nearly constant
+  acceleration $\sim2\times10^{-4}$ ($\sim2\times10^{-3}$ of its surface gravity
+  $GM/R^2$): $\Delta x(t=30) = -0.105R$ ($x_0 = -0.5$), $-0.109R$ ($x_0 = 0$),
+  $-0.039R$ ($x_0 = +0.5$).
+\item Its $x/y$ shape grows by 4.5--7\% after $t\sim20$; mass and peak density follow
+  the side the centre is on. No disruption.
+\item A clump at least $0.5R$ (8 fine cells) inside the fine side is unaffected
+  ($10^{-4}$): the gap cuts the drift $60\times$.
+\item A clump crossing the plane ($v_{x0} = 0.2$) loses $\sim1\%$ of its velocity.
+\end{itemize}
+
+\finding{Consequence.}{The multigrid force error at a level jump is real but small, and
+it is local: keeping fragments 8 fine cells from an interface removes it. The
+refinement \emph{buffer} (implementation document) provides exactly that.}
+
+\subsection{Reconstruction for a collapsing clump}
+
+The same clump, uniform $R/\Delta x = 8$, at rest and drifting, with plm at
+$R/\Delta x = 16$ as the reference.
+
+\fig{sg_clump_recon.png}{Reconstructions on the clump, at rest and drifting, against the
+plm $R/\Delta x = 16$ reference.}
+
+At rest PPM4, PPMX and WENO-Z+FOFC behave alike and stay closer to the reference than
+plm. Drifting, PPM4 is the most diffusive of the high-order schemes (its
+Colella--Woodward limiter clips the moving extremum and its mass-weighted density tracks
+plm); PPMX and WENO-Z+FOFC stay closest; WENO-Z overshoots the elongation most. The
+drifting runs show a compression event at $t\sim11$--14 ($\rho_{\max}\times1.5$--2.1)
+absent at rest, larger at higher resolution and unexplained (a Galilean-invariance
+artefact of the setup). WENO-Z+FOFC costs 15--20\% more than PPM4 here, 5\% in the SC14
+box. In the $12H$ SC14 box at $\beta = 10$ the three schemes give the same saturated
+state: $\alpha'$/eq.~21 = 0.997 (plm), 1.023 (PPM4), 0.990 (WENO-Z+FOFC), within the
+$\pm0.12$--0.15 scatter. \textbf{Choice:} WENO-Z+FOFC for the production runs.
+
+%========================================================================================
+\section{One refined level in the 12H box ($\beta = 10$, Vista)}
+%========================================================================================
+
+The archived 4 cells/$H$ run restarted at $t = 0$ with one refined level
+(8 cells/$H$) and the Jeans criterion, to $t = 300$.
+
+\fig{sc14_b10_amr_census.png}{Clump census of the one-level AMR run against the uniform
+8 cells/$H$ run.}
+\fig{sc14_b10_amr_sigma.png}{$\Sigma_g$ through the first burst, refined MeshBlocks
+marked (top), and the uniform 8 cells/$H$ run (bottom).}
+
+The criterion refined the whole refinable midplane (all 224 parents, 2336 blocks, the
+layout maximum $|z| < 2H$, $|x| < 28H$) from $t = 10$ to 19, then let it go by
+$t = 29$. The burst reached the uniform hi-res densities ($\rho_{\max} = 22$ at $t =15$,
+83 at 17, 51 at 20, up to 6--8 knots above 10) but every knot decayed \emph{while still
+on level 1}; nothing was above the Roche density after $t = 29$. The uniform
+8 cells/$H$ run kept one fragment of the same burst (141 at $t = 30$). So derefinement
+did not destroy the knots. A four-level run of the same setup died twice at $t\approx15$
+in MPI (UCX ``transport retry count exceeded''); unresolved, on hold.
+
+%========================================================================================
+\section{The $64H$ box at $\beta = 10$: mass renormalization and reconstruction}
+%========================================================================================
+
+Four runs, $t = 0$--300: WENO-Z+FOFC and plm, each without and with renormalization.
+
+\fig{gt_l64z16_history.png}{Histories of the four $\beta = 10$ runs: box mass,
+cumulative mass loss, $\alpha'$, $Q$.}
+
+\begin{itemize}
+\item \textbf{Saturated state} ($t = 100$--300): $Q = 1.24$--1.27 in all four (the
+  $12H$ box 1.30--1.32); $\alpha'$/eq.~21 = 0.99--1.01. WENO-Z and plm agree within the
+  scatter (WENO-Z bursts $1.5/\Om$ earlier, peak $\alpha$ 0.53 against 0.40).
+\item \textbf{Mass loss.} $M(300)/M_0 = 0.894$ (WENO-Z) and 0.902 (plm), against 0.759
+  and 0.762 in the $12H$ box: the burst takes $\sim6\%$ ($12H$: 14\%), then
+  $1.5\times10^{-4}$ per $\Om^{-1}$ ($12H$: $3.9\times10^{-4}$).
+\item \textbf{Renormalization} holds $M = 8202.52$ to the printed precision and puts back
+  12.5\% of $M_0$ by $t = 300$ (5.5\% in the burst, then $2.8\times10^{-4}$ per
+  $\Om^{-1}$). It does \emph{not} change $Q$: $c_s$ rises 7--9\% with the retained
+  $\Sigma$ (the disc self-regulates), $\delta v$ by 8\%.
+\end{itemize}
+
+\fig{gt_l64z16_census.png}{Clump census of the four $\beta = 10$ runs: $\rho_{\max}$,
+$\Sigma_{\max}/\Sigma_0$, mass above the Roche density, knots above Roche with peak $>10$.
+Gray: the $12H$ box.}
+
+\finding{No fragment at $\beta = 10$, 4 cells/$H$.}{The burst reaches $\rho_{\max} =
+40$--54 at $t = 16$--17 (WENO-Z highest), $\Sigma_{\max}/\Sigma_0 = 22$--28, 4--6 knots,
+all gone by $t\approx20$--22. After $t = 40$: $\rho_{\max}\le9.6$,
+$\Sigma_{\max}/\Sigma_0\le11.6$ (Paardekooper's criterion is 100), never a knot above 10.
+Neither renormalization nor reconstruction changes this.}
+
+\subsection{Would Jeans AMR have switched on?}
+
+The refinement criterion applied to the uniform dumps (\file{gt\_jeans\_census.py},
+counts as full-$y$ rings):
+\begin{itemize}
+\item \textbf{Burst}: $n_J < 16$ (level 1) from $t = 8$ to 22, over the whole midplane
+  (all 64 $|z| < 2H$ columns at $t = 10$--18); $n_J < 8$ (level 2) at $t = 14$--19
+  ($\le 24$ rings); never $n_J < 4$ (min 5.4 and 5.1).
+\item \textbf{Saturated state} ($t \ge 40$): $n_J < 16$ in only 12 of 261 dumps
+  (\code{b10}) and 1 of 261 (\code{b10\_renorm}, the hotter disc), minimum 14.4, 1--5
+  rings. The dense gas is hot; the median of the per-dump minimum is 18--20.
+\item \textbf{$\beta = 3$} (WENO-Z): the fragment has $n_J\approx3.5$--5 at 4 cells/$H$
+  (needs level 3); cold streams reach $n_J\approx2$ with a sound-speed floor of 0.3. With
+  \code{amr\_njeans} 16, 30--58 rings would be at level 1 before the fragment forms;
+  with 8, at most one.
+\end{itemize}
+
+%========================================================================================
+\section{$\alpha'$ against $\beta$: reconstruction and the cooling balance}
+\label{sec:alphabeta}
+%========================================================================================
+
+In a steady gravito-turbulent state the stress heats the disc as fast as $\beta$ cooling
+removes energy, which fixes $\alpha' = 4/[9\gamma(\gamma-1)\beta]$ (SC14 eq.~21). A first
+ladder with plm reconstruction ($\beta = 10\to20\to40\to80$, each stage restarted from the
+end of the previous one) fell short of it at large $\beta$. This section reruns the ladder
+with PPM4 and with WENO-Z+FOFC and closes the energy budget, to separate the scheme from
+the physics.
+
+\paragraph{Runs.}
+\begin{itemize}\itemsep1pt
+\item \textbf{plm and PPM4 ladders} (UNLV h-3; \file{validation/run/gt\_sc14\_stndrd\_b*\_hse\{,\_ppm4\}}):
+      the $64H\times64H\times12H$ SC14 box at 4 cells/$H$, \code{hse\_outflow}, no mass
+      renormalization; $\beta = 10$ for $t = 0$--300, then 20 to 450, 40 to 750, 80 to 1150.
+      Also WENO-Z+FOFC at $\beta = 10$ (\file{gt\_sc14\_stndrd\_b10\_hse\_wzfofc}).
+\item \textbf{WENO-Z+FOFC ladder} (NAS): the production $64H\times64H\times16H$ box at
+      4 cells/$H$ with mass renormalization, restarted from the $\beta$-ramp run
+      (\code{b10ramp\_renorm\_r4}, $\beta$ from 100 to 10 by $t = 50$, then 10 to $t = 100$):
+      $\beta = 20$ to $t = 250$, then 40 to 550, then 80 to 950; and $\beta = 5$ and 4
+      directly from $t = 100$ to 300. Dumps of $\rho,\mathbf v,P$ and $\Phi$ every $2/\Om$.
+\end{itemize}
+$\alpha'$ (SC14 eq.~20, from the history every $0.25/\Om$) is averaged over the final
+window of each stage: $t = 200$--300, 350--450, 550--750 and 950--1150 for the standard
+box; 150--300 ($\beta = 4$, 5), 75--100 ($\beta = 10$), 150--250, 350--550 and 750--950
+($\beta = 20$, 40, 80) for the production box. The errors are the standard error of
+$5/\Om$ block means (correlated, so approximate).
+
+\paragraph{Energy budget.} \file{scripts/analysis/gt\_energy\_budget.py} integrates the
+total energy $E = K + U + E_{\rm tid} + E_{\rm sg}$ of the gas in the box over paired
+dumps,
+\[
+  \frac{dE}{dt} = S - C - F_z + R,
+\]
+with $S = q\Om\int w_{xy}\,dV$ the stress work, $C = \int U/\beta\,dV$ the cooling, $F_z$
+the energy carried out through the two $z$ faces (kinetic, enthalpy, tidal and
+self-gravitational potential), and $R$ a residual for floors, the non-conservative
+self-gravity coupling and the renormalization. In a steady state $S - F_z \approx C$.
+
+\fig{alpha_beta.png}{$\alpha'$ against $\beta$. (a) $\alpha'$ with SC14 eq.~21;
+(b) $\alpha'/\mathrm{eq.\,21}$ with a $\pm10\%$ band; (c) the Reynolds share of $\alpha'$;
+(d) the WENO-Z energy budget as fractions of the cooling $C$ (stress work $S$,
+$S - F_z$, the boundary loss $F_z$, the residual $R$), with PPM4 at $\beta = 40$, 80 and the
+heating plm lacks at $\beta = 80$. Squares: plm; triangles: PPM4; open circle: WENO-Z+FOFC
+in the standard box; filled circles: WENO-Z+FOFC in the production box.}
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{rcccccc}
+\toprule
+$\beta$ & eq.~21 & plm & PPM4 & WENO-Z (std) & WENO-Z (prod.) & Reynolds share (WENO-Z) \\
+\midrule
+4  & 0.100  & --    & --    & --    & $1.02\pm0.06$ & 0.37 \\
+5  & 0.080  & --    & --    & --    & $1.03\pm0.06$ & 0.37 \\
+10 & 0.040  & 1.00  & 1.02  & 0.99  & $1.06\pm0.10$ & 0.30 \\
+20 & 0.020  & 0.97  & 0.99  & --    & $1.02\pm0.05$ & 0.21 \\
+40 & 0.010  & 0.90  & 1.02  & --    & $1.01\pm0.04$ & 0.23 \\
+80 & 0.005  & 0.82  & 1.36  & --    & $1.07\pm0.05$ & 0.32 \\
+\bottomrule
+\end{tabular}
+\caption{$\alpha'/\mathrm{eq.\,21}$ by scheme ($\pm$: standard error of $5/\Om$ block means,
+about 0.03--0.06 for plm and PPM4). The Reynolds share of $\alpha'$ for plm is 0.23, 0.12,
+0.02 and $-0.07$ at $\beta = 10$--80.}
+\end{table}
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{lrrrrr}
+\toprule
+run & $S/C$ & $F_z/C$ & $(dE/dt)/C$ & $R/C$ & $(S-F_z)/C$ \\
+\midrule
+WENO-Z, $\beta = 4$  & 1.06 & 0.06 & $+0.004$ & $+0.001$ & 1.00 \\
+WENO-Z, $\beta = 5$  & 1.05 & 0.06 & $+0.003$ & $+0.02$  & 0.98 \\
+WENO-Z, $\beta = 20$ & 1.04 & 0.06 & $+0.06$  & $+0.08$  & 0.98 \\
+WENO-Z, $\beta = 40$ & 1.00 & 0.10 & $-0.04$  & $+0.07$  & 0.90 \\
+WENO-Z, $\beta = 80$ & 1.09 & 0.17 & $-0.04$  & $+0.04$  & 0.91 \\
+PPM4, $\beta = 40$   & 1.03 & 0.12 & $-0.04$  & $+0.05$  & 0.91 \\
+PPM4, $\beta = 80$   & 1.40 & 0.43 & $-0.02$  & $+0.003$ & 0.97 \\
+\bottomrule
+\end{tabular}
+\caption{Energy budgets over the averaging windows, as fractions of the cooling $C$.}
+\end{table}
+
+\begin{itemize}
+\item \textbf{plm falls short at large $\beta$.} $\alpha'/\mathrm{eq.\,21} = 1.00$, 0.97,
+  0.90, 0.82 at $\beta = 10$, 20, 40, 80 (a fit gives $\alpha'\propto\beta^{-1.10}$), and the
+  Reynolds stress turns negative at $\beta = 80$. Its disc barely loses energy through the
+  boundaries, so about 16\% of the cooling at $\beta = 80$ is supplied by heating that the
+  stresses do not measure. (The plm budget was not computed: only the final plm dumps were
+  kept.)
+\item \textbf{PPM4 agrees to $\beta = 40$} (0.99, 1.02) and overshoots at $\beta = 80$ (1.36).
+  The budget closes to 0.3\% of $C$: the excess stress heating leaves through the $z$ faces
+  ($F_z = 0.43C$: tidal potential 0.15, self-gravity 0.13, enthalpy 0.12, kinetic 0.04), while
+  the disc heats ($c_s$ 2.03 to 2.40) and loses 15\% of its mass. The overshoot is the
+  outflow, not an error in the stress.
+\item \textbf{WENO-Z+FOFC matches eq.~21 at every $\beta$} from 4 to 80 (1.01--1.07), with
+  a positive Reynolds share of 20--37\%. At $\beta = 10$ in the standard box it gives 0.99,
+  the same as plm and PPM4, which ties the two boxes together. The budgets close: $F_z$ grows
+  from $0.06C$ ($\beta\le20$) to $0.17C$ ($\beta = 80$), the residual stays $\le0.08C$, and
+  the renormalization keeps the mass (its energy input is $\sim0.01C$).
+\item \textbf{$\beta = 20$ is still settling}: $dE/dt = +0.06C$ (the disc warming after the
+  switch from $\beta = 10$; the window is five cooling times). $\beta = 4$ and 5 close to
+  $0.1$--2\% of $C$.
+\item \textbf{No fragment at $\beta = 4$ or 5} on the uniform 4 cells/$H$ grid in $200/\Om$
+  (every $2/\Om$ dump, \file{sigma\_peaks.py}). $\beta = 4$: $\rho_{\max} \le 21.9$ (above
+  20 in three dumps only, median 8.2), $\Sigma_{\max}/\langle\Sigma\rangle \le 17.7$ (median
+  7.8); $\beta = 5$: $\rho_{\max} \le 15.3$ (median 6.3), $\Sigma_{\max}/\langle\Sigma\rangle
+  \le 15.6$. Both stay far below Paardekooper's criterion of 100, so their $\alpha'$ is that
+  of the turbulence, not of a bound clump. At $\beta \ge 20$ the peaks fall to
+  $\rho_{\max} \le 3.5$.
+\end{itemize}
+
+\finding{The $\alpha'$ deficit at large $\beta$ belongs to plm.}{With WENO-Z+FOFC the
+stress balances $\beta$ cooling to within 7\% from $\beta = 4$ to 80, and the energy budget
+closes once the boundary outflow is counted. The comparison is between setups as well as
+schemes (the plm and PPM4 ladders ran in the $12H$ box without renormalization); the
+WENO-Z $\beta = 10$ run in the $12H$ box agrees with plm and PPM4.}
+
+%========================================================================================
+\section{$\beta = 3$ on the uniform grid}
+\label{sec:b3}
+%========================================================================================
+
+The renormalized $\beta = 10$ runs, restarted at $t = 300$ with $\beta = 3$.
+
+\fig{gt_l64z16_b3_census.pdf}{Clump census of the $\beta = 3$ restarts, WENO-Z+FOFC and
+plm; gray: the $\beta = 10$ parents.}
+
+\finding{Reconstruction decides fragmentation at this resolution.}{The two runs track
+each other to $t\approx313$ and part there. WENO-Z+FOFC fragments: $\rho_{\max}$ goes
+from 30 to 600 by $t\approx319$ and stays at 1500--1700 from $t\approx355$ to 400;
+$\Sigma_{\max}/\Sigma_0$ is above 100 from $t\approx316$ (175 at $t = 320$, $\sim700$ at
+$t = 380$--400), for $85/\Om$ --- many cooling times. Plm never exceeds
+$\rho_{\max}\approx60$ or $\Sigma_{\max}/\Sigma_0\approx40$; its knots dissolve within a
+few $\Om^{-1}$.}
+
+The WENO-Z fragment accretes steadily (mass above the Roche density 0.2 $\to$ 0.49 of the
+box by $t = 400$), clears a wide low-density band around itself, and moves outward in
+$x$ (to $x\approx16$ by $t = 400$). At $t\approx333$--343 it jumps $\sim10H$ outward
+within $3/\Om$ while the mass in its Hill sphere doubles (630 $\to$ 1200); no second
+fragment above $30\Sigma_0$ is involved.
+
+%========================================================================================
+\section{Jeans-number AMR at $\beta = 10$ and 5}
+%========================================================================================
+
+\subsection{$\beta = 10$, $t = 100$--1000}
+
+Jeans AMR to level 3 on the renormalized WENO-Z run from $t = 100$. Refinement is
+almost never needed: level-1 patches of 256 blocks at isolated times ($t = 351$, 720);
+every dump sampled every $20$--$30/\Om$ from $t = 440$ to 1000 is root only, with
+$\rho_{\max} = 2$--8. Time-step dips below 60\% of the median occur 1.5\% of the time,
+as often as in the uniform run --- hot spots, not refinement.
+
+\begin{center}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+& $t = 100$--400 & 400--700 & 700--1000 \\
+\midrule
+$\alpha'$ & 0.038 & 0.037 & 0.039 \\
+\bottomrule
+\end{tabular}
+\end{center}
+against 0.040 from eq.~21; the mass stays at 8202.52.
+
+\finding{A $900/\Om$ null result.}{At 4 cells/$H$ with Jeans refinement standing by,
+$\beta = 10$ does not fragment between $t = 100$ and 1000.}
+
+\subsection{$\beta = 5$ from $t = 300$ (running)}
+
+The same refinement, $\beta$ lowered to 5 at $t = 300$. As the disc cools to its new
+state, level 1 switches on at $t\approx302$ and then waxes and wanes (768 to 13\,000
+level-1 blocks, up to $\sim45$ of the 256 $x$--$z$ columns); level 2 has never been
+needed; $\rho_{\max}\le16$. $\alpha' = 0.068$--0.084 (0.080 for $t = 360$--413), as
+eq.~21 predicts. The disc reorganizes into broad trailing bands with wide gaps.
+About $5/\Om$ per hour.
+
+\fig{gt_l64z16_b5_renorm_amr_sigma_last.png}{$\beta = 5$ AMR run at $t = 317$:
+$\Sigma_g/\Sigma_0$ (no mesh drawn); 7136 root and 8448 level-1 blocks.}
+
+\finding{State on October 15.}{No fragment in $110/\Om$ at $\beta = 5$, between
+$\beta = 3$ (fragment within $14/\Om$) and $\beta = 10$ (none in $900/\Om$).}
+
+%========================================================================================
+\section{Following the fragment ($\beta = 3$)}
+\label{sec:clumpamr}
+%========================================================================================
+
+\subsection{First attempt: the cold streams}
+
+\code{amr\_njeans} 16, \code{amr\_cs\_min} 0.3, up to level 6, hold at level 3 above
+$\rho = 100$. Level 1 appeared at $t\approx302$ (13--23k blocks); by $t = 307.1$ the
+run was at level 4 with 70--104k blocks ($\sim200$ per rank of 256) while
+$\rho_{\max}$ was only 26--45: the cold streams ahead of the fragment, not the
+fragment, drove it. The time step fell to $1.4$--$3\times10^{-4}$ at $\sim5$ s per
+cycle ($t = 400$ would have taken $\sim400$ h). At $t\approx307.8$ the run died of glibc
+heap corruption, not at a dump, with 331 GB of 1.5 TB in use (implementation document,
+known limitations). No restart file after $t = 300$ (they were every $10/\Om$).
+
+\subsection{Second attempt: refine only what collapses}
+
+\code{amr\_njeans} 8 (twice Truelove's 4), \code{amr\_cs\_min} 1, restart files every
+$1/\Om$, otherwise as before.
+
+\begin{longtable}{@{}rrlr@{}}
+\toprule
+$t$ & blocks & level counts (L0/L1/L2/L3/L4/L5) & $\rho_{\max}$ \\
+\midrule
+300--307 & 8192 & root only & 3--13 \\
+308--311 & 9.5--11.3k & level-1 patches on the streams & 14--54 \\
+312--313 & 8192 & root only again & 35 \\
+314.2 & 9088 & 8064/1024 & 101 (hold) \\
+314.4 & 16\,704 & 8000/1152/2432/5120 & 106 \\
+316.8 & 24\,096 & 7904/1728/3200/11264 & 687 \\
+318.8 & 25\,440 & 7840/2112/4224/11264 & 2942 \\
+320.8 & 20\,736 & 7936/1536/3072/8192 & 11\,754 \\
+321.8 & 35\,744 & 7904/1728/3072/10752/12288 & 22\,558 \\
+323.8 & 47\,840 & 7904/1536/4352/11520/22528 & 81\,254 \\
+324.8 & 53\,888 & 7808/2304/4352/10752/28672 & $1.28\times10^5$ \\
+326.1 & 73\,376 & 7776/2752/3456/6144/20480/32768 & $2.24\times10^5$ \\
+326.85 & 111\,008 & 7904/1728/3072/8704/19968/69632 & $4.0\times10^5$ \\
+\bottomrule
+\end{longtable}
+
+\fig{gt_l64z16_clumpamr_sigma_00444.png}{$t = 314.4$, just after the hold: $\Sigma_g$
+with the $x$--$y$ footprints of all MeshBlocks, and density slices through the maximum
+with the blocks they cut (gray: root; magenta: 1; red: 2; orange: 3).}
+
+\begin{itemize}
+\item The streams refine to level 1 at most and derefine again; the cascade of the
+  first attempt does not happen.
+\item The fragment forms at $t\approx314$, as in the uniform run ($\approx313$); the
+  hold takes it to level 3 within one dump ($0.1/\Om$) of $\rho_{\max}$ passing 100.
+\item \textbf{Runaway contraction.} From $t\approx316$, $\rho_{\max}$ doubles about every
+  $\Om^{-1}$. That is far slower than free fall ($\sim0.01/\Om$ at $\rho = 10^4$): the
+  fragment is held up by pressure and contracts as it cools, on the $\beta = 3$ cooling
+  time. $\beta$ cooling has no opacity limit, so the contraction does not stop, and the
+  Jeans criterion adds level 4 at $t\approx321$ and level 5 at $t\approx326$.
+\item \textbf{Cost.} About $1/\Om$ per hour at level 3, $0.19/\Om$ at level 4
+  (time step $1.5\times10^{-4}$, 2.8 s per cycle), $0.08/\Om$ at level 5 (time step
+  $6\times10^{-5}$, $1.1\times10^5$ blocks). The second 24-hour job advanced from
+  $t = 324.9$ to 326.85.
+\item \textbf{Migration.} The fragment moves outward in $x$: 0 ($t = 314.4$), 3.6
+  (316.8), 4.8 (319.9), 11.5 (324.9), 10.8 (325.6), and drifts fast in $-y$ with the
+  shear, crossing the $y$ boundary.
+\end{itemize}
+
+\fig{gt_l64z16_clumpamr_snapshot_00550.png}{$t = 324.9$: $\Sigma_g/\Sigma_0$ over the
+whole box and $12H$ and $4H$ around the fragment (map at 32 cells/$H$, level-4 blocks
+averaged).}
+
+%========================================================================================
+\section{The fragment's structure: uniform grid against AMR}
+\label{sec:structure}
+%========================================================================================
+
+Both runs restart from the same $\beta = 10$ state at $t = 300$ but have diverged by
+$t = 325$, so their fragments are at different places; their structure is compared about
+each density maximum, in cylindrical $R$ about the fragment's spin axis (the angular
+momentum of the gas within $1H$), with velocities relative to the fragment and the
+background shear restored.
+
+\fig{gt_l64z16_clumpamr_vs_uniform_sigma.png}{$\Sigma_g/\Sigma_0$ at $t\approx325$:
+uniform 4 cells/$H$ (top), AMR (bottom); whole box, $12H$ and $4H$.}
+\fig{gt_l64z16_clumpamr_vs_uniform_profiles.png}{Radial structure: $\Sigma(R)$;
+$v_\phi$ (thick) and $v_K = \sqrt{GM(<R)/R}$ (thin); $v_\phi/v_K$; $h_{\rm rms}/R$.
+AMR at $t = 316$, 320, 325 (blues); uniform at 316, 320, 325 (oranges), 350 (dashed) and
+400 (dotted). Points within two cells of the finest level are dropped.}
+
+\begin{itemize}
+\item \textbf{The outside agrees, the inside does not.} The fragment holds $\sim500$ mass
+  units within $2H$ in both runs (6\% of the box; $\approx490$ uniform, 555 AMR at
+  $t\approx325$), and $\Sigma(R)$ nearly coincides beyond $R\approx0.5H$. Within
+  $0.25H$: 41 (uniform) against 299 (AMR). $\Sigma_{\max}/\Sigma_0$: 188 against 4477.
+\item \textbf{Spin-up.} The AMR fragment's peak $v_\phi/v_K$ rises 0.45 ($t = 316$, at
+  $R\approx0.6H$) $\to$ 0.72 (320, $0.35H$) $\to$ 0.82 (325, $0.15H$): it moves inward
+  and up as the fragment contracts, as angular-momentum conservation demands.
+\item \textbf{Not yet a disc.} $c_s\approx10$ against $v_\phi\approx17$, so pressure
+  supplies about a third of the support ($(v_\phi/v_K)^2\approx0.67$); $v_R\approx0$
+  inside $0.5H$ (quasi-static), infall at 1--4 outside $1H$ (accretion).
+\item \textbf{The uniform grid at $t = 400$}: a pressure-supported core inside $R\approx1H$
+  ($c_s = 10$--15 $> v_\phi$; $v_\phi/v_K = 0.2$--0.5) inside a thick, rotating,
+  flattened structure at $R\approx1.3$--$3H$ ($v_\phi/v_K = 0.75$--0.86,
+  $h_{\rm rms}/R\approx0.3$--0.4); $M(<1H) = 1485$, $M(<2H) = 2093$. It is only 5--12
+  cells across; its core cannot shrink below a few cells.
+\end{itemize}
+
+\fig{gt_l64z16_clumpamr_flow_00569.png}{AMR at $t = 326.85$ (the last dump before the
+first-core restart): density slices through the
+maximum with velocity vectors relative to the fragment (shear restored), face-on
+($x$--$y$) and edge-on ($x$--$z$), $6H$ and $1H$ windows; the key gives each panel's
+90th-percentile speed.}
+
+In the $1H$ face-on window the gas rotates prograde at $\sim20$ (the panel's
+90th-percentile speed) about a slightly elongated core. Edge-on, the densest gas is a
+layer about $0.4H\times0.1H$ ($\sim4$:1) inside a rounder envelope, and the motions in
+the $x$--$z$ plane are slow ($\sim4$, mostly infall from above) against the rotation:
+the core spins, it does not fall in. (At $t = 324.9$ the same slices gave rotation
+$\sim18$, poloidal speeds $\sim2$ and a $0.5H\times0.1H$ layer.) In the $6H$ windows
+rotation dominates within $\sim1H$; outside, the shear takes over, and gas falls onto
+the fragment at $\sim6$ from the streams above and below the midplane.
+($h_{\rm rms}/R$ in the profile figure counts the envelope above and below the core and
+reads $\approx1$; the slice shows the flattening the profile hides.)
+
+\fig{gt_l64z16_b3_uniform_t400.png}{Uniform run at $t = 400$: $\Sigma_g$ (whole box,
+$12H$, $4H$) and density slices with velocity vectors, $8H$ windows.}
+\fig{gt_l64z16_b3_uniform_t400_profiles.png}{Uniform run at $t = 400$: radial profiles of
+$\Sigma$; $v_\phi$, $v_K$, $c_s$, $v_R$; $v_\phi/v_K$; $h_{\rm rms}/R$.}
+
+%========================================================================================
+\section{The circumplanetary disc}
+\label{sec:cpd}
+%========================================================================================
+
+Following Szulágyi, Mayer \& Quinn (2017), the disc is the gas rotating at $\ge45\%$ of
+Keplerian. For each dump (AMR every $0.5/\Om$, uniform every $1/\Om$ from $t = 313$):
+the contiguous band $[R_{\rm in}, R_{\rm out}]$ around the peak of $v_\phi/v_K$ where it
+is $\ge0.45$; $M_{\rm CPD}$, the mass of the cells in that band whose own
+$v_\phi\ge0.45\,v_K$; $M_{\rm core} = M(<R_{\rm in})$; the Hill radius
+$r_H = [GM(<r_H)/3\Om^2]^{1/3}$.
+
+\fig{gt_l64z16_cpd.png}{Disc radius band and Hill radius (top), disc, core and Hill
+masses (middle), peak $v_\phi/v_K$ (bottom); AMR blue, uniform orange. Left: while the
+AMR run exists; right: the uniform run to $t = 400$. Gray band: two cells of the finest
+AMR level.}
+
+\begin{itemize}
+\item \textbf{AMR} ($t = 316.5$--325.2): the disc appears $\sim2/\Om$ after the fragment.
+  $R_{\rm out}$ settles at 0.55--1$H$ ($\approx0.8H$, $0.2\,r_H$, at $t = 325$);
+  $R_{\rm in}$ sits at two finest cells ($\approx0.03H$) --- the gas rotates above 45\%
+  Keplerian down to the resolution limit, so no slowly rotating core is resolved
+  ($M_{\rm core} < 26$). $M_{\rm CPD}$ grows 150 $\to$ 330, half of $M(<r_H)\approx660$.
+\item \textbf{Uniform}: $t = 317$--332, disc at 0.5--1.8$H$ with 50--150 against a core
+  of 120--330 (core-dominated); destroyed at $t = 333$--343 (the outward jump of
+  sec.~\ref{sec:b3}); re-formed from $t = 344$, and at $t = 360$--400 it spans
+  0.8--4.1$H$ ($R_{\rm out}\approx0.6\,r_H$) with $M_{\rm CPD} = 600$--1050 against a
+  core of 1000--1400 and $M(<r_H) = 2000$--2700 (30--40\%); peak $v_\phi/v_K =
+  0.85$--0.92.
+\end{itemize}
+
+\finding{Against the literature.}{Disc-to-planet mass ratios for fragments of
+gravitational instability are $\sim25\%$ (Shabram \& Boley 2013) to $\sim50\%$
+(Galvagni et al.\ 2012), as summarized by Szulágyi et al.\ (2017), whose own
+$10M_J$ clump peaks at $v_\phi/v_K\approx0.7$ with a disc at 2--6 AU. Our ratios
+(AMR $\approx50\%$, late uniform 30--40\%) are in that range, and our rotation profiles
+have their shape (slow core, sub-Keplerian peak, fall-off into the shear). Refinement
+changes how the mass divides: at $t\approx325$ the uniform fragment is core-dominated
+(80 in the disc, 330 in the core), the AMR fragment rotation-dominated. The 45\%
+criterion does not require the gas to be thin; in the AMR run it counts the thick
+rotating interior as disc.}
+
+%========================================================================================
+\section{The first-core run (in progress)}
+%========================================================================================
+
+\code{b3\_renorm\_clumpamr\_fc} restarts the fragment-following run from its $t = 324.94$
+restart file (levels $\le 4$, $\rho_{\max}\approx1.4\times10^5$) with
+\code{bcool\_rho\_cut} $= 10^5$ (cooling $\times\,1/[1+(\rho/10^5)^4]$) and the deepest
+level capped at 4 (64 cells/$H$), to $t = 335$. The restart read the overlay (5 levels,
+54\,784 blocks, mass target 8202.52) and its first steps reproduce the old run's to the
+digits the cutoff does not touch (2.8 s per cycle, time step $1.4$--$1.5\times10^{-4}$).
+The test is whether $\rho_{\max}$ levels off at a few $\times10^5$ and the time step
+stops shrinking; then whether $v_\phi/v_K$ reaches 1 in the inner $0.1$--$0.2H$ and that
+gas flattens. Results will be added here.
+
+%========================================================================================
+\section{Summary and open issues}
+%========================================================================================
+
+\begin{enumerate}
+\item The multigrid force error at a level jump drifts a clump toward the coarse side at
+  $\sim2\times10^{-3}$ of its surface gravity; 8 fine cells of buffer remove it.
+\item In the $64H\times64H\times16H$ box renormalization holds the mass without changing
+  $Q$; WENO-Z and plm give the same $\beta = 10$ turbulence.
+\item The stress balances $\beta$ cooling (SC14 eq.~21) with WENO-Z+FOFC from $\beta = 4$ to
+  80 (1.01--1.07), the energy budget closing with the boundary outflow; plm falls to 0.82
+  at $\beta = 80$ (\S\ref{sec:alphabeta}).
+\item $\beta = 10$: no fragment (uniform to 300, Jeans AMR to 1000). $\beta = 5$: none in
+  $110/\Om$ so far. $\beta = 3$: WENO-Z fragments at $t\approx313$; plm does not ---
+  at 4 cells/$H$ the reconstruction decides.
+\item A followed fragment contracts on the cooling time without limit under $\beta$
+  cooling; the cost of following it is set by the deepest level's time step. The
+  first-core cutoff is the remedy under test.
+\item With resolution the fragment becomes compact and rotation-dominated (peak
+  $v_\phi/v_K$ 0.83, flattened core); its disc by the 45\% criterion holds half its
+  Hill mass, consistent with the published 25--50\%.
+\item Open: the heap corruption at $\sim10^5$ blocks; the multigrid interface error;
+  fragmentation itself is decided on the 4 cells/$H$ root grid (the boundary converges
+  only above $\sim40$ cells/$H$, Baehr et al.\ 2017); no magnetic fields (Kubli et al.\
+  2023 find much less angular momentum in magnetized clumps).
+\end{enumerate}
+
+\end{document}
